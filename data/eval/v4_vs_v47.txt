@@ -1,0 +1,14 @@
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+対戦: submissions/thomas_v94_safe/main.py vs C:/Users/nay92/AppData/Local/Temp/claude/c--Users-nay92-Desktop-kaggriculture-il/8d2df56d-233e-406c-97e3-093c1875a7ca/scratchpad/public_agents/v47.py   ペア数 10（20試合、-j 4）
+勝敗          : 7勝 3敗 0分（ペア単位）
+ペア差        : +2,324 ± 780（平均 ± 標準誤差）
+最終所持金    : A 中央値 84,577 / B 中央値 81,142
+1ターン推論   : A 中央値 1.4ms 最悪 117.9ms / B 中央値 1.1ms 最悪 109.1ms
+例外          : A 0件 / B 0件
+健全性(A)     : 植え付け 237 → 収穫 217 / 損失 1（水切れ 1 + 未収穫 0／寿命終了 18 は正常）/ 家畜逃走 0 / 最終shed 0
+健全性(B)     : 植え付け 237 → 収穫 217 / 損失 1（水切れ 1 + 未収穫 0／寿命終了 18 は正常）/ 家畜逃走 0 / 最終shed 0
+所要時間      : 61.2秒
+JSON          : data\eval\v4_vs_v47.json

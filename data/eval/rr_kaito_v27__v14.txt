@@ -1,0 +1,15 @@
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+対戦: C:/Users/nay92/AppData/Local/Temp/claude/c--Users-nay92-Desktop-kaggriculture-il/8d2df56d-233e-406c-97e3-093c1875a7ca/scratchpad/public_agents/kaito_v27.py vs C:/Users/nay92/AppData/Local/Temp/claude/c--Users-nay92-Desktop-kaggriculture-il/8d2df56d-233e-406c-97e3-093c1875a7ca/scratchpad/public_agents/v14.py   ペア数 20（40試合、-j 4）
+勝敗          : 20勝 0敗 0分（ペア単位）
+ペア差        : +12,714 ± 1,051（平均 ± 標準誤差）
+最終所持金    : A 中央値 79,562 / B 中央値 69,809
+1ターン推論   : A 中央値 0.1ms 最悪 72.6ms / B 中央値 0.2ms 最悪 41.2ms
+例外          : A 0件 / B 0件
+健全性(A)     : 植え付け 195 → 収穫 184 / 損失 5（水切れ 0 + 未収穫 5／寿命終了 5 は正常）/ 家畜逃走 0 / 最終shed 0
+健全性(B)     : 植え付け 173 → 収穫 147 / 損失 13（水切れ 0 + 未収穫 13／寿命終了 9 は正常）/ 家畜逃走 0 / 最終shed 0
+※ A の推論時間が 50ms を超えている（05 §4）。-j 1 で測り直すこと
+所要時間      : 57.2秒
+JSON          : data\eval\rr_kaito_v27__v14.json

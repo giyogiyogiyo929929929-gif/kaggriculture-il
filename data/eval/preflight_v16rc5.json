@@ -1,0 +1,42 @@
+[
+  {
+    "name": "提出物が揃っている",
+    "ok": true,
+    "detail": "1項目、合計 18,946 bytes"
+  },
+  {
+    "name": "main.py の最後の関数が agent",
+    "ok": true,
+    "detail": "最後の関数: agent"
+  },
+  {
+    "name": "Kaggle と同じ方法で読み込める",
+    "ok": true,
+    "detail": "最後の callable: agent"
+  },
+  {
+    "name": "標準ライブラリと自前モジュールだけを import している",
+    "ok": true,
+    "detail": "外部ライブラリなし"
+  },
+  {
+    "name": "模倣モデルの有無",
+    "ok": true,
+    "detail": "main.py はモデルを使っていない（ルール表で提出）"
+  },
+  {
+    "name": "行動の形式が正しい",
+    "ok": true,
+    "detail": "{'farmer': ['PASS'], 'hands': [], 'market': [['BUY_PRODUCT', 'WHEAT', 14], ['HIR"
+  },
+  {
+    "name": "壊れた観測でも落ちない",
+    "ok": true,
+    "detail": "5パターン確認"
+  },
+  {
+    "name": "1ターンの推論が 50ms 未満で完走する",
+    "ok": true,
+    "detail": "中央値 0.09ms / 最悪 1.26ms / status DONE"
+  }
+]

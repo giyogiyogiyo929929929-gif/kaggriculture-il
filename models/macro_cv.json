@@ -1,0 +1,141 @@
+{
+  "rows": 9976,
+  "episodes": 207,
+  "folds": 5,
+  "heads": {
+    "target_seed_WHEAT": {
+      "kind": "regression",
+      "scores": {
+        "model": {
+          "mae": 1.97592380280448,
+          "mae_raw": 2.0373264489865734
+        },
+        "day_median": {
+          "mae": 4.548884381338742,
+          "mae_raw": 5.770360408031278
+        },
+        "hold": {
+          "mae": 5.268309962665726,
+          "mae_raw": 5.268309962665726
+        },
+        "rule": {
+          "mae": 8.8801804979863,
+          "mae_raw": 14.192663962136578
+        }
+      },
+      "best_baseline": "day_median",
+      "beats_best_baseline": true,
+      "rounds": 200,
+      "fold_rounds": [
+        200,
+        200,
+        198,
+        200,
+        200
+      ]
+    },
+    "target_seed_CARROT": {
+      "kind": "regression",
+      "scores": {
+        "model": {
+          "mae": 0.9129288297027957,
+          "mae_raw": 1.031678145679776
+        },
+        "day_median": {
+          "mae": 1.7011273774877267,
+          "mae_raw": 3.1220257518299674
+        },
+        "hold": {
+          "mae": 1.3640694358703,
+          "mae_raw": 1.3640694358703
+        },
+        "rule": {
+          "mae": 1.36627421583326,
+          "mae_raw": 4.837811976364758
+        }
+      },
+      "best_baseline": "hold",
+      "beats_best_baseline": true,
+      "rounds": 63,
+      "fold_rounds": [
+        63,
+        81,
+        56,
+        101,
+        52
+      ]
+    },
+    "target_seed_STRAWBERRY": {
+      "kind": "regression",
+      "scores": {
+        "model": {
+          "mae": 0.595931446041685,
+          "mae_raw": 0.7265806708231948
+        },
+        "day_median": {
+          "mae": 2.5481391657112615,
+          "mae_raw": 3.5437781109445274
+        },
+        "hold": {
+          "mae": 1.1702016638739452,
+          "mae_raw": 1.1702016638739452
+        },
+        "rule": {
+          "mae": 8.951668283505306,
+          "mae_raw": 10.750327777287827
+        }
+      },
+      "best_baseline": "hold",
+      "beats_best_baseline": true,
+      "rounds": 200,
+      "fold_rounds": [
+        200,
+        197,
+        199,
+        200,
+        200
+      ]
+    },
+    "buy_land": {
+      "kind": "binary",
+      "scores": {
+        "model": {
+          "accuracy": 0.9880545021606844,
+          "precision": 0.9674515571860663,
+          "recall": 0.8678243033582842,
+          "f1": 0.9137294788698904
+        },
+        "day_median": {
+          "accuracy": 0.9552650145515479,
+          "precision": 0.7076726342710997,
+          "recall": 0.6655534125410423,
+          "f1": 0.6859045039086006
+        },
+        "hold": {
+          "accuracy": 0.9266205132727754,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule": {
+          "accuracy": 0.9754255225328512,
+          "precision": 1.0,
+          "recall": 0.6655534125410423,
+          "f1": 0.7986328401176637
+        }
+      },
+      "best_baseline": "rule",
+      "beats_best_baseline": true,
+      "rounds": 196,
+      "fold_rounds": [
+        192,
+        200,
+        191,
+        200,
+        196
+      ]
+    }
+  },
+  "model_bytes": 188437,
+  "model_path": "C:\\Users\\nay92\\Desktop\\kaggriculture-il\\models\\macro.json"
+}

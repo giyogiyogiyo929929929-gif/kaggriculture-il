@@ -1,0 +1,14 @@
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+対戦: C:/Users/nay92/AppData/Local/Temp/claude/c--Users-nay92-Desktop-kaggriculture-il/8d2df56d-233e-406c-97e3-093c1875a7ca/scratchpad/public_agents/v16rc5.py vs baselines/v2_agent.py   ペア数 20（40試合、-j 4）
+勝敗          : 20勝 0敗 0分（ペア単位）
+ペア差        : +80,372 ± 3,804（平均 ± 標準誤差）
+最終所持金    : A 中央値 121,810 / B 中央値 36,240
+1ターン推論   : A 中央値 0.1ms 最悪 14.9ms / B 中央値 1.1ms 最悪 128.9ms
+例外          : A 0件 / B 0件
+健全性(A)     : 植え付け 192 → 収穫 182 / 損失 5（水切れ 0 + 未収穫 5／寿命終了 5 は正常）/ 家畜逃走 0 / 最終shed 0
+健全性(B)     : 植え付け 69 → 収穫 43 / 損失 0（水切れ 0 + 未収穫 0／寿命終了 11 は正常）/ 家畜逃走 0 / 最終shed 29
+所要時間      : 69.6秒
+JSON          : data\eval\pub_v16rc5_vs_v2.json

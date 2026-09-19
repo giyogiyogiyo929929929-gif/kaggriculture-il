@@ -1,0 +1,13 @@
+対象: C:\Users\nay92\Desktop\kaggriculture-il\submissions\v5_race\main.py
+[OK  ] 提出物が揃っている … 1項目、合計 859,536 bytes
+[OK  ] main.py の最後の関数が _kil_safe_agent … 最後の関数: _kil_safe_agent
+[OK  ] Kaggle と同じ方法で読み込める … 最後の callable: _kil_safe_agent
+[OK  ] 標準ライブラリと自前モジュールだけを import している … 外部ライブラリなし
+[OK  ] 模倣モデルの有無 … main.py は模倣モデルを使っていない（models/ は同梱しない）
+[OK  ] 行動の形式が正しい … {'farmer': ['PASS'], 'hands': [], 'market': []}
+[OK  ] 壊れた観測でも落ちない … 5パターン確認
+[OK  ] 1ターンの推論が最悪 200ms・99%点 50ms 未満で完走する … 中央値 0.77ms / 99%点 7.22ms / 最悪 51.11ms / status DONE
+
+すべて通った。
+作成: submissions\v5_race\submission.tar.gz（525,874 bytes）
+中身: main.py

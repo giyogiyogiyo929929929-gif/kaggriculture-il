@@ -1,0 +1,15 @@
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+対戦: submissions/v16rc5/main.py vs starter   ペア数 20（40試合、-j 4）
+勝敗          : 20勝 0敗 0分（ペア単位）
+ペア差        : +152,948 ± 5,136（平均 ± 標準誤差）
+最終所持金    : A 中央値 155,876 / B 中央値 3,536
+1ターン推論   : A 中央値 0.1ms 最悪 101.4ms / B 中央値 0.0ms 最悪 0.0ms
+例外          : A 0件 / B 0件
+健全性(A)     : 植え付け 192 → 収穫 182 / 損失 5（水切れ 0 + 未収穫 5／寿命終了 5 は正常）/ 家畜逃走 0 / 最終shed 0
+健全性(B)     : 植え付け 10 → 収穫 9 / 損失 0（水切れ 0 + 未収穫 0／寿命終了 0 は正常）/ 家畜逃走 0 / 最終shed 0
+※ A の推論時間が 50ms を超えている（05 §4）。-j 1 で測り直すこと
+所要時間      : 41.5秒
+JSON          : data\eval\v16rc5_vs_starter.json

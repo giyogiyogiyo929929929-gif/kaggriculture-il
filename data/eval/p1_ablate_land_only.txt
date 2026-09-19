@@ -1,0 +1,14 @@
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+対戦: C:/Users/nay92/AppData/Local/Temp/claude/c--Users-nay92-Desktop-kaggriculture-il/8d2df56d-233e-406c-97e3-093c1875a7ca/scratchpad/ablate_land_only.py vs baselines/v2_agent.py   ペア数 20（40試合、-j 4）
+勝敗          : 7勝 13敗 0分（ペア単位）
+ペア差        : -1,552 ± 1,265（平均 ± 標準誤差）
+最終所持金    : A 中央値 55,855 / B 中央値 54,830
+1ターン推論   : A 中央値 1.5ms 最悪 9.1ms / B 中央値 1.5ms 最悪 7.6ms
+例外          : A 0件 / B 0件
+健全性(A)     : 植え付け 61 → 収穫 35 / 損失 0（水切れ 0 + 未収穫 0／寿命終了 18 は正常）/ 家畜逃走 1 / 最終shed 31
+健全性(B)     : 植え付け 64 → 収穫 39 / 損失 0（水切れ 0 + 未収穫 0／寿命終了 12 は正常）/ 家畜逃走 0 / 最終shed 33
+所要時間      : 93.4秒
+JSON          : data\eval\p1_ablate_land_only.json

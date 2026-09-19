@@ -1,0 +1,42 @@
+[
+  {
+    "name": "提出物が揃っている",
+    "ok": true,
+    "detail": "1項目、合計 863,730 bytes"
+  },
+  {
+    "name": "main.py の最後の関数が _kil_safe_agent",
+    "ok": true,
+    "detail": "最後の関数: _kil_safe_agent"
+  },
+  {
+    "name": "Kaggle と同じ方法で読み込める",
+    "ok": true,
+    "detail": "最後の callable: _kil_safe_agent"
+  },
+  {
+    "name": "標準ライブラリと自前モジュールだけを import している",
+    "ok": true,
+    "detail": "外部ライブラリなし"
+  },
+  {
+    "name": "模倣モデルの有無",
+    "ok": true,
+    "detail": "main.py は模倣モデルを使っていない（models/ は同梱しない）"
+  },
+  {
+    "name": "行動の形式が正しい",
+    "ok": true,
+    "detail": "{'farmer': ['PASS'], 'hands': [], 'market': []}"
+  },
+  {
+    "name": "壊れた観測でも落ちない",
+    "ok": true,
+    "detail": "5パターン確認"
+  },
+  {
+    "name": "1ターンの推論が最悪 200ms・99%点 50ms 未満で完走する",
+    "ok": true,
+    "detail": "中央値 1.08ms / 99%点 9.21ms / 最悪 68.10ms / status DONE"
+  }
+]

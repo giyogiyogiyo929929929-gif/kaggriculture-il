@@ -1,0 +1,12 @@
+Loading environment open_spiel_env failed: No module named 'pyspiel'
+対戦: submissions/v16rc5/main.py vs baselines/v2_agent.py   ペア数 5（10試合、-j 1）
+勝敗          : 5勝 0敗 0分（ペア単位）
+ペア差        : +79,260 ± 7,185（平均 ± 標準誤差）
+最終所持金    : A 中央値 129,324 / B 中央値 44,878
+1ターン推論   : A 中央値 0.1ms 最悪 65.4ms / B 中央値 0.8ms 最悪 65.7ms
+例外          : A 0件 / B 0件
+健全性(A)     : 植え付け 193 → 収穫 182 / 損失 5（水切れ 0 + 未収穫 5／寿命終了 5 は正常）/ 家畜逃走 0 / 最終shed 0
+健全性(B)     : 植え付け 70 → 収穫 43 / 損失 0（水切れ 0 + 未収穫 0／寿命終了 11 は正常）/ 家畜逃走 0 / 最終shed 29
+※ A の推論時間が 50ms を超えている（05 §4）。-j 1 で測り直すこと
+所要時間      : 43.9秒
+JSON          : data\eval\v16rc5_vs_v2_j1.json

@@ -1,0 +1,523 @@
+{
+  "agents": [
+    "main.py",
+    "starter"
+  ],
+  "pairs": 5,
+  "matches": 10,
+  "jobs": 4,
+  "episode_steps": null,
+  "wins": 5,
+  "losses": 0,
+  "draws": 0,
+  "pair_diff_mean": 58913.3,
+  "pair_diff_stderr": 2193.8795750906656,
+  "money_median": [
+    63793.0,
+    3605.0
+  ],
+  "timings": {
+    "a": {
+      "median": 0.0016538000054424629,
+      "max": 0.017252599995117635
+    },
+    "b": {
+      "median": 0.0,
+      "max": 0.0
+    }
+  },
+  "exceptions": {
+    "a": 0,
+    "b": 0
+  },
+  "health": {
+    "a": {
+      "planted": 54,
+      "harvested": 31,
+      "withered": 14,
+      "weed_spawned": 8,
+      "animals_lost": 4,
+      "shed_final": 30
+    },
+    "b": {
+      "planted": 10,
+      "harvested": 9,
+      "withered": 0,
+      "weed_spawned": 3,
+      "animals_lost": 0,
+      "shed_final": 0
+    }
+  },
+  "matches_detail": [
+    {
+      "seed": 1,
+      "swap": false,
+      "steps": 720,
+      "money": [
+        55168.0,
+        4989.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0014381999790202826,
+          "max": 0.01019499998074025
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 41,
+          "harvested": 30,
+          "withered": 7,
+          "weed_spawned": 12,
+          "animals_lost": 4,
+          "shed_final": 29
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 4,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 1,
+      "swap": true,
+      "steps": 720,
+      "money": [
+        55188.0,
+        4989.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0014207000203896314,
+          "max": 0.005814400006784126
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 41,
+          "harvested": 30,
+          "withered": 7,
+          "weed_spawned": 13,
+          "animals_lost": 4,
+          "shed_final": 29
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 3,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 2,
+      "swap": false,
+      "steps": 720,
+      "money": [
+        59798.0,
+        3526.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0016232999914791435,
+          "max": 0.017252599995117635
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 45,
+          "harvested": 30,
+          "withered": 9,
+          "weed_spawned": 8,
+          "animals_lost": 4,
+          "shed_final": 29
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 3,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 2,
+      "swap": true,
+      "steps": 720,
+      "money": [
+        71076.0,
+        3526.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.001499100006185472,
+          "max": 0.006332099990686402
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 49,
+          "harvested": 31,
+          "withered": 8,
+          "weed_spawned": 9,
+          "animals_lost": 4,
+          "shed_final": 29
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 2,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 3,
+      "swap": false,
+      "steps": 720,
+      "money": [
+        64035.0,
+        3605.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0018991000251844525,
+          "max": 0.0059624999994412065
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 67,
+          "harvested": 34,
+          "withered": 25,
+          "weed_spawned": 3,
+          "animals_lost": 4,
+          "shed_final": 26
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 6,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 3,
+      "swap": true,
+      "steps": 720,
+      "money": [
+        64035.0,
+        3605.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0018471000075805932,
+          "max": 0.006163699988974258
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 67,
+          "harvested": 34,
+          "withered": 25,
+          "weed_spawned": 2,
+          "animals_lost": 4,
+          "shed_final": 26
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 7,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 4,
+      "swap": false,
+      "steps": 720,
+      "money": [
+        65592.0,
+        3537.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.001865500002168119,
+          "max": 0.006006200012052432
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 66,
+          "harvested": 33,
+          "withered": 25,
+          "weed_spawned": 5,
+          "animals_lost": 4,
+          "shed_final": 26
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 3,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 4,
+      "swap": true,
+      "steps": 720,
+      "money": [
+        63551.0,
+        3537.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0019118000054731965,
+          "max": 0.00548930000513792
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 67,
+          "harvested": 34,
+          "withered": 25,
+          "weed_spawned": 4,
+          "animals_lost": 4,
+          "shed_final": 25
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 4,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 5,
+      "swap": false,
+      "steps": 720,
+      "money": [
+        61291.0,
+        3799.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0016680000117048621,
+          "max": 0.005104600015329197
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 50,
+          "harvested": 30,
+          "withered": 6,
+          "weed_spawned": 12,
+          "animals_lost": 4,
+          "shed_final": 41
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 3,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    },
+    {
+      "seed": 5,
+      "swap": true,
+      "steps": 720,
+      "money": [
+        68210.0,
+        3698.0
+      ],
+      "timings": {
+        "a": {
+          "median": 0.0016395999991800636,
+          "max": 0.008227099984651431
+        },
+        "b": {
+          "median": 0.0,
+          "max": 0.0
+        }
+      },
+      "exceptions": {
+        "a": 0,
+        "b": 0
+      },
+      "health": {
+        "a": {
+          "planted": 49,
+          "harvested": 30,
+          "withered": 6,
+          "weed_spawned": 13,
+          "animals_lost": 4,
+          "shed_final": 41
+        },
+        "b": {
+          "planted": 10,
+          "harvested": 9,
+          "withered": 0,
+          "weed_spawned": 2,
+          "animals_lost": 0,
+          "shed_final": 0
+        }
+      },
+      "statuses": [
+        "D",
+        "O",
+        "N",
+        "E"
+      ]
+    }
+  ]
+}
