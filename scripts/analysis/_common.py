@@ -21,7 +21,7 @@ from kaggle_environments import make  # noqa: E402
 from scripts import preflight  # noqa: E402
 
 # リプレイの TeamNames に出る自分側の名前（チーム結成の前後で変わる。doc 06）
-ME_NAMES = ("giyogoio hlrlqll", "giyogoioがすべてのエージェントを破壊します")
+ME_NAMES = ("giyogoio hlrlqll", "giyogoioが相手の農地を燃やします", "giyogoioがすべてのエージェントを破壊します")
 ITEMS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
 
 

@@ -77,6 +77,7 @@ AGENTS.md / CLAUDE.md には作業ルールと索引だけを書き、仕様の�
 | `docs/06_submission.md` | 提出手順・提出前チェック・有効な2枠・チーム |
 | `docs/07_v4_improvement.md` | v4（公開 v9/4）を土台にした改善の計画（銅メダル） |
 | `docs/08_competition_rules.md` | コンペの概要とルールの日本語まとめ・締め切り（10/1 09:00 JST） |
+| `docs/handover.md` | **直近の引き継ぎ書**（誰が・どこまで・次に何を・未確認のこと。作業を始める前に読む） |
 | `docs/roadmap.md` | フェーズとタスクの状態 |
 | `docs/adr/` | 設計判断の記録（`_template.md` あり） |
 | `docs/experiments/` | 実験ログ（`_template.md` あり） |

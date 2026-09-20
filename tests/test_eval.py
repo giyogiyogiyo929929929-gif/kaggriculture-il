@@ -150,6 +150,54 @@ def test_single_argument_agent_is_called_like_kaggle(tmp_path):
     assert result["exceptions"]["a"] == 0
 
 
+def test_entry_is_last_callable_value_not_last_def(tmp_path):
+    """Kaggle と同じく「最後の callable **な値**」を使う（doc 05 §1.1、doc 06「仕様」）。
+
+    以前は ast で「最後に def された関数」を選んでいたため、agent の後ろに補助関数を定義する
+    公開エージェント（opponents\\v38・v43）で補助関数が呼ばれ、何もしないまま試合が終わっていた
+    （EXP-20260920-20）。
+    """
+    path = tmp_path / "helper_after_agent.py"
+    path.write_text(
+        "def _entry(obs, config=None):\n"
+        "    return {'farmer': ['PASS'], 'hands': [], 'market': [['BUY_SEED', 'WHEAT', 1]]}\n"
+        "\n"
+        "\n"
+        "def _helper(x):\n"
+        "    return x\n"
+        "\n"
+        "\n"
+        "agent = _entry\n",
+        encoding="utf-8",
+    )
+    # 最後の def は `_helper` だが、名前空間に最後に入る callable な値は `agent`（= `_entry`）
+    assert evaluation.resolve_agent(str(path)).__name__ == "_entry"
+
+
+def test_multi_file_agent_can_import_sibling(tmp_path):
+    """main.py のあるフォルダを sys.path に入れる（Kaggle と同じ。doc 06「仕様」）。
+
+    複数ファイルのエージェント（opponents\\gods_mode）が ModuleNotFoundError になっていた
+    （EXP-20260920-18）。
+    """
+    (tmp_path / "helper_mod.py").write_text(
+        "def make_action():\n"
+        "    return {'farmer': ['PASS'], 'hands': [], 'market': []}\n",
+        encoding="utf-8",
+    )
+    path = tmp_path / "main.py"
+    path.write_text(
+        "from helper_mod import make_action\n"
+        "\n"
+        "\n"
+        "def agent(obs, config=None):\n"
+        "    return make_action()\n",
+        encoding="utf-8",
+    )
+    result = evaluation.play_match(str(path), "starter", seed=1, swap=False, episode_steps=SHORT)
+    assert result["exceptions"]["a"] == 0
+
+
 def test_json_output(tmp_path):
     out = tmp_path / "result.json"
     code = evaluation.main([

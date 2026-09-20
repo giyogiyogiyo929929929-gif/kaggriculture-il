@@ -20,13 +20,23 @@
 | 指定 | 意味 |
 |---|---|
 | `starter` / `random` / `pass` | `kaggle_environments` の組み込み（`kaggriculture.py` の `agents`） |
-| `main.py` などのパス | そのファイルを読み込み、**最後に定義された callable** を使う（提出時と同じ規則。06） |
+| `main.py` などのパス | そのファイルを読み込み、**名前空間の中で最後に現れた callable な値**を使う（提出時と同じ規則。06） |
 
 - ★**呼び出すときの引数も Kaggle 本体と同じにする**（2026-09-19 修正）。Kaggle は
   `args = [observation, configuration][: agent.__code__.co_argcount]` で、関数の引数の数に合わせて切り詰める
   （`kaggle_environments/agent.py` 151〜153行・171〜172行で確認）。以前の `eval.py` は常に2つ渡していたため、
   `agent(obs)` と定義された公開エージェント2本が毎ターン `TypeError` になり、「一度も行動しない」と誤評価していた
   （EXP-20260919-10）。`_TimedAgent` で同じ切り詰めをする。回帰テスト `test_single_argument_agent_is_called_like_kaggle`。
+- ★**エントリは「最後に def された関数」ではなく「最後の callable な値」**（2026-09-20 修正）。
+  Kaggle の `get_last_callable` は名前空間の値を見る（doc 06「仕様」）。以前の `eval.py` は ast で最後の `def` を選んでいたため、
+  agent を末尾の代入（`agent = _entry`）で作る公開エージェント（`opponents\v38`・`v43`）で補助関数を呼んでしまい、
+  **相手が何もしないまま試合が終わっていた**（EXP-20260920-20）。手元58本のうち食い違うのはこの2本だけで、他の結果に影響は無い。
+  回帰テスト `test_entry_is_last_callable_value_not_last_def`。
+- ★**読み込むときは、そのファイルのあるフォルダを `sys.path` に入れる**（2026-09-20 修正）。Kaggle は `main.py` の
+  ディレクトリを `sys.path` に追加する（doc 06「仕様」）ので、**複数ファイルのエージェント**は `from base_agent import ...`
+  のように隣のファイルを import できる。以前の `resolve_agent` はこれをしておらず、`opponents\gods_mode`（4ファイル）が
+  `ModuleNotFoundError` で評価できなかった（EXP-20260920-18）。`scripts\preflight.py` の `load_like_kaggle` は元から入れていた。
+  回帰テスト `test_multi_file_agent_can_import_sibling`。
 
 ### 1.2 実行時間と並列実行
 
@@ -189,6 +199,7 @@ EXP-20260919-11〜17 でスクラッチパッドに作って繰り返し使っ�
 | `eval_compare.py` | `eval.py` の JSON を試合単位で集計・2つの版を比較（所持金の完全一致数） | `eval_compare.py data\eval\v7 data\eval\v6` |
 | `timing.py` | 1プロセスで1ターンの推論時間（中央値・p99・最悪） | `timing.py <自分> <相手> 71 75` |
 | `extract_notebook_agents.py` | 公開ノートブックから main.py を取り出す（**セルは実行しない**。ast でリテラルだけ読む） | `extract_notebook_agents.py <nb_dir> <out_dir>` |
+| `money_trace.py` | 1試合の所持金差を日ごと・ステップごとに追う（差がどこで開くか） | `money_trace.py submissions\v10_de\main.py opponents\v51\main.py 242` |
 | `audit_agent.py` | 埋め込みソースまで再帰的に、危ない import・呼び出しを探す（実行しない） | `audit_agent.py opponents\v50\main.py` |
 
 - 実行は `.venv\Scripts\python.exe scripts\analysis\<名前>.py ...`。出力の文字化けは `set PYTHONIOENCODING=utf-8`。

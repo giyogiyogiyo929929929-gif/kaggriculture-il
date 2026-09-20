@@ -49,16 +49,26 @@ def resolve_agent(spec: str):
         path = (ROOT / spec).resolve()
     if not path.exists():
         raise FileNotFoundError(f"エージェントが見つからない: {spec}")
-    name = _last_callable_name(path.read_text(encoding="utf-8"))
-    if name is None:
-        raise ValueError(f"callable が定義されていない: {path}")
     module_spec = importlib.util.spec_from_file_location(f"_eval_agent_{path.stem}", path)
     module = importlib.util.module_from_spec(module_spec)
     sys.modules[module_spec.name] = module
-    module_spec.loader.exec_module(module)
-    agent = getattr(module, name)
-    if not callable(agent):
-        raise ValueError(f"{name} は callable ではない: {path}")
+    # Kaggle は main.py のあるディレクトリを sys.path に入れる（doc 06「仕様」）。
+    # 複数ファイルのエージェント（例：opponents\gods_mode）はここが無いと import に失敗する。
+    sys.path.insert(0, str(path.parent))
+    try:
+        module_spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(path.parent))
+    # ★ Kaggle が選ぶのは「名前空間の中で最後に現れた callable **な値**」であって、
+    #   「最後に def された関数」ではない（doc 06「仕様」、`preflight.load_like_kaggle` と同じ規則）。
+    #   両者が食い違うエージェントがある（opponents\v38・v43 は最後の def が補助関数で、
+    #   そちらを呼ぶと何もしないまま試合が終わる。EXP-20260920-20）。
+    agent = None
+    for value in vars(module).values():
+        if callable(value):
+            agent = value
+    if agent is None:
+        raise ValueError(f"callable が1つも無い: {path}")
     return agent
 
 
