@@ -14,7 +14,7 @@
 4. `docs/06_submission.md`（提出履歴と有効枠の現状）
 
 作業を始める前に `git status` と `git log --oneline -5` を必ず見ること（AGENTS.md §0.1）。
-**このセッションの成果はすべて未コミット。** 勝手に戻さないこと。
+**このセッションの成果は `89b8397` としてコミットずみ**（main、2026-09-20 22:28 JST）。作業ツリーに残しているのは `data/raw/own_v7/`（コミットしない生データ）だけ。
 
 ---
 
@@ -105,11 +105,12 @@
 
 ---
 
-## 4. 未コミットの変更（すべてこのセッションの成果）
+## 4. コミットした内容（`89b8397`）
 
 - **変更**：`docs/05_evaluation.md`（§8 に `money_trace.py` を追加）、`docs/06_submission.md`（v10 の提出履歴・有効枠）、
   `docs/07_v4_improvement.md`（候補D Approved→実装、候補E Implemented、候補F Rejected、§9 提出版 v10）、`docs/roadmap.md`（3-11・3-14・3-16・3-17・3-18）
-  ※ `scripts/analysis/_common.py`・`scripts/eval.py`・`tests/test_eval.py` の変更は**このセッションより前のもの**（前の作業者の未コミット分）。触っていない。
+  ※ `scripts/analysis/_common.py`・`scripts/eval.py`・`tests/test_eval.py` の変更は**このセッションより前の作業分**（EXP-20 のエントリ選びの修正）。
+    中身は触っていないが、未コミットのまま残さないよう同じコミットに含めた。
 - **新規（コード）**：`scripts/build_v9_reorder.py`・`build_v10_de.py`・`build_v11_preguard.py`・`build_v12_v51safe.py`・`build_v13_v51copy.py`、
   `scripts/analysis/money_trace.py`、`tests/test_v9_reorder.py`・`test_v10_de.py`・`test_v12_v51safe.py`
 - **新規（提出物）**：`submissions/v9_reorder/`・`v10_de/`（**提出ずみ**）・`v11_fe/`（Rejected）・`v12_v51safe/`・`v13_v51copy/`
@@ -118,6 +119,8 @@
 - **新規（データ）**：`data/eval/v9・v10・v11・v51・metav4/` ほか56ファイル
 
 テストは **223件すべて合格**（`.venv\Scripts\python.exe -m pytest tests`）。
+
+**コミットしていないもの**：`__pycache__`（67件。`.gitignore` が無いので既に追跡されているものがある）と `data/raw/own_v7/`（生リプレイ）。
 
 ---
 
