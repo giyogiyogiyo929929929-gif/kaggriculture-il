@@ -1,0 +1,10 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# 取得データ・評価結果・monitor/logはローカルに保持する。
+/data/
+
+# 提出tarは再生成でき、GitHubにはmain.pyとSOURCE.mdだけを置く。
+/submissions/*/submission.tar.gz

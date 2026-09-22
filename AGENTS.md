@@ -1,143 +1,87 @@
-# AGENTS.md — Kaggriculture エージェント開発（Claude Code / Codex 共通の作業ルール）
+# AGENTS.md — Kaggriculture 共通作業ルール
 
-このファイルが**作業ルールの正**。Claude Code は `CLAUDE.md` から、Codex はこのファイルを直接読む。
-ルールを変えるときはこのファイルだけを直す（`CLAUDE.md` には Claude 固有のことだけを書く）。
+このファイルが Claude Code / Codex 共通ルールの正。Claude は `CLAUDE.md` 経由、Codex は直接読む。共通ルールはここだけを直し、`CLAUDE.md` には Claude 固有事項だけを書く。
 
-## 0. 返答とユーザー
+## 0. ユーザー・競技運用
 
-- **ユーザーへの返答・説明・doc はすべて日本語で書く。**（コード中の識別子、コミットメッセージ、提出メッセージは英語でよい）
-- ユーザーは短い返事（「いいよ」「はい」「お願い」）で承認する。
-- **Kaggle への提出（`kaggle competitions submit`）はユーザーが自分で実行する。** エージェントは提出コマンドを示すだけ。
-- 公開対戦・評価の分析では、**負けた試合だけでなく勝った試合も調べ、「なぜ勝てたか」をデータで確かめる。**
-- **チーム戦（2026-09-20〜）**：k256net とチーム（「giyogoioがすべてのエージェントを破壊します」）。
-  有効な2枠と1日5本の提出上限はチームで共有する。提出を勧める前に、どの提出が外れるかを必ず示す（`docs/06_submission.md`）。
-- **最終提出の締め切り：2026-10-01 09:00 JST（正確には 09-30 23:59 UTC ＝ 10-01 08:59 JST）。**（`docs/08_competition_rules.md`）
+- 返答・説明・doc は日本語（コード識別子、コミット／提出メッセージは英語可）。「いいよ」「はい」「お願い」など短い返事も承認として扱う。
+- **Kaggle 提出（`kaggle competitions submit`）はユーザーだけが行う。** エージェントはコマンド提示まで。
+- 公開対戦は勝敗双方を調べ、勝因・敗因をデータで確認する。
+- 2026-09-20以降は k256net とのチーム「giyogoioがすべてのエージェントを破壊します」。有効2枠・1日5提出を共有するため、提出提案時は外れる提出を示す（`docs/06_submission.md`）。
+- 締切は **2026-10-01 09:00 JST**（正確には 09-30 23:59 UTC＝10-01 08:59 JST、`docs/08_competition_rules.md`）。
 
-## 0.1 Claude Code と Codex の引き継ぎ
+## 1. 作業開始・引き継ぎ
 
-このフォルダは Claude Code と Codex の両方で作業する。お互いの会話の記憶は見えないので、**引き継ぎはファイルだけで行う。**
+会話記憶は共有されないため、Claude/Codex間の引き継ぎはファイルだけで行う。
 
-1. **同時に作業しない。** 片方が作業している間、もう片方は同じフォルダを編集しない（読むだけならよい）。
-2. **作業を始めるとき**：`git status` と `git log --oneline -5` で、前の作業の未コミットの変更と最近のコミットを確認する。
-   未コミットの変更は前の作業の途中なので、**勝手に戻したり上書きしたりしない**（分からなければユーザーに聞く）。
-   次に `docs/roadmap.md` と対象タスクの doc を読む。
-3. **作業を終えるとき（途中で止めるときも）**：`docs/roadmap.md` の該当タスクの状態欄に、
-   「どこまでやったか・次に何をするか・未確認のこと」を日付つきで書く。実験なら `docs/experiments/` にも書く。
-   会話の中にしか無い結論を残さない。
-4. 一時ファイル・使い捨てスクリプトはリポジトリの外（各ツールの作業用フォルダ）に置く。繰り返し使うものだけ `scripts\analysis\` に足す。
-5. **コミット・プッシュはユーザーが指示したときだけ。** コミットメッセージにどちらのツールで作業したかを書く（例：`[codex]`、`[claude]`）。
+1. 同時編集しない（他方の作業中は閲覧のみ）。
+2. 開始時に `git status`、`git log --oneline -5`、`docs/roadmap.md`、対象docを読む。未コミット変更は途中作業として保護し、勝手に戻す／上書きしない。不明ならユーザーに確認する。
+3. 終了・中断時はroadmapと、必要なら`docs/experiments/`へ、日付つきで「完了範囲・次・未確認」を残す。会話だけに結論を残さない。
+4. 一時物はリポジトリ外へ。再利用する分析だけを`scripts\analysis\`へ置く。
+5. コミット／pushはユーザー指示時だけ。メッセージに`[codex]`または`[claude]`を付ける。
 
-## 1. このリポジトリは「ドキュメント駆動開発」で進める
+## 2. ドキュメント駆動開発
 
-**仕様の正（source of truth）は `docs/` にある。コードはドキュメントの実装にすぎない。**
-AGENTS.md / CLAUDE.md には作業ルールと索引だけを書き、仕様の中身は docs に書く。
+仕様の正は`docs/`で、コードはその実装。AGENTS/CLAUDEにはルールと索引だけを書く。
 
-### 鉄則
+- 新機能・仕様変更はdocを先に作成／更新し、ユーザー承認で`Approved`になってから実装する。`Draft`は実装不可。
+- 仕様とのズレ・不明点が出たら実装で補わず、doc更新→再承認。推測は書かず、実データで確認する。未確認は`TODO(要確認)`。
+- 受け入れテスト→実装→全条件確認→docを`Implemented`（実装パス・テスト方法・判明事実を追記）→roadmap更新、の順に進める。
+- 小さなbug/typoは事前doc・承認を省略可。ただし挙動が変わるならdocも直す。
+- 重要判断は`docs/adr/`へ。過去ADRは書き換えず、新ADRで`Superseded`にする。実験は悪い結果も`docs/experiments/`へ残す。
+- docヘッダ：`状態: Draft | Approved | Implemented | Deprecated`、`最終更新: YYYY-MM-DD`、`関連: ...`。
 
-1. **ドキュメントより先にコードを書かない。** 新機能・仕様変更は、まず該当する docs を作成／更新する。
-2. **状態が `Approved` のドキュメントだけを実装してよい。** `Draft` のまま実装を始めない。承認はユーザーが行う（エージェントは「Approved にしてよいか」を確認する）。
-3. **実装中に仕様とのズレや不明点が出たら、コードで勝手に解決せず、作業を止めて docs を更新 → 再承認。**
-4. 実装が終わったら、docs の状態を `Implemented` にし、実装ファイルへのパスとテスト方法を追記する。
-5. **推測で仕様を書かない。** リプレイ形式・CSV 列名などは実データを確認し、確認済みの事実として docs に書く。未確認のものは `TODO(要確認)` と明記する。
-6. 重要な設計判断は `docs/adr/` に ADR として残す。過去の ADR は書き換えず、覆すときは新しい ADR で `Superseded` にする。
-7. 実験（学習・評価）は結果が悪くても `docs/experiments/` に記録する。
+### 索引
 
-### 1タスクの流れ
-
-```
-① 対象 doc を読む／なければテンプレから作る（状態: Draft）
-② ユーザーにレビュー依頼 → 承認されたら Approved
-③ doc の「受け入れ条件」を満たすテストを先に書く
-④ 実装
-⑤ 受け入れ条件を全部確認
-⑥ doc を Implemented に更新（実装パス・コマンド・判明した事実を追記）
-⑦ docs/roadmap.md のタスク状態を更新
-```
-
-小さなバグ修正や typo は①②を省略してよいが、挙動が変わるなら docs も直す。
-
-### ドキュメントのヘッダ（全 doc 共通）
-
-```
-状態: Draft | Approved | Implemented | Deprecated
-最終更新: YYYY-MM-DD
-関連: 他の doc / ADR へのリンク
-```
-
-## 2. ドキュメント索引
-
-| doc | 内容 |
+| パス | 内容 |
 |---|---|
-| `docs/00_overview.md` | 目的・スコープ・用語集 |
-| `docs/01_requirements.md` | 機能要件・非機能要件・制約 |
-| `docs/02_data_pipeline.md` | 上位50チームのリプレイ取得仕様 |
-| `docs/03_replay_schema.md` | リプレイ JSON の構造（実データ確認後に確定） |
-| `docs/04_model_design.md` | 模倣学習の設計（特徴量・行動表現・モデル） |
-| `docs/05_evaluation.md` | 評価方法・合格基準 |
-| `docs/06_submission.md` | 提出手順・提出前チェック・有効な2枠・チーム |
-| `docs/07_v4_improvement.md` | v4（公開 v9/4）を土台にした改善の計画（銅メダル） |
-| `docs/08_competition_rules.md` | コンペの概要とルールの日本語まとめ・締め切り（10/1 09:00 JST） |
-| `docs/handover.md` | **直近の引き継ぎ書**（誰が・どこまで・次に何を・未確認のこと。作業を始める前に読む） |
-| `docs/roadmap.md` | フェーズとタスクの状態 |
-| `docs/adr/` | 設計判断の記録（`_template.md` あり） |
-| `docs/experiments/` | 実験ログ（`_template.md` あり） |
+| `docs/00_overview.md` | 目的・スコープ・用語 |
+| `docs/01_requirements.md` | 要件・制約 |
+| `docs/02_data_pipeline.md` | 上位50チームのリプレイ取得 |
+| `docs/03_replay_schema.md` | リプレイJSON構造（実データ確認後に確定） |
+| `docs/04_model_design.md` | 模倣学習設計 |
+| `docs/05_evaluation.md` | 評価方法・合格基準・分析ツール一覧（§8） |
+| `docs/06_submission.md` | 提出・事前確認・有効2枠・チーム |
+| `docs/07_v4_improvement.md` | 公開v9/4ベースの改善計画 |
+| `docs/08_competition_rules.md` | 競技ルール・締切・ライセンス（§5） |
+| `docs/handover.md` | 直近の引き継ぎ |
+| `docs/roadmap.md` | タスク状態 |
+| `docs/adr/`, `docs/experiments/` | 設計判断・実験ログ（各`_template.md`あり） |
 
-**作業を始める前に、必ず `docs/roadmap.md` と対象タスクの doc を読むこと。**
+## 3. 環境・構成
 
-## 3. 開発環境
-
-- OS は Windows。**ユーザーに示すシェルコマンドはすべてコマンドプロンプト（cmd）構文**（パス区切り `\`、環境変数 `%VAR%`）。
-- GPU なしのノートPC。重い学習は Kaggle Notebook で回す。
-- 仮想環境は `.venv`。
+- Windows、GPUなし。重い学習はKaggle Notebook。仮想環境は`.venv`。
+- ユーザー向けコマンドはcmd構文（`\`、`%VAR%`）で示す。
 
 ```cmd
 python -m venv .venv
 .venv\Scripts\activate
 pip install -U kaggle kaggle-environments numpy pandas scikit-learn lightgbm tqdm pytest
+.venv\Scripts\python.exe -m pytest tests
 ```
 
-- Kaggle 認証情報は `%USERPROFILE%\.kaggle\kaggle.json`。**コミット禁止。**
-- テスト：`.venv\Scripts\python.exe -m pytest tests`
-- 対戦評価：`scripts\eval.py`（doc 05 §1）。公開対戦の分析・相手の特定・台帳・公開ノートブックの取り込みは
-  `scripts\analysis\`（使い方の一覧は doc 05 §8）。使い捨ての分析はリポジトリの外に置き、繰り返し使うものだけここに足す。
-- コンペのページ（概要・規約・遊び方）は CLI で読める（コンペ名を2回書くのが必要）：
-  `.venv\Scripts\kaggle.exe competitions pages kaggriculture list kaggriculture --content --format json`
+- Kaggle認証は`%USERPROFILE%\.kaggle\kaggle.json`（コミット禁止）。
+- 対戦は`scripts\eval.py`（doc 05 §1）、公開対戦分析・相手特定・台帳・公開notebook取込は`scripts\analysis\`。
+- コンペページ取得：`.venv\Scripts\kaggle.exe competitions pages kaggriculture list kaggriculture --content --format json`（コンペ名は2回必要）。
+- 主要構成：`docs/`仕様、`agent/`自作実行層、`submissions/`版別提出物（`main.py`・tar・SHA付き`SOURCE.md`）、`opponents/`手元評価専用、`scripts/`処理群、`tests/`、`data/`、`models/`、`baselines/`。ルート`main.py`は旧v2で現提出物ではない。`data/raw`と`data/dataset`はコミットしない。
+- 各script/moduleの先頭docstringに対応docのパス・節を書く。
 
-## 4. ディレクトリ構成
+## 4. 安全・評価・ファイル管理
 
-```
-kaggriculture-il/
-├─ AGENTS.md        # 作業ルールの正（Claude / Codex 共通）
-├─ CLAUDE.md        # Claude Code 用の入口（AGENTS.md を読み込む）
-├─ docs/            # 仕様（正）
-├─ main.py          # 初期の自作エージェント（v2。今の提出物ではない）
-├─ agent/           # 特徴量化・行動デコード・ルール実行層（自作版）
-├─ submissions/     # 提出物。版ごとに main.py・submission.tar.gz・SOURCE.md（SHA-256）
-├─ opponents/       # 手元評価用の公開エージェント（提出物には入れない）
-├─ baselines/
-├─ scripts/         # 取得・変換・学習・評価・組み立てスクリプト
-├─ tests/
-├─ data/            # meta/ raw/ digest/ dataset/ eval/（raw と dataset はコミットしない）
-└─ models/
-```
+- **今後絶対に使わないと断定できるファイルだけ削除可。** 再利用・検証・監査・再現・引き継ぎの可能性が少しでもある／判断不能なら残す。
+- 長時間処理は少量（例：2チーム×2エピソード）で確認後に全量実行する。CPUを使う評価・テストは重ねず、時間計測への干渉を避ける。
+- **対戦・評価は非表示バックグラウンドrunnerで実行し、結果JSON・ログ・monitor JSONを出す。必ず独立watcherも同時起動し、監視なしの孤立処理を作らない。**
+- バックグラウンド処理の起動・正常停止・異常停止は、JST時刻・処理名・PIDつきで`data\automation\background-processes.log`へ追記する（共通部品：`scripts\background_log.py`）。
+- 複数段階が決まっている場合は、先行結果で合否判定・記録・安全な次段階へ遷移する1つの監視付きrunnerにまとめる。
+- 起動後、AIは`Wait-Process`、sleep、定期ポーリングを行わず、そのターンを終了してユーザーへ制御を返す。次のユーザー指示時にmonitor/watcherを読み、完了済みなら直ちに次工程へ進む。ユーザーが明示的に待機・継続監視を頼んだ場合のみ待つ。実行中も低負荷の会話・閲覧・編集は可。
+- 認証情報・生リプレイ・大容量データはコミットしない。提出前は`docs/06_submission.md`のチェックリストを通す。
+- `submissions\thomas_v94\main.py`（公開v9/4原本、Apache-2.0）は変更禁止。改良は末尾層とし、先頭バイト一致をテストする（例：`tests\test_v7_relax.py`）。
+- **公開notebookのセルは実行しない。** AST/リテラルだけで取り込み、監査する。提出コードは商用利用を制限しないOSI承認ライセンスに限る。
 
-各スクリプト・モジュールの先頭 docstring に、**対応する doc のパスと節**を書く（例：`仕様: docs/02_data_pipeline.md §3`）。
+## 5. 既知の落とし穴
 
-## 5. その他の作業ルール
-
-- 長時間の取得・学習は、まず少量（例：2チーム×2エピソード）で動作確認してから全量。
-- 認証情報・生リプレイ・大きなデータはコミットしない。
-- 提出前は必ず `docs/06_submission.md` のチェックリストを通す。
-- **`submissions\thomas_v94\main.py`（公開 v9/4 の原本、Apache-2.0）は書き換えない。** 改良は後ろに層を足す形で行い、
-  先頭バイトが原本と一致することをテストで確かめる（例：`tests\test_v7_relax.py`）。
-- **公開ノートブックのセルは実行しない。** 取り込みは ast / リテラルの読み取りだけで行い、中身を監査する。
-- 提出に使うコードは、OSI 承認で商用利用を制限しないライセンスに限る（コンペ規約。`docs/08_competition_rules.md` §5）。
-
-## 6. 既知の落とし穴
-
-- Kaggle はエージェントを**ファイルの最後の callable**として読み込み、`__file__` は無い。1ターン 1 秒制限（自前の基準は最悪 200ms 未満）。
-- kaggle-environments はエージェントの stdout を取り込むので、デバッグ出力は `sys.__stderr__` に出す。
-- エージェントを関数で包むときは `functools.update_wrapper` で属性を引き継ぐ（v9/4 は関数属性を使う）。
-- シェルの heredoc や sed で Windows パスを書くと `\t` `\v` などが制御文字に化ける。doc やスクリプトはファイル編集ツールで書き、
-  書いた後に制御文字（タブを含む `[\x00-\x09\x0b\x0c\x0e-\x1f]`）が無いか確かめる。
-- 文字化け対策：Python の出力は `PYTHONIOENCODING=utf-8`。
+- Kaggleはファイル内で最後に現れるcallableをagentとして読み、`__file__`はない。1ターン制限1秒、自前基準は最悪200ms未満。
+- kaggle-environmentsはstdoutを取り込むため、debugは`sys.__stderr__`へ出す。
+- 関数wrapperは`functools.update_wrapper`で属性を引き継ぐ（v9/4は関数属性を使用）。
+- heredoc/sedでWindowsパスを書くと`\t`・`\v`等が制御文字化する。ファイル編集ツールを使い、`[\x00-\x09\x0b\x0c\x0e-\x1f]`がないか確認する。
+- Python出力の文字化け対策は`PYTHONIOENCODING=utf-8`。

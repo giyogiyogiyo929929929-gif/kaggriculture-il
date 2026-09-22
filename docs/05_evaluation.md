@@ -1,7 +1,7 @@
 # 05 評価
 
 状態: Implemented
-最終更新: 2026-09-20
+最終更新: 2026-09-21
 関連: 04_model_design.md §5, 06_submission.md, EXP-20260919-01, EXP-20260919-06
 
 ## 1. 方法
@@ -130,6 +130,18 @@ weed は自然発生（100タイル×30日×0.5% ≒ 15枚）と枯死が混ざ�
 - [ ] 家畜の逃走ゼロ、最終 shed < 100
 - [ ] **水切れ枯死 ＋ 未収穫損失 が植え付けの5%以下**（寿命終了は除外して数える。§2.1）
 
+### 4.1 v12 に限る提出特例（Approved、2026-09-21）
+
+ユーザー承認により、`submissions\v12_v51safe\` は§4の最初の「直前の提出版に対してペア差がプラス」を
+次の条件に置き換え、**公開対戦で様子を見るための提出を可**とする。
+
+- 同じ27相手・同じseedの相手プールで、v12がv10より勝ち数が多いこと：**246勝24敗 > 207勝63敗**（EXP-29）。
+- v10との未使用seed 301〜320の直接比較で、有意な退行がないこと：**7勝13敗、−137 ±272**で、差の絶対値は標準誤差未満（EXP-31）。
+- §4の残りの安全性・時間・starter・健全性基準をすべて満たすこと（EXP-31）。
+
+根拠は、最終トーナメントが多様な相手との勝敗で決まるため、v10との1対1より相手プールの成績を優先すること。
+これは**v12だけの特例**で、今後の提出基準を一般に緩めるものではない。
+
 ## 5. 受け入れ条件（タスク 0-7）
 
 - [x] `eval.py starter random -n 2` が表を出して終了コード0
@@ -201,6 +213,8 @@ EXP-20260919-11〜17 でスクラッチパッドに作って繰り返し使っ�
 | `extract_notebook_agents.py` | 公開ノートブックから main.py を取り出す（**セルは実行しない**。ast でリテラルだけ読む） | `extract_notebook_agents.py <nb_dir> <out_dir>` |
 | `money_trace.py` | 1試合の所持金差を日ごと・ステップごとに追う（差がどこで開くか） | `money_trace.py submissions\v10_de\main.py opponents\v51\main.py 242` |
 | `audit_agent.py` | 埋め込みソースまで再帰的に、危ない import・呼び出しを探す（実行しない） | `audit_agent.py opponents\v50\main.py` |
+| `recent_notebook_service.py` | `recently run` を約1時間ごとに確認し、新規版を静的抽出・監査後、既存 `eval.py` で直列対戦 | `recent_notebook_service.py --once` |
+| `watch_recent_notebook_service.py` | 上記runnerの独立ヘルス監視。終了・異常停止を `watcher.json` に記録 | launcherから自動起動 |
 
 - 実行は `.venv\Scripts\python.exe scripts\analysis\<名前>.py ...`。出力の文字化けは `set PYTHONIOENCODING=utf-8`。
 - エージェント内部の表示は `sys.__stderr__` に出る（kaggle-environments が stdout を取り込むため）。
@@ -208,3 +222,21 @@ EXP-20260919-11〜17 でスクラッチパッドに作って繰り返し使っ�
 - 動作確認（2026-09-20）：`ledger_match` と `replay_seed` が v7 対 v50 の seed 3 で同じ最終所持金（75,175 対 73,330）、
   `eval_compare` で v7 と v6 が 420/420 一致、`copy_check window`・`layer_trace predict`・`timing`・`audit_agent` が動く。
   `fetch_own`・`live_summary`・`ledger_replay` は手元に生リプレイが無いため未確認（中身はスクラッチパッド版から名前の判定以外変えていない）。
+
+### 8.1 Recently run 自動対戦
+
+`scripts\start_recent_notebook_service.py` は非表示のrunnerと独立watcherを起動する。初回は一覧を基準化し、以後は
+`ref + lastRunTime` が新しい公開ノートだけを処理する。ノートのセルは実行しない。既存の静的抽出と監査で警告0件、
+preflight合格のコードだけを `scripts\eval.py -j 1` に渡す。同一SHA-256は再評価しない。既定候補はv27、3ペア。
+自動提出・自動採用はしない。状態と結果は `data\automation\recent_notebooks\` に残す。
+
+```cmd
+set PYTHONPATH=.venv\Lib\site-packages
+C:\Users\nay92\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\python.exe scripts\start_recent_notebook_service.py
+```
+
+停止は `data\automation\recent_notebooks\STOP` を作る。runnerは実行中の1ノートを終えた後、または待機中なら
+最大60秒以内に停止し、watcherも終了を確認して終了する。
+
+runner/watcherを含むバックグラウンド処理のライフサイクルは、共通の
+`data\automation\background-processes.log`へJST時刻・処理名・PIDつきで1行ずつ追記する。
