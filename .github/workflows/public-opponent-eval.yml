@@ -62,7 +62,7 @@ jobs:
           git clone --depth 1 https://github.com/Seyamalam/Kaggriculture tmp/public/seyamalam
           git clone --depth 1 https://github.com/COK-ZhangZiliang/Kaggriculture tmp/public/cok
 
-      - name: Run public smoke panel
+      - name: Run public 3-seed panel
         shell: bash
         run: |
           mkdir -p results
@@ -71,7 +71,7 @@ jobs:
             path="$2"
             echo "===== ${name}: ${path} ====="
             set +e
-            python scripts/eval.py tmp/v77.py "$path" -n 1 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            python scripts/eval.py tmp/v77.py "$path" -n 3 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
