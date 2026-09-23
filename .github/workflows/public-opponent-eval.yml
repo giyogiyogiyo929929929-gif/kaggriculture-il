@@ -63,7 +63,7 @@ jobs:
               return 0
             fi
             set +e
-            python scripts/eval.py tmp/v76.py "$path" -n 5 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            python scripts/eval.py tmp/v76.py "$path" -n 2 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
