@@ -1,6 +1,9 @@
 name: Public opponent eval
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - eval-public-opponents-20260923
