@@ -21,10 +21,18 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install Kaggle Environments
+      - name: Install minimal Kaggriculture runtime
         run: |
           python -m pip install --upgrade pip
-          python -m pip install kaggle-environments==1.32.7
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          from kaggle_environments import make
+          env = make('kaggriculture', configuration={'randomSeed': 1}, debug=True)
+          env.run(['starter', 'starter'])
+          assert len(env.steps) == 720
+          print('kaggriculture runtime OK')
+          PY
 
       - name: Build v76 from frozen v27
         run: |
