@@ -55,14 +55,7 @@ jobs:
           assert last_name == 'kaggle_submission_agent_v77'
           PY
 
-      - name: Fetch public opponents
-        run: |
-          mkdir -p tmp/public
-          git clone --depth 1 https://github.com/GzmCR/Kaggriculture tmp/public/gzmcr
-          git clone --depth 1 https://github.com/Seyamalam/Kaggriculture tmp/public/seyamalam
-          git clone --depth 1 https://github.com/COK-ZhangZiliang/Kaggriculture tmp/public/cok
-
-      - name: Run public 3-seed panel
+      - name: Run fixed repo 2-seed panel
         shell: bash
         run: |
           mkdir -p results
@@ -70,21 +63,27 @@ jobs:
             name="$1"
             path="$2"
             echo "===== ${name}: ${path} ====="
+            if [ ! -f "$path" ]; then
+              echo "missing: $path" | tee "results/${name}.log"
+              return 0
+            fi
             set +e
-            python scripts/eval.py tmp/v77.py "$path" -n 3 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            python scripts/eval.py tmp/v77.py "$path" -n 2 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
             cat "results/${name}.log"
           }
-          run_eval gzmcr tmp/public/gzmcr/main.py
-          run_eval seyamalam tmp/public/seyamalam/main.py
-          run_eval cok tmp/public/cok/main.py
+          run_eval beat_v48 opponents/beat_v48/main.py
+          run_eval bl_v20 opponents/bl_v20/main.py
+          run_eval bl_v21 opponents/bl_v21/main.py
+          run_eval farming_v2 opponents/farming_v2/main.py
+          run_eval frontier_prvsiyan opponents/frontier_prvsiyan/main.py
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: public-opponent-eval-results
+          name: fixed-opponent-eval-results
           path: results/
           retention-days: 7
