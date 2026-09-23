@@ -11,7 +11,7 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,12 +45,11 @@ jobs:
       - name: Fetch public opponents
         run: |
           mkdir -p tmp/public
-          git clone --depth 1 https://github.com/GzmCR/Kaggriculture tmp/public/gzmcr || true
-          git clone --depth 1 https://github.com/Seyamalam/Kaggriculture tmp/public/seyamalam || true
-          git clone --depth 1 https://github.com/COK-ZhangZiliang/Kaggriculture tmp/public/cok || true
-          git clone --depth 1 https://github.com/ian-turner/kaggriculture tmp/public/ian_turner || true
+          git clone --depth 1 https://github.com/GzmCR/Kaggriculture tmp/public/gzmcr
+          git clone --depth 1 https://github.com/Seyamalam/Kaggriculture tmp/public/seyamalam
+          git clone --depth 1 https://github.com/COK-ZhangZiliang/Kaggriculture tmp/public/cok
 
-      - name: Run evaluation panel
+      - name: Run public smoke panel
         shell: bash
         run: |
           mkdir -p results
@@ -58,58 +57,16 @@ jobs:
             name="$1"
             path="$2"
             echo "===== ${name}: ${path} ====="
-            if [ ! -f "$path" ]; then
-              echo "missing: $path" | tee "results/${name}.log"
-              return 0
-            fi
             set +e
-            python scripts/eval.py tmp/v76.py "$path" -n 2 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            python scripts/eval.py tmp/v76.py "$path" -n 1 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
-            tail -80 "results/${name}.log" || true
+            cat "results/${name}.log"
           }
-
           run_eval gzmcr tmp/public/gzmcr/main.py
           run_eval seyamalam tmp/public/seyamalam/main.py
           run_eval cok tmp/public/cok/main.py
-          run_eval ian_turner tmp/public/ian_turner/main.py
-
-          run_eval repo_beat_v48 opponents/beat_v48/main.py
-          run_eval repo_bl_v20 opponents/bl_v20/main.py
-          run_eval repo_bl_v21 opponents/bl_v21/main.py
-          run_eval repo_farming_v2 opponents/farming_v2/main.py
-          run_eval repo_frontier_prvsiyan opponents/frontier_prvsiyan/main.py
-
-      - name: Build summary
-        if: always()
-        run: |
-          mkdir -p results
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          rows=[]
-          for p in sorted(Path('results').glob('*.json')):
-              try:
-                  d=json.loads(p.read_text())
-              except Exception as e:
-                  rows.append({'name':p.stem,'error':str(e)})
-                  continue
-              rows.append({
-                  'name':p.stem,
-                  'wins':d.get('wins'),
-                  'losses':d.get('losses'),
-                  'draws':d.get('draws'),
-                  'pair_diff_mean':d.get('pair_diff_mean'),
-                  'pair_diff_stderr':d.get('pair_diff_stderr'),
-                  'agent_a_median':d.get('agent_a_median'),
-                  'agent_b_median':d.get('agent_b_median'),
-                  'exceptions_a':d.get('exceptions_a'),
-                  'exceptions_b':d.get('exceptions_b'),
-              })
-          Path('results/summary.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
-          print(json.dumps(rows,indent=2))
-          PY
 
       - name: Upload results
         if: always()
