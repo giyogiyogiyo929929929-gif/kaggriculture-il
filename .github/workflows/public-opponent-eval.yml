@@ -8,7 +8,7 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -129,7 +129,7 @@ jobs:
               assert last_name==want
           PY
 
-      - name: Run matched 4-seed public-opponent panel
+      - name: Run matched 8-seed public-opponent panel
         shell: bash
         run: |
           mkdir -p results
@@ -139,7 +139,7 @@ jobs:
             set +e
             # This panel is for paired score comparison, not acceptance timing.
             # Two workers cut wall-clock time; timing acceptance remains a separate -j 1 check.
-            python scripts/eval.py "$a" "$b" -n 4 -j 2 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            python scripts/eval.py "$a" "$b" -n 8 -j 2 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
