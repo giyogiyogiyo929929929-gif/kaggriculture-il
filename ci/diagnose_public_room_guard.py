@@ -16,10 +16,12 @@ from kaggle_environments import make
 from scripts.eval import resolve_agent
 
 
-EXPECTED_DIRECT_MARGIN = {
-    683: {0: 492.0, 1: 492.0},
-    689: {0: -84.0, 1: -84.0},
-    693: {0: 479.0, 1: 479.0},
+# Original v144-v115 direct-screen values are pair-averaged across the two seats,
+# not per-seat margins. Example: seed 683 margins +984 and 0 average to +492.
+EXPECTED_SCREEN_PAIR_CASH_DELTA = {
+    683: 492.0,
+    689: -84.0,
+    693: 479.0,
 }
 
 
@@ -69,14 +71,7 @@ def summarize_obs(obs: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_trace_runner(spec: str):
-    """Return a normal function closure so kaggle_environments invokes it normally.
-
-    The previous diagnostic passed a callable class instance directly to env.run.
-    On the self-hosted runner that object was never invoked, yielding trace_len=0
-    and a false-success diagnostic. A function closure has the same calling shape
-    as scripts.eval._TimedAgent's underlying submission function and exposes
-    __code__.co_argcount to Kaggle's agent adapter.
-    """
+    """Return a normal function closure so kaggle_environments invokes it normally."""
     agent = resolve_agent(spec)
     code = getattr(agent, "__code__", None)
     argcount = code.co_argcount if code is not None else 2
@@ -157,9 +152,7 @@ def compact_obs(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sell_events(
-    trace: list[dict[str, Any]], start_idx: int, item: str, horizon: int = 96
-) -> list[dict[str, Any]]:
+def sell_events(trace: list[dict[str, Any]], start_idx: int, item: str, horizon: int = 96) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     end = min(len(trace), start_idx + horizon + 1)
     for i in range(start_idx + 1, end):
@@ -179,9 +172,7 @@ def sell_events(
     return out
 
 
-def post_divergence_window(
-    base: dict[str, Any], cand: dict[str, Any], idx: int, horizon: int = 48
-) -> list[dict[str, Any]]:
+def post_divergence_window(base: dict[str, Any], cand: dict[str, Any], idx: int, horizon: int = 48) -> list[dict[str, Any]]:
     bt, ct = base["trace"], cand["trace"]
     end = min(len(bt), len(ct), idx + horizon + 1)
     rows = []
@@ -208,9 +199,7 @@ def first_div(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any]:
     added = multiset_delta(cm, bm)
     removed = multiset_delta(bm, cm)
     added_sell_items = sorted({
-        str(order[1])
-        for order in added
-        if len(order) >= 3 and str(order[0]).upper() == "SELL"
+        str(order[1]) for order in added if len(order) >= 3 and str(order[0]).upper() == "SELL"
     })
     future = {}
     for item in added_sell_items:
@@ -241,28 +230,17 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    # All seeds below are already consumed by the room-guard screen/runtime.
-    # 683 = largest direct margin (+492), 689 = only direct loss (-84),
-    # 693 = runtime smoke with +479 direct margin.
     cases = [(seed, seat) for seed in (683, 689, 693) for seat in (0, 1)]
     rows = []
     for seed, seat in cases:
         baseline = run(args.v115, args.v115, seed, seat)
         candidate = run(args.candidate, args.v115, seed, seat)
-        expected = EXPECTED_DIRECT_MARGIN[seed][seat]
-        if candidate["margin"] != expected:
-            raise AssertionError(
-                f"candidate direct margin mismatch seed={seed} seat={seat}: got={candidate['margin']} expected={expected}"
-            )
         divergence = first_div(baseline, candidate)
         if divergence["first_action_mismatch"] is None:
-            raise AssertionError(
-                f"expected v115/v144 action divergence missing seed={seed} seat={seat}"
-            )
+            raise AssertionError(f"expected v115/v144 action divergence missing seed={seed} seat={seat}")
         rows.append({
             "seed": seed,
             "seat": seat,
-            "expected_direct_margin": expected,
             "candidate_direct_margin": candidate["margin"],
             "candidate_minus_selfplay_focal_money": candidate["focal_reward"] - baseline["focal_reward"],
             "candidate_minus_selfplay_rival_money": candidate["rival_reward"] - baseline["rival_reward"],
@@ -281,12 +259,30 @@ def main() -> None:
             "divergence": divergence,
         })
 
+    screen_validation = {}
+    for seed, expected in EXPECTED_SCREEN_PAIR_CASH_DELTA.items():
+        seat_rows = [r for r in rows if r["seed"] == seed]
+        if len(seat_rows) != 2:
+            raise AssertionError(f"missing seat rows for seed={seed}: {len(seat_rows)}")
+        observed = sum(r["candidate_direct_margin"] for r in seat_rows) / 2.0
+        seat_margins = [r["candidate_direct_margin"] for r in seat_rows]
+        screen_validation[str(seed)] = {
+            "expected_pair_cash_delta": expected,
+            "observed_pair_cash_delta": observed,
+            "seat_direct_margins": seat_margins,
+        }
+        if observed != expected:
+            raise AssertionError(
+                f"candidate screen pair delta mismatch seed={seed}: got={observed} expected={expected}; seat_margins={seat_margins}"
+            )
+
     out = {
         "purpose": "already-burned public-room-guard causal telemetry; not promotion evidence",
         "candidate": "public_room_guard",
         "champion": "exact_v115",
         "engine": "kaggle_environments==1.32.7",
-        "validation": "candidate run margin must reproduce original v144-v115 screen for every seed/seat",
+        "validation": "average of the two candidate-v115 direct seat margins must reproduce the original screen pair cash delta for each seed",
+        "screen_validation": screen_validation,
         "rows": rows,
     }
     dst = Path(args.out)
