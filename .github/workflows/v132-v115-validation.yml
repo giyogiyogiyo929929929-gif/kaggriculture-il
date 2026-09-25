@@ -1,0 +1,151 @@
+name: v132 squeeze15 vs exact v115 validation
+
+on:
+  push:
+    branches:
+      - eval-public-opponents-20260923
+    paths:
+      - ".github/workflows/v132-v115-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact v115 and v132
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v132_from_v115.py tmp/v115.py tmp/v132.py
+          python -m py_compile tmp/v115.py tmp/v132.py
+      - name: Direct validation seeds 321-340 both seats
+        run: |
+          python - <<'PY'
+          import json, math, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v132.py','tmp/v115.py',pairs=20,jobs=4,seed_start=321)
+          by={}
+          for g in s['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          pair=[statistics.mean(by[k]) for k in sorted(by)]
+          mean=statistics.mean(pair); se=statistics.stdev(pair)/math.sqrt(len(pair)) if len(pair)>1 else 0.0
+          out={
+            'metric':'candidate_minus_champion = candidate margin - champion margin in direct H2H, averaged across both seats per seed',
+            'seed_start':321,'seed_count':20,
+            'wins':sum(x>0 for x in pair),'losses':sum(x<0 for x in pair),'ties':sum(x==0 for x in pair),
+            'candidate_minus_champion_mean':mean,'candidate_minus_champion_se':se,
+            'mean_ge_2se':bool(mean>0 and mean>=2*se),
+            'worst':min(pair),'best':max(pair),
+            'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],
+            'pair_diffs':pair,'matches_detail':s['matches_detail'],
+          }
+          open('results/direct.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='matches_detail'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v132-validation-direct
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+
+  panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: starter
+            opponent: starter
+          - name: beat_v48
+            opponent: opponents/beat_v48/main.py
+          - name: bl_v20
+            opponent: opponents/bl_v20/main.py
+          - name: bl_v21
+            opponent: opponents/bl_v21/main.py
+          - name: farming_v2
+            opponent: opponents/farming_v2/main.py
+          - name: frontier_prvsiyan
+            opponent: opponents/frontier_prvsiyan/main.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact v115 and v132
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v132_from_v115.py tmp/v115.py tmp/v132.py
+          python -m py_compile tmp/v115.py tmp/v132.py
+      - name: Margin-first panel seeds 321-328 both seats
+        run: |
+          python ci/eval_candidate_vs_champion_margin_panel.py \
+            --candidate tmp/v132.py --champion tmp/v115.py \
+            --opponent '${{ matrix.opponent }}' \
+            --seed-start 321 --seed-count 8 --jobs 4 \
+            --out results/panel.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v132-validation-${{ matrix.name }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: [direct, panel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v132-validation-*
+          path: artifacts
+      - name: Aggregate
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          panel=[]; direct=None
+          for p in pathlib.Path('artifacts').rglob('*.json'):
+              x=json.load(open(p))
+              if p.name=='direct.json': direct=x
+              else: panel.append(x)
+          panel.sort(key=lambda x:x['opponent'])
+          out={'candidate':'v132_candidate_v115_smaller_same_turn_squeeze15','champion':'v115','development_direct_seeds':[321,340],'development_panel_seeds':[321,328],'direct':direct,'panel':panel}
+          pathlib.Path('v132_validation_summary.json').write_text(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v132-validation-summary
+          path: v132_validation_summary.json
+          retention-days: 30
