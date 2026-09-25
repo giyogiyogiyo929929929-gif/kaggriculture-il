@@ -2,11 +2,11 @@ name: v97 Official Evaluation
 
 on:
   push:
-    branches:
-      - eval/v97-official
+    branches: [eval/v97-official]
     paths:
-      - '.github/workflows/v97-official-eval.yml'
-      - 'eval_assets/v97/**'
+      - ".github/workflows/v97-official-eval.yml"
+      - "eval_assets/v97/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,28 +15,26 @@ jobs:
   official-eval:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      CANDIDATE: eval_agents/v97/v97_candidate_actual_trade_race.py
-      CHAMPION: eval_agents/v97/v96_champion_lead11_milkshops2.py
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install exact engine
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'kaggle-environments==1.32.7'
+          python -m pip install "kaggle-environments==1.32.7"
           python - <<'PY'
           import kaggle_environments
-          assert kaggle_environments.__version__ == '1.32.7', kaggle_environments.__version__
-          print('kaggle_environments', kaggle_environments.__version__)
+          assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
+          print("kaggle_environments", kaggle_environments.__version__)
           PY
 
       - name: Rebuild exact v96 and v97
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python eval_assets/v97/rebuild_v97.py --out-dir eval_agents/v97
 
@@ -48,37 +46,37 @@ jobs:
         run: |
           mkdir -p results
           python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
+            --candidate eval_agents/v97/v97_candidate_actual_trade_race.py \
+            --baseline eval_agents/v97/v96_champion_lead11_milkshops2.py \
             --seed-start 328001 \
             --seed-count 20 \
             --out results/validation.json
 
       - name: Telemetry for validation diff seeds
         run: |
-          DIFF_SEEDS="$(python - <<'PY'
+          python - <<'PY' > results/diff_seeds.txt
           import json
           rows=json.load(open('results/validation.json',encoding='utf-8'))
           print(','.join(str(r['seed']) for r in rows if float(r['candidate_minus_baseline']) != 0.0))
           PY
-          )"
+          DIFF_SEEDS="$(cat results/diff_seeds.txt)"
           if [ -n "$DIFF_SEEDS" ]; then
             echo "diff seeds: $DIFF_SEEDS"
             python eval_assets/v97/telemetry_diff.py \
-              --candidate "$CANDIDATE" \
-              --baseline "$CHAMPION" \
+              --candidate eval_agents/v97/v97_candidate_actual_trade_race.py \
+              --baseline eval_agents/v97/v96_champion_lead11_milkshops2.py \
               --seeds "$DIFF_SEEDS" \
               --out results/telemetry_validation.json
           else
-            echo 'No validation diff seeds.'
-            echo '[]' > results/telemetry_validation.json
+            echo "No validation diff seeds."
+            echo "[]" > results/telemetry_validation.json
           fi
 
       - name: Sealed 329001-329020
         run: |
           python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
+            --candidate eval_agents/v97/v97_candidate_actual_trade_race.py \
+            --baseline eval_agents/v97/v96_champion_lead11_milkshops2.py \
             --seed-start 329001 \
             --seed-count 20 \
             --out results/sealed.json
@@ -86,13 +84,13 @@ jobs:
       - name: Starter regression seeds 1-5
         run: |
           python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
+            --candidate eval_agents/v97/v97_candidate_actual_trade_race.py \
             --baseline starter \
             --seed-start 1 \
             --seed-count 5 \
             --out results/starter_candidate.json
           python scripts/ci/run_exact_pair.py \
-            --candidate "$CHAMPION" \
+            --candidate eval_agents/v97/v96_champion_lead11_milkshops2.py \
             --baseline starter \
             --seed-start 1 \
             --seed-count 5 \
@@ -101,8 +99,8 @@ jobs:
       - name: Runtime seed 330001
         run: |
           python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
+            --candidate eval_agents/v97/v97_candidate_actual_trade_race.py \
+            --baseline eval_agents/v97/v96_champion_lead11_milkshops2.py \
             --seed-start 330001 \
             --seed-count 1 \
             --out results/runtime.json
