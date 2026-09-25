@@ -24,11 +24,14 @@ env:
 jobs:
   h2h:
     name: shard-${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 1
       matrix:
         shard: [0, 1, 2, 3]
     steps:
@@ -40,37 +43,46 @@ jobs:
 
       - name: Restore and verify exact v94 lineage sources
         run: |
-          cat ci/v94_lineage_bundle.b64.part* > /tmp/v94_lineage_bundle.b64
-          base64 --decode /tmp/v94_lineage_bundle.b64 > /tmp/v94_lineage_bundle.zip
-          echo "$BUNDLE_SHA256  /tmp/v94_lineage_bundle.zip" | sha256sum -c -
-          unzip -o /tmp/v94_lineage_bundle.zip -d .
-          echo "$V94_SHA256  $CHAMPION" | sha256sum -c -
-          echo "$V95_SHA256  $CANDIDATE" | sha256sum -c -
-          python -m py_compile "$CHAMPION" "$CANDIDATE"
+          $ErrorActionPreference = 'Stop'
+          $parts = Get-ChildItem ci\v94_lineage_bundle.b64.part* | Sort-Object Name
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\v94_lineage_bundle.zip", [Convert]::FromBase64String($b64))
+          $check = @'
+          import hashlib, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'v94_lineage_bundle.zip'
+          got=hashlib.sha256(p.read_bytes()).hexdigest()
+          print('bundle_sha256', got)
+          assert got == os.environ['BUNDLE_SHA256'], (got, os.environ['BUNDLE_SHA256'])
+          '@
+          $check | python -
+          Expand-Archive -Force "$env:RUNNER_TEMP\v94_lineage_bundle.zip" .
+          $verify = @'
+          import hashlib, os, py_compile
+          from pathlib import Path
+          checks=[(os.environ['CHAMPION'],os.environ['V94_SHA256']),(os.environ['CANDIDATE'],os.environ['V95_SHA256'])]
+          for name,want in checks:
+              p=Path(name)
+              got=hashlib.sha256(p.read_bytes()).hexdigest()
+              print(name, got)
+              assert got == want, (name, got, want)
+              py_compile.compile(str(p), doraise=True)
+          '@
+          $verify | python -
 
       - name: Install exact Kaggriculture engine
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install "kaggle-environments==1.32.7"
-          python - <<'PY'
-          import kaggle_environments
-          assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
-          print("kaggle_environments", kaggle_environments.__version__)
-          PY
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
 
       - name: Run exact paired shard
         id: run
         continue-on-error: true
         run: |
-          mkdir -p results
-          python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
-            --seed-start "$SEED_START" \
-            --seed-count "$SEED_COUNT" \
-            --shard-index "${{ matrix.shard }}" \
-            --shard-count 4 \
-            --out "results/shard-${{ matrix.shard }}.json"
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          python scripts\ci\run_exact_pair.py --candidate "$env:CANDIDATE" --baseline "$env:CHAMPION" --seed-start $env:SEED_START --seed-count $env:SEED_COUNT --shard-index "${{ matrix.shard }}" --shard-count 4 --out "results\shard-${{ matrix.shard }}.json"
 
       - name: Upload shard
         if: always()
@@ -89,7 +101,11 @@ jobs:
     name: aggregate
     if: always()
     needs: h2h
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
 
@@ -101,26 +117,20 @@ jobs:
 
       - name: Aggregate candidate_minus_champion
         run: |
-          python scripts/ci/aggregate_h2h.py \
-            --input-dir artifacts \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
-            --seed-start "$SEED_START" \
-            --seed-count "$SEED_COUNT" \
-            --json-out h2h_summary.json \
-            --md-out h2h_summary.md
-          cat h2h_summary.md >> "$GITHUB_STEP_SUMMARY"
+          python scripts\ci\aggregate_h2h.py --input-dir artifacts --candidate "$env:CANDIDATE" --baseline "$env:CHAMPION" --seed-start $env:SEED_START --seed-count $env:SEED_COUNT --json-out h2h_summary.json --md-out h2h_summary.md
+          Get-Content h2h_summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Technical gate only
         run: |
-          python - <<'PY'
+          $gate = @'
           import json
-          s = json.load(open("h2h_summary.json", encoding="utf-8"))
-          assert s["pairs_completed"] == 40, s
-          assert s["failed_pairs"] == 0, s
-          assert s["candidate_exceptions"] == 0, s
-          print("candidate_minus_champion convention verified by runner: candidate is first argument")
-          PY
+          s=json.load(open('h2h_summary.json',encoding='utf-8'))
+          assert s['pairs_completed'] == 40, s
+          assert s['failed_pairs'] == 0, s
+          assert s['candidate_exceptions'] == 0, s
+          print('candidate_minus_champion = candidate - champion; candidate passed as first argument')
+          '@
+          $gate | python -
 
       - name: Upload summary
         if: always()
