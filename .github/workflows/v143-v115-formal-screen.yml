@@ -1,0 +1,224 @@
+name: v143 formal direct and public screen
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v143-v115-formal-screen.yml"
+      - "ci/build_v143_v92_single_weak_vote.py"
+      - "ci/reconstruct_exact_v115.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  formal-screen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact kaggriculture engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print('engine', kaggle_environments.__version__)"
+
+      - name: Reconstruct exact v115 and build v143
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results,results\public_fresh | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python ci\build_v143_v92_single_weak_vote.py tmp\v115.py tmp\v143.py
+          if ($LASTEXITCODE -ne 0) { throw 'v143 build failed' }
+          python -m py_compile tmp\v115.py tmp\v143.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          champ=Path('tmp/v115.py')
+          cand=Path('tmp/v143.py')
+          print('v115',champ.stat().st_size,hashlib.sha256(champ.read_bytes()).hexdigest())
+          print('v143',cand.stat().st_size,hashlib.sha256(cand.read_bytes()).hexdigest())
+          assert hashlib.sha256(champ.read_bytes()).hexdigest() == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          text=cand.read_text(encoding='utf-8')
+          assert 'sum(1 for x in _v143_preds if x >= 1) == 1' in text
+          '@
+          $check | python -
+
+      - name: Focused known-divergence sanity
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          expected={642:0.0,649:0.0,651:12.0,440005:0.0,440012:0.0}
+          rows=[]
+          for seed,want in expected.items():
+              s=evaluate('tmp/v143.py','tmp/v115.py',pairs=1,jobs=1,seed_start=seed)
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in s['matches_detail']]
+              got=statistics.mean(vals)
+              row={'seed':seed,'candidate_minus_champion':got,'seat_diffs':vals,'expected':want}
+              rows.append(row)
+              assert got == want, row
+              assert s['exceptions']['a']==0 and s['exceptions']['b']==0
+          Path('results/focused.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          print(json.dumps(rows,indent=2))
+          '@
+          $code | python -
+
+      - name: Burned direct calibration 641-652 with seat swap
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts\eval.py tmp\v143.py tmp\v115.py -n 12 -j 4 --seed-start 641 --json results\direct_burned_641_652.json
+          if ($LASTEXITCODE -ne 0) { throw 'burned direct evaluation failed' }
+          $gate = @'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/direct_burned_641_652.json').read_text(encoding='utf-8'))
+          by={}
+          for g in d['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'candidate_minus_champion':statistics.mean(v)} for s,v in sorted(by.items())]
+          vals=[r['candidate_minus_champion'] for r in rows]
+          gate={
+            'set':'burned_641_652','pairs':len(vals),'wins':sum(x>0 for x in vals),
+            'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+            'mean':statistics.mean(vals),'worst':min(vals),'best':max(vals),
+            'candidate_exceptions':d['exceptions']['a'],'champion_exceptions':d['exceptions']['b'],
+            'rows':rows,
+          }
+          Path('results/direct_burned_gate.json').write_text(json.dumps(gate,indent=2),encoding='utf-8')
+          print(json.dumps(gate,indent=2))
+          assert gate['candidate_exceptions']==0 and gate['champion_exceptions']==0
+          assert gate['losses']==0, 'burned safety regression: stop before fresh seeds'
+          assert gate['mean']>0, 'known calibration improvement did not survive'
+          '@
+          $gate | python -
+
+      - name: Fresh direct 661-672 with seat swap
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts\eval.py tmp\v143.py tmp\v115.py -n 12 -j 4 --seed-start 661 --json results\direct_fresh_661_672.json
+          if ($LASTEXITCODE -ne 0) { throw 'fresh direct evaluation failed' }
+          $summary = @'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/direct_fresh_661_672.json').read_text(encoding='utf-8'))
+          by={}
+          for g in d['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'candidate_minus_champion':statistics.mean(v),'seat_diffs':v} for s,v in sorted(by.items())]
+          vals=[r['candidate_minus_champion'] for r in rows]
+          out={
+            'set':'fresh_661_672','pairs':len(vals),'wins':sum(x>0 for x in vals),
+            'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+            'mean':statistics.mean(vals),'se':statistics.stdev(vals)/(len(vals)**0.5) if len(vals)>1 else 0.0,
+            'worst':min(vals),'best':max(vals),
+            'candidate_exceptions':d['exceptions']['a'],'champion_exceptions':d['exceptions']['b'],
+            'rows':rows,
+          }
+          Path('results/direct_fresh_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert out['candidate_exceptions']==0 and out['champion_exceptions']==0
+          '@
+          $summary | python -
+
+      - name: Fresh public opponent panel 661-664
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run-Panel([string]$name, [string]$opp) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v143.py --champion tmp\v115.py --opponent $opp --seed-start 661 --seed-count 4 --jobs 2 --out "results\public_fresh\$name.json"
+            if ($LASTEXITCODE -ne 0) { throw "fresh public panel failed: $name" }
+          }
+          Run-Panel 'starter' 'starter'
+          Run-Panel 'beat_v48' 'opponents\beat_v48\main.py'
+          Run-Panel 'bl_v20' 'opponents\bl_v20\main.py'
+          Run-Panel 'bl_v21' 'opponents\bl_v21\main.py'
+          Run-Panel 'farming_v2' 'opponents\farming_v2\main.py'
+          Run-Panel 'frontier_prvsiyan' 'opponents\frontier_prvsiyan\main.py'
+
+      - name: Aggregate formal screen
+        if: always()
+        run: |
+          $code = @'
+          import glob,json,statistics,math
+          from pathlib import Path
+          def load(path):
+              p=Path(path)
+              return json.loads(p.read_text(encoding='utf-8')) if p.exists() else None
+          burned=load('results/direct_burned_gate.json')
+          fresh=load('results/direct_fresh_summary.json')
+          panels=[]
+          for p in sorted(glob.glob('results/public_fresh/*.json')):
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              panels.append({
+                'name':Path(p).stem,'opponent':d['opponent'],'wins':d['wins'],'losses':d['losses'],'ties':d['ties'],
+                'mean':d['candidate_minus_champion_mean'],'se':d['candidate_minus_champion_se'],
+                'worst':d['worst'],'best':d['best'],'seat0_mean':d['seat0_mean'],'seat1_mean':d['seat1_mean'],
+                'candidate_exceptions':d['candidate_exceptions'],'champion_exceptions':d['champion_exceptions'],
+                'rows':[{'seed':r['seed'],'candidate_minus_champion':r['candidate_minus_champion_money']} for r in d['rows']],
+              })
+          public_vals=[float(r['candidate_minus_champion']) for p in panels for r in p['rows']]
+          out={
+            'candidate':'v143_single_weak_vote_positive_exposure',
+            'champion':'v115_champion_same_turn_open_squeeze',
+            'engine':'kaggle_environments==1.32.7',
+            'metric':'candidate_minus_champion = candidate - champion',
+            'burned_direct':burned,'fresh_direct':fresh,'public_fresh':panels,
+            'public_seed_rows':len(public_vals),
+            'public_wins':sum(x>0 for x in public_vals),'public_losses':sum(x<0 for x in public_vals),'public_ties':sum(x==0 for x in public_vals),
+            'public_mean':statistics.mean(public_vals) if public_vals else None,
+            'public_se':statistics.stdev(public_vals)/(len(public_vals)**0.5) if len(public_vals)>1 else None,
+            'public_worst':min(public_vals) if public_vals else None,'public_best':max(public_vals) if public_vals else None,
+            'public_candidate_exceptions':sum(p['candidate_exceptions'] for p in panels),
+            'public_champion_exceptions':sum(p['champion_exceptions'] for p in panels),
+            'decision':'KEEP TESTING; no automatic promotion from this screen',
+          }
+          Path('results/formal_screen_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v143-v115-formal-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
