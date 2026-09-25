@@ -115,6 +115,46 @@ def market(action: Any) -> list[list[Any]]:
     return [list(x) for x in (action.get("market") or []) if x]
 
 
+def compact_obs(entry: dict[str, Any]) -> dict[str, Any]:
+    obs = entry["obs"]
+    return {
+        "step": entry["step"],
+        "day": obs["day"],
+        "hour": obs["hour"],
+        "money": obs["money"],
+        "shed": obs["shed"],
+        "shed_total": obs["shed_total"],
+        "carried_total": obs["carried_total"],
+        "market_prices": obs["market_prices"],
+        "market": market(entry["action"]),
+    }
+
+
+def post_divergence_window(
+    base: dict[str, Any], cand: dict[str, Any], idx: int, horizon: int = 48
+) -> list[dict[str, Any]]:
+    """Trace two days after the first causal action split.
+
+    The window intentionally records observable downstream behavior instead of
+    depending on private route internals.  If room_guard pre-sells inventory
+    reserved for a later scheduled SELL, the baseline's later market action,
+    shed balance, price and money path remain visible here.
+    """
+    bt, ct = base["trace"], cand["trace"]
+    end = min(len(bt), len(ct), idx + horizon + 1)
+    rows = []
+    for i in range(idx, end):
+        b, c = bt[i], ct[i]
+        rows.append({
+            "trace_index": i,
+            "same_observation": b["obs_hash"] == c["obs_hash"],
+            "same_action": b["action_hash"] == c["action_hash"],
+            "v115": compact_obs(b),
+            "room_guard": compact_obs(c),
+        })
+    return rows
+
+
 def first_div(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any]:
     bt, ct = base["trace"], cand["trace"]
     n = min(len(bt), len(ct))
@@ -132,6 +172,8 @@ def first_div(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any]:
         "room_guard_action": c["action"],
         "added_market_orders": multiset_delta(cm, bm),
         "removed_market_orders": multiset_delta(bm, cm),
+        "post_divergence_window_turns": 48,
+        "post_divergence_window": post_divergence_window(base, cand, idx, 48),
     }
 
 
