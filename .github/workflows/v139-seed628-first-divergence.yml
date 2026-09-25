@@ -1,0 +1,215 @@
+name: v139 seed628 first divergence
+
+on:
+  push:
+    branches: [eval-public-opponents-20260923]
+    paths: [".github/workflows/v139-seed628-first-divergence.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact Kaggriculture 1.32.7
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115 and v139
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v139_v92_k2.py tmp/v115.py tmp/v139.py
+          python -m py_compile tmp/v115.py tmp/v139.py
+          sha256sum tmp/v115.py tmp/v139.py
+      - name: Diagnose first same-state action divergence on seed 628
+        run: |
+          python - <<'PY'
+          import copy, importlib.util, json, sys
+          from collections import Counter
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEED = 628
+          HORIZON = 48
+          uid = 0
+
+          def load_agent(path):
+              global uid
+              uid += 1
+              p = Path(path).resolve()
+              name = f'_diag_agent_{uid}'
+              spec = importlib.util.spec_from_file_location(name, p)
+              mod = importlib.util.module_from_spec(spec)
+              sys.modules[name] = mod
+              sys.path.insert(0, str(p.parent))
+              try:
+                  spec.loader.exec_module(mod)
+              finally:
+                  sys.path.remove(str(p.parent))
+              agent = None
+              for value in vars(mod).values():
+                  if callable(value):
+                      agent = value
+              if agent is None:
+                  raise RuntimeError(f'no callable: {path}')
+              return mod, agent
+
+          def compact_obs(obs):
+              market = obs.get('market') or {}
+              private = obs.get('private') or {}
+              town = obs.get('town') or {}
+              return {
+                  'step': int(obs.get('step', -1)),
+                  'player': int(obs.get('player', -1)),
+                  'market': {
+                      'prices': copy.deepcopy(market.get('prices') or {}),
+                      'inventory': copy.deepcopy(market.get('inventory') or {}),
+                  },
+                  'private': {
+                      'money': private.get('money'),
+                      'shed': copy.deepcopy(private.get('shed') or {}),
+                  },
+                  'town': {
+                      'unlocked_shops': copy.deepcopy(town.get('unlocked_shops') or []),
+                  },
+              }
+
+          class Recorder:
+              def __init__(self, fn, label):
+                  self.fn = fn
+                  self.label = label
+                  code = getattr(fn, '__code__', None)
+                  self.argcount = code.co_argcount if code is not None else 2
+                  self.trace = []
+              def __call__(self, obs, config=None):
+                  action = self.fn(*[obs, config][:self.argcount])
+                  self.trace.append({'obs': compact_obs(obs), 'action': copy.deepcopy(action)})
+                  return action
+
+          def run(a_path, b_path):
+              _, af = load_agent(a_path)
+              _, bf = load_agent(b_path)
+              a = Recorder(af, 'a')
+              b = Recorder(bf, 'b')
+              env = make('kaggriculture', configuration={'seed': SEED}, debug=True)
+              env.run([a, b])
+              rewards = [state.get('reward') for state in env.state]
+              return {'a': a.trace, 'b': b.trace, 'rewards': rewards, 'steps': len(env.steps)}
+
+          control = run('tmp/v115.py', 'tmp/v115.py')
+          treat0 = run('tmp/v139.py', 'tmp/v115.py')
+          treat1 = run('tmp/v115.py', 'tmp/v139.py')
+
+          def by_step(trace):
+              return {int(x['obs']['step']): x for x in trace}
+
+          def price_at(row, item):
+              p = (row.get('obs') or {}).get('market', {}).get('prices', {})
+              try:
+                  return p.get(item)
+              except AttributeError:
+                  return None
+
+          def sells(row, item=None):
+              out = []
+              for o in (row.get('action') or {}).get('market') or []:
+                  if len(o) >= 3 and o[0] == 'SELL' and (item is None or o[1] == item):
+                      out.append(list(o))
+              return out
+
+          def first_div(control_trace, treatment_trace, control_opp_trace, treatment_opp_trace):
+              c = by_step(control_trace); t = by_step(treatment_trace)
+              co = by_step(control_opp_trace); to = by_step(treatment_opp_trace)
+              common = sorted(set(c) & set(t))
+              first = None
+              for step in common:
+                  if c[step]['action'] != t[step]['action']:
+                      first = step
+                      break
+              if first is None:
+                  return {'first_divergence': None}
+              cr = c[first]; tr = t[first]
+              cm = [tuple(o) for o in (cr['action'].get('market') or [])]
+              tm = [tuple(o) for o in (tr['action'].get('market') or [])]
+              removed = [list(x) for x in (Counter(cm) - Counter(tm)).elements()]
+              added = [list(x) for x in (Counter(tm) - Counter(cm)).elements()]
+              items = sorted({o[1] for o in removed if len(o) >= 3 and o[0] == 'SELL'})
+              details = {}
+              for item in items:
+                  future_control_opp = []
+                  future_treat_opp = []
+                  future_treat_self = []
+                  future_control_self = []
+                  for s in range(first + 1, first + HORIZON + 1):
+                      if s in co:
+                          ss = sells(co[s], item)
+                          if ss:
+                              future_control_opp.append({'step': s, 'orders': ss, 'price': price_at(co[s], item)})
+                      if s in to:
+                          ss = sells(to[s], item)
+                          if ss:
+                              future_treat_opp.append({'step': s, 'orders': ss, 'price': price_at(to[s], item)})
+                      if s in t:
+                          ss = sells(t[s], item)
+                          if ss:
+                              future_treat_self.append({'step': s, 'orders': ss, 'price': price_at(t[s], item)})
+                      if s in c:
+                          ss = sells(c[s], item)
+                          if ss:
+                              future_control_self.append({'step': s, 'orders': ss, 'price': price_at(c[s], item)})
+                  details[item] = {
+                      'price_at_divergence': price_at(cr, item),
+                      'shed_at_divergence': cr['obs']['private']['shed'].get(item, 0),
+                      'market_inventory_at_divergence': cr['obs']['market']['inventory'].get(item),
+                      'future_control_opponent_sells_48': future_control_opp,
+                      'future_treatment_opponent_sells_48': future_treat_opp,
+                      'future_control_self_sells_48': future_control_self,
+                      'future_treatment_self_sells_48': future_treat_self,
+                  }
+              return {
+                  'first_divergence': first,
+                  'observation_equal_at_divergence': cr['obs'] == tr['obs'],
+                  'control_action': cr['action'],
+                  'treatment_action': tr['action'],
+                  'control_only_market_orders': removed,
+                  'treatment_only_market_orders': added,
+                  'state': cr['obs'],
+                  'item_followup': details,
+              }
+
+          d0 = first_div(control['a'], treat0['a'], control['b'], treat0['b'])
+          d1 = first_div(control['b'], treat1['b'], control['a'], treat1['a'])
+          out = {
+              'seed': SEED,
+              'champion': 'v115_champion_same_turn_open_squeeze',
+              'candidate': 'v139_candidate_v92_k2',
+              'control_v115_vs_v115_rewards': control['rewards'],
+              'treatment_candidate_seat0_rewards': treat0['rewards'],
+              'treatment_candidate_seat1_rewards': treat1['rewards'],
+              'candidate_minus_champion_seat0': (treat0['rewards'][0] - treat0['rewards'][1]),
+              'candidate_minus_champion_seat1': (treat1['rewards'][1] - treat1['rewards'][0]),
+              'candidate_seat0_first_divergence': d0,
+              'candidate_seat1_first_divergence': d1,
+          }
+          Path('results/seed628_first_divergence.json').write_text(json.dumps(out, indent=2), encoding='utf-8')
+          print(json.dumps(out, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v139-seed628-first-divergence
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
