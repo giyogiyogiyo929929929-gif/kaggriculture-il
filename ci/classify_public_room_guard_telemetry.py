@@ -52,8 +52,12 @@ def classify_event(event: dict[str, Any]) -> dict[str, Any]:
             continue
         current_unsold = max(0, _int(shed.get(item, 0)) - before.get(item, 0))
         future_qty = max(0, _int(future.get(item, 0)))
-        free_excess = max(0, current_unsold - future_qty)
-        invaded = min(added, max(0, current_unsold - free_excess))
+        reserved_current = min(current_unsold, future_qty)
+        free_excess = max(0, current_unsold - reserved_current)
+        # Only the guard quantity above currently-free stock invades inventory
+        # committed to later native SELLs.  Merely having a future SELL is not
+        # enough to classify an emergency SELL as reserve invasion.
+        invaded = min(reserved_current, max(0, added - free_excess))
         total_added += added
         total_reserve_invaded += invaded
         detail[item] = {
@@ -62,6 +66,7 @@ def classify_event(event: dict[str, Any]) -> dict[str, Any]:
             "current_sell_before_guard": before.get(item, 0),
             "current_unsold_before_guard": current_unsold,
             "future_planned_sell_qty": future_qty,
+            "current_reserved_qty": reserved_current,
             "free_excess": free_excess,
             "future_reserve_invaded_qty": invaded,
             "has_later_native_sell": bool(schedule.get(item)),
