@@ -1,0 +1,148 @@
+name: v94-lineage v95 exact 40-pair
+
+on:
+  push:
+    branches:
+      - exp/v94-lineage-actions
+    paths:
+      - ".github/workflows/v94-v95-exact.yml"
+      - "champion/v94_adaptive_h14_yarn2_nomilk/**"
+      - "candidates/v95_adaptive_h15_yarn2_nomilk/**"
+      - "lineages/v94_exact_source/**"
+      - "scripts/ci/**"
+      - ".github/v94-lineage-trigger"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v94-lineage-v95-exact
+  cancel-in-progress: false
+
+env:
+  H2H_CANDIDATE: candidates/v95_adaptive_h15_yarn2_nomilk
+  H2H_BASELINE: champion/v94_adaptive_h14_yarn2_nomilk
+  H2H_SEED_START: "240001"
+  H2H_SEED_COUNT: "40"
+
+jobs:
+  h2h:
+    name: shard-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
+          print("kaggle_environments", kaggle_environments.__version__)
+          PY
+
+      - name: Run exact paired shard
+        id: run
+        continue-on-error: true
+        run: |
+          mkdir -p results
+          python scripts/ci/run_exact_pair.py \
+            --candidate "$H2H_CANDIDATE" \
+            --baseline "$H2H_BASELINE" \
+            --seed-start "$H2H_SEED_START" \
+            --seed-count "$H2H_SEED_COUNT" \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-count 4 \
+            --out "results/shard-${{ matrix.shard }}.json"
+
+      - name: Upload shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v94-v95-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Propagate shard failure
+        if: steps.run.outcome == 'failure'
+        run: exit 1
+
+  aggregate:
+    name: aggregate
+    if: always()
+    needs: h2h
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v94-v95-shard-*
+          path: artifacts
+
+      - name: Aggregate candidate_minus_champion
+        run: |
+          python scripts/ci/aggregate_h2h.py \
+            --input-dir artifacts \
+            --candidate "$H2H_CANDIDATE" \
+            --baseline "$H2H_BASELINE" \
+            --seed-start "$H2H_SEED_START" \
+            --seed-count "$H2H_SEED_COUNT" \
+            --json-out v95_vs_v94_240001_40.json \
+            --md-out v95_vs_v94_240001_40.md
+          cat v95_vs_v94_240001_40.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record statistical support without auto-promoting
+        run: |
+          python - <<'PY'
+          import json
+          s = json.load(open("v95_vs_v94_240001_40.json", encoding="utf-8"))
+          technical = (
+              s["pairs_completed"] == s["seed_count_requested"]
+              and s["failed_pairs"] == 0
+              and s["candidate_exceptions"] == 0
+          )
+          stat_support = (
+              technical
+              and s["losses"] == 0
+              and s["min"] >= 0
+              and s["mean_minus_2se"] > 0
+          )
+          print("technical_ok=", technical)
+          print("large_block_stat_support=", stat_support)
+          print("NOTE: this workflow never auto-promotes; sealed/external/runtime/telemetry gates still apply.")
+          PY
+
+      - name: Upload aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v95-vs-v94-240001-40-summary
+          path: |
+            v95_vs_v94_240001_40.json
+            v95_vs_v94_240001_40.md
+          retention-days: 30
+
+      - name: Technical gate
+        run: |
+          python - <<'PY'
+          import json
+          s = json.load(open("v95_vs_v94_240001_40.json", encoding="utf-8"))
+          assert s["pairs_completed"] == s["seed_count_requested"], s
+          assert s["failed_pairs"] == 0, s
+          assert s["candidate_exceptions"] == 0, s
+          PY
