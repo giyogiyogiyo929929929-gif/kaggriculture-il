@@ -1,0 +1,125 @@
+name: V135 Ubuntu Development Screen
+
+on:
+  push:
+    branches: [eval-v135-milk-quote-boundary-20260925]
+    paths:
+      - ".github/workflows/v135-ubuntu-dev-screen.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine
+        run: |
+          set -euxo pipefail
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7"
+          print("engine=" + kaggle_environments.__version__)
+          PY
+          command -v patch
+
+      - name: Rebuild exact v121 v130 and v135
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          python eval_assets/v130/build_v135.py \
+            --v130 eval_agents/v130/v130_candidate_late_town_draw_gate24.py \
+            --out eval_agents/v130/v135_candidate_milk_quote_boundary.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          p=Path("eval_agents/v130/v135_candidate_milk_quote_boundary.py")
+          h=hashlib.sha256(p.read_bytes()).hexdigest()
+          Path("v135_sha256.txt").write_text(h,encoding="utf-8")
+          compile(p.read_text(encoding="utf-8"),str(p),"exec")
+          print("v135_sha256="+h)
+          PY
+
+      - name: Run targeted matched-seat-swap controls
+        run: |
+          set -euxo pipefail
+          mkdir -p results
+          run_panel() {
+            id="$1"; opp="$2"; seed="$3"; count="$4"
+            mkdir -p "results/$id"
+            timeout 8m python scripts/ci/run_exact_pair.py \
+              --candidate eval_agents/v130/v135_candidate_milk_quote_boundary.py \
+              --baseline "$opp" --seed-start "$seed" --seed-count "$count" \
+              --out "results/$id/candidate.json"
+            timeout 8m python scripts/ci/run_exact_pair.py \
+              --candidate eval_agents/v130/v121_champion_same_turn_unwind.py \
+              --baseline "$opp" --seed-start "$seed" --seed-count "$count" \
+              --out "results/$id/champion.json"
+            python eval_assets/v130/compare_candidate_champion.py \
+              --candidate-json "results/$id/candidate.json" \
+              --champion-json "results/$id/champion.json" \
+              --opponent "$opp" --out "results/$id/summary.json"
+          }
+
+          # Burned development controls only. This workflow is not promotion evidence.
+          run_panel beat-positive opponents/beat_v48 381003 1
+          # 382001 and 382004 are inherited positives; 382002 is the inherited negative.
+          run_panel bl21-mixed opponents/bl_v21 382001 4
+          run_panel bl16-positive opponents/bl_v16rc2 382001 1
+          run_panel starter-positive starter 382001 1
+
+      - name: Aggregate development result
+        if: always()
+        run: |
+          python - <<'PY'
+          import glob,json,math,statistics
+          from pathlib import Path
+          panels=[]
+          for p in sorted(glob.glob("results/*/summary.json")):
+              d=json.load(open(p,encoding="utf-8")); d["panel_name"]=Path(p).parent.name; panels.append(d)
+          rows=[(p,r) for p in panels for r in p.get("rows",[])]
+          ds=[float(r["candidate_minus_champion"]) for p,r in rows]
+          n=len(ds); mean=statistics.fmean(ds) if ds else 0.0
+          se=statistics.stdev(ds)/(n**0.5) if n>1 else 0.0
+          out={
+            "status":"DEVELOPMENT_ONLY_DO_NOT_PROMOTE",
+            "candidate":"v135_candidate_milk_quote_boundary",
+            "champion":"v121_champion_same_turn_unwind",
+            "engine":"kaggle_environments==1.32.7",
+            "paired_rows":n,
+            "wins":sum(x>0 for x in ds),
+            "losses":sum(x<0 for x in ds),
+            "draws":sum(x==0 for x in ds),
+            "mean_candidate_minus_champion":mean,
+            "se":se,
+            "mean_minus_2se":mean-2*se,
+            "worst_regression":min(ds) if ds else None,
+            "best_improvement":max(ds) if ds else None,
+            "technical_ok":bool(panels) and all(p.get("all_ok") for p in panels),
+            "panels":panels,
+          }
+          Path("v135_ubuntu_dev_summary.json").write_text(json.dumps(out,indent=2),encoding="utf-8")
+          print(json.dumps({k:v for k,v in out.items() if k!="panels"},indent=2))
+          for p in panels:
+              print("PANEL",p["panel_name"],[(r["seed"],r["candidate_minus_champion"]) for r in p.get("rows",[])])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v135-ubuntu-development-screen
+          path: |
+            results/
+            v135_sha256.txt
+            v135_ubuntu_dev_summary.json
+          retention-days: 14
