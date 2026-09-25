@@ -1,0 +1,145 @@
+name: v148 hosted fallback smoke
+
+on:
+  push:
+    branches: [eval-v115-v148-room-guard-future-reserve-20260926]
+    paths:
+      - ".github/workflows/v148-hosted-fallback-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine
+        run: |
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7"
+          print("engine", kaggle_environments.__version__)
+          PY
+
+      - name: Reconstruct exact v115 and build v144/v148
+        run: |
+          set -euo pipefail
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v144_public_room_guard.py tmp/v115.py tmp/v144.py
+          python ci/build_v148_room_guard_future_reserve.py tmp/v115.py tmp/v148.py
+          python -m py_compile tmp/v115.py tmp/v144.py tmp/v148.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          sha=hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()
+          print('v115_sha256',sha)
+          assert sha == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          c=Path('tmp/v115.py').read_text(encoding='utf-8')
+          a=Path('tmp/v144.py').read_text(encoding='utf-8')
+          b=Path('tmp/v148.py').read_text(encoding='utf-8')
+          old="avail = max(0, view.shed.get(item, 0) - planned_sells.get(item, 0))"
+          new="avail = max(0, view.shed.get(item, 0) - planned_sells.get(item, 0) - self.future_sells(route, item, step + 1))"
+          assert a == c.replace("'room_guard': False", "'room_guard': True", 1)
+          assert b == a.replace(old,new,1)
+          print('localized_change_verified=true')
+          PY
+
+      - name: Focused synthetic future reserve
+        run: |
+          python - <<'PY'
+          import copy, importlib.util
+          from types import SimpleNamespace
+          def load(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+          m144=load('v144','tmp/v144.py'); m148=load('v148','tmp/v148.py')
+          def run(m,future_qty,step=23,shed=99,buy=2):
+              tape=[copy.deepcopy(m.PASS_ACTION) for _ in range(719)]
+              if future_qty:
+                  tape[24]={'farmer':['PASS'],'hands':[],'market':[['SELL','WHEAT',future_qty]]}
+              ch=m.Chassis({'r':tape}, settings={'room_guard':True})
+              view=SimpleNamespace(invs=[],positions=[],tiles=[],shed={'WHEAT':shed},prices={'WHEAT':10})
+              action={'farmer':['PASS'],'hands':[],'market':([] if not buy else [['BUY_PRODUCT','MILK',buy]])}
+              ch._room_guard(action,view,'r',step)
+              return action
+          assert run(m144,0) == run(m148,0)
+          assert ['SELL','WHEAT',2] in run(m148,0)['market']
+          assert ['SELL','WHEAT',2] in run(m144,98)['market']
+          assert ['SELL','WHEAT',1] in run(m148,98)['market']
+          assert not any(o and o[0]=='SELL' for o in run(m148,0,shed=98,buy=1)['market'])
+          assert not any(o and o[0]=='SELL' for o in run(m148,0,step=22)['market'])
+          print('synthetic_future_reserve=true')
+          PY
+
+      - name: Runtime burned control seed 693
+        run: |
+          python scripts/eval.py tmp/v148.py tmp/v115.py -n 1 -j 1 --seed-start 693 --json results/runtime_693.json
+          python - <<'PY'
+          import json
+          d=json.load(open('results/runtime_693.json',encoding='utf-8'))
+          assert d['exceptions']['a']==0 and d['exceptions']['b']==0
+          assert d['timings']['a']['max'] < 0.2
+          print('runtime_candidate',d['timings']['a'])
+          PY
+
+      - name: Burned causal seeds 683 and 689
+        run: |
+          python scripts/eval.py tmp/v148.py tmp/v115.py -n 1 -j 1 --seed-start 683 --json results/seed683.json
+          python scripts/eval.py tmp/v148.py tmp/v115.py -n 1 -j 1 --seed-start 689 --json results/seed689.json
+
+      - name: Fresh development seeds 721001-721004
+        run: |
+          python scripts/eval.py tmp/v148.py tmp/v115.py -n 4 -j 2 --seed-start 721001 --json results/fresh_721001_721004.json
+
+      - name: Summarize
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, statistics
+          from pathlib import Path
+          def s(path):
+              p=Path(path)
+              if not p.exists(): return None
+              d=json.loads(p.read_text(encoding='utf-8'))
+              by={}
+              for g in d['matches_detail']:
+                  by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':k,'delta':statistics.mean(v),'seat_diffs':v} for k,v in sorted(by.items())]
+              vals=[r['delta'] for r in rows]
+              return {'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.mean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'exceptions':[d['exceptions']['a'],d['exceptions']['b']],'rows':rows}
+          out={'candidate':'v148_room_guard_future_reserve','metric':'candidate_minus_champion','seed683':s('results/seed683.json'),'seed689':s('results/seed689.json'),'fresh':s('results/fresh_721001_721004.json')}
+          Path('results/hosted_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-hosted-fallback-smoke
+          path: results/
+          if-no-files-found: warn
+          retention-days: 14
