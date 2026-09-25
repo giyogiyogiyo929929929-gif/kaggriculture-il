@@ -1,0 +1,61 @@
+name: v125c ADV1 telemetry on design deltas
+
+on:
+  push:
+    branches:
+      - eval-v125c-adv-split1-20260925
+    paths:
+      - ".github/workflows/v125c-v115-telemetry.yml"
+      - "ci/build_v125c_telemetry.py"
+
+permissions:
+  contents: read
+
+jobs:
+  telemetry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact agents
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v125c_telemetry.py tmp/v115.py tmp/v125c_telemetry.py
+          python -m py_compile tmp/v115.py tmp/v125c_telemetry.py
+      - name: Sequential telemetry seeds 41002-41005 both seats
+        run: |
+          python - <<'PY'
+          import json,sys
+          from scripts.eval import play_match
+          rows=[]
+          for seed in (41002,41003,41004,41005):
+            for swap in (False,True):
+              r=play_match('tmp/v125c_telemetry.py','tmp/v115.py',seed,swap)
+              m=sys.modules.get('_eval_agent_v125c_telemetry')
+              events=list(getattr(m,'_ADV_EVENTS',[])) if m else []
+              rows.append({'seed':seed,'swap':swap,'money':r['money'],'candidate_minus_champion':r['money'][0]-r['money'][1],
+                           'exceptions':r['exceptions'],'health':r['health'],'adv_events':events,
+                           'adv_report':dict(getattr(m,'_ADV_REPORT',{})) if m else {}})
+              print('TELEM',seed,swap,r['money'],'events',len(events),events)
+          open('results/telemetry.json','w').write(json.dumps(rows,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v125c-v115-telemetry
+          path: results/
+          if-no-files-found: warn
+          retention-days: 30
