@@ -94,9 +94,9 @@ jobs:
           python - <<'PY'
           p='tmp/v125.py'
           s=open(p,encoding='utf-8').read()
-          old="              if base is not None: return base\n              obs=_LH_OBS"
-          new="              if base is not None: return base\n              # v125: preserve existing/base COW->SHEEP rules, but disable new live COW->SHEEP swaps.\n              if kind == 'COW': return None\n              obs=_LH_OBS"
-          assert old in s
+          old="    if base is not None: return base\n    obs=_LH_OBS"
+          new="    if base is not None: return base\n    # v125: preserve existing/base COW->SHEEP rules, but disable new live COW->SHEEP swaps.\n    if kind == 'COW': return None\n    obs=_LH_OBS"
+          assert old in s, 'v124 target block not found'
           s=s.replace(old,new,1).replace('kaggle_submission_agent_v124=agent','kaggle_submission_agent_v125=agent',1)
           open(p,'w',encoding='utf-8').write(s)
           PY
