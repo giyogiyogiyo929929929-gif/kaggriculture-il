@@ -8,7 +8,7 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
           print('kaggriculture runtime OK')
           PY
 
-      - name: Build baseline and traced ratio candidates
+      - name: Build baseline v124 and v129 demand-backed candidate
         run: |
           mkdir -p tmp results
           cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
@@ -40,16 +40,14 @@ jobs:
           mv tmp/main.py tmp/v77.py
           python - <<'PY'
           from pathlib import Path
-
           base=Path('tmp/v77.py').read_text(encoding='utf-8')
           wrapper=r'''
 
-          import os as _lh_os
-          import json as _lh_json
           _LH_PARENT=agent
           _LH_TARGET_BASE=_y_target
           _LH_OBS=None
-          _LH_RATIO=__RATIO__
+          _LH_RATIO=1.15
+          _LH_HIGH_PRICE_GATE=__HIGH_PRICE_GATE__
           _LH_BASE_PRICE={'MILK':160.0,'WOOL':200.0}
           _LH_SHOP_PRODUCTS={
               'BAKERY':('EGG','WHEAT'),'PIZZA_SHOP':('MILK','TOMATO','WHEAT'),
@@ -74,12 +72,6 @@ jobs:
               product='MILK' if animal=='COW' else 'WOOL'
               price=float((obs.get('market') or {}).get('prices',{}).get(product,_LH_BASE_PRICE[product]) or _LH_BASE_PRICE[product])
               return (price/_LH_BASE_PRICE[product])*(1.0+0.012*_lh_demand(obs,product))/(1.0+0.18*rival+0.08*own)
-          def _lh_trace(row):
-              path=_lh_os.environ.get('LH_TRACE_FILE')
-              if not path: return
-              row['label']=_lh_os.environ.get('LH_TRACE_LABEL','')
-              with open(path,'a',encoding='utf-8') as f:
-                  f.write(_lh_json.dumps(row,ensure_ascii=False)+'\n')
           def _y_target(kind,shops,cfg):
               base=_LH_TARGET_BASE(kind,shops,cfg)
               if base is not None: return base
@@ -92,16 +84,15 @@ jobs:
               a=_lh_score(obs,kind,own[kind],rival[kind]); b=_lh_score(obs,other,own[other],rival[other])
               pizza_shops=sum(1 for name in shops if name=='PIZZA_SHOP')
               structural=(kind!='SHEEP' or other!='COW' or pizza_shops>=2)
-              swap=bool(structural and b>a*_LH_RATIO)
-              if kind=='SHEEP' and other=='COW':
+              demand_backed=True
+              if _LH_HIGH_PRICE_GATE and kind=='SHEEP' and other=='COW':
                   prices=(obs.get('market') or {}).get('prices',{}) or {}
-                  _lh_trace({'day':day,'seat':seat,'kind':kind,'other':other,'shops':list(shops),
-                             'pizza_shops':pizza_shops,'own':own,'rival':rival,
-                             'milk_price':prices.get('MILK'),'wool_price':prices.get('WOOL'),
-                             'milk_demand':_lh_demand(obs,'MILK'),'wool_demand':_lh_demand(obs,'WOOL'),
-                             'sheep_score':a,'cow_score':b,'ratio':(b/a if a else 999.0),
-                             'threshold':_LH_RATIO,'swap':swap})
-              if swap: return other
+                  milk_price=float(prices.get('MILK',160.0) or 160.0)
+                  milk_demand=_lh_demand(obs,'MILK')
+                  # High MILK price alone can be a transient market spike. Above ~+34% vs base,
+                  # require stronger town demand before replacing SHEEP with COW.
+                  demand_backed=(milk_price < 215.0 or milk_demand >= 20)
+              if structural and demand_backed and b>a*_LH_RATIO: return other
               return None
           def agent(observation,configuration=None):
               global _LH_OBS
@@ -110,62 +101,57 @@ jobs:
               finally: _LH_OBS=None
           kaggle_submission_agent___NAME__=agent
           '''
-          candidates={'v124':1.15,'v126':1.20,'v127':1.25,'v128':1.30}
-          for name,ratio in candidates.items():
-              text=base+wrapper.replace('__RATIO__',str(ratio)).replace('__NAME__',name)
+          for name,gate in [('v124','False'),('v129','True')]:
+              text=base+wrapper.replace('__HIGH_PRICE_GATE__',gate).replace('__NAME__',name)
               Path(f'tmp/{name}.py').write_text(text,encoding='utf-8')
           PY
-          python -m py_compile tmp/v77.py tmp/v124.py tmp/v126.py tmp/v127.py tmp/v128.py
+          python -m py_compile tmp/v77.py tmp/v124.py tmp/v129.py
 
-      - name: Focused SHEEP-to-COW telemetry and ratio sweep
+      - name: Recheck development trigger seeds
         run: |
-          python - <<'PY' | tee results/focused.log
-          import json, os
+          python - <<'PY' | tee results/dev.log
+          import json
           from scripts.eval import evaluate
           seeds=[1,105,130,133,144,151]
-          agents={'v124':'tmp/v124.py','v126':'tmp/v126.py','v127':'tmp/v127.py','v128':'tmp/v128.py'}
           out={}
-          trace='results/sheep_to_cow_trace.jsonl'
-          if os.path.exists(trace): os.remove(trace)
-          os.environ['LH_TRACE_FILE']=trace
-          for name,path in agents.items():
+          for name,path in [('v124','tmp/v124.py'),('v129','tmp/v129.py')]:
               out[name]={}
               for seed in seeds:
-                  os.environ['LH_TRACE_LABEL']=f'{name}:seed{seed}'
                   s=evaluate(path,'tmp/v77.py',pairs=1,jobs=1,seed_start=seed)
-                  games=s['matches_detail']
-                  diffs=[g['money'][0]-g['money'][1] for g in games]
-                  row={'game_diffs':diffs,'pair_diff':s['pair_diff_mean'],'exceptions':s['exceptions']['a']}
+                  row={'pair_diff':s['pair_diff_mean'],'exceptions':s['exceptions']['a']}
                   out[name][str(seed)]=row
                   print(name,seed,row)
-          with open('results/focused.json','w',encoding='utf-8') as f: json.dump(out,f,ensure_ascii=False,indent=2)
+          with open('results/dev.json','w') as f: json.dump(out,f,indent=2)
+          PY
 
-          # Compact trace summary: unique triggering contexts per candidate/seed.
+      - name: Sealed 80-pair v129 evaluation
+        run: |
+          python - <<'PY' | tee results/sealed.log
+          import json, math, statistics
+          from scripts.eval import evaluate
           rows=[]
-          if os.path.exists(trace):
-              with open(trace,encoding='utf-8') as f:
-                  rows=[json.loads(x) for x in f if x.strip()]
-          summary={}
-          for r in rows:
-              if not r['swap']: continue
-              key=r['label']
-              bucket=summary.setdefault(key,{'swap_calls':0,'ratios':[],'days':[],'pizza_shops':[],'contexts':[]})
-              bucket['swap_calls']+=1
-              bucket['ratios'].append(r['ratio']); bucket['days'].append(r['day']); bucket['pizza_shops'].append(r['pizza_shops'])
-              ctx={k:r[k] for k in ('day','seat','pizza_shops','own','rival','milk_price','wool_price','milk_demand','wool_demand','ratio')}
-              if ctx not in bucket['contexts']: bucket['contexts'].append(ctx)
-          for key,b in summary.items():
-              b['ratio_min']=min(b['ratios']); b['ratio_max']=max(b['ratios'])
-              del b['ratios']
-          with open('results/trace_summary.json','w',encoding='utf-8') as f: json.dump(summary,f,ensure_ascii=False,indent=2)
-          print('TRACE_SUMMARY')
-          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          for seed in range(201,281):
+              s=evaluate('tmp/v129.py','tmp/v77.py',pairs=1,jobs=1,seed_start=seed)
+              d=float(s['pair_diff_mean'])
+              rows.append({'seed':seed,'pair_diff':d,'exceptions':s['exceptions']['a']})
+              print(seed,d)
+          vals=[r['pair_diff'] for r in rows]
+          mean=statistics.mean(vals)
+          se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          summary={
+              'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+              'mean':mean,'se':se,'two_se_pass':mean>0 and mean>=2*se,
+              'worst':min(vals),'best':max(vals),'exception_total':sum(r['exceptions'] for r in rows),
+              'rows':rows,
+          }
+          print('SUMMARY',json.dumps({k:v for k,v in summary.items() if k!='rows'},indent=2))
+          with open('results/sealed.json','w') as f: json.dump(summary,f,indent=2)
           PY
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liveherd-sheep-cow-telemetry-results
+          name: liveherd-v129-demand-backed-sealed-results
           path: results/
           retention-days: 7
