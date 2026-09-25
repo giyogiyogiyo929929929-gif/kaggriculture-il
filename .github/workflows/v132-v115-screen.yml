@@ -1,0 +1,102 @@
+name: v132 squeeze15 vs exact v115 screen
+
+on:
+  push:
+    branches:
+      - eval-public-opponents-20260923
+    paths:
+      - ".github/workflows/v132-v115-screen.yml"
+      - "ci/build_v132_from_v115.py"
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact agents
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v132_from_v115.py tmp/v115.py tmp/v132.py
+          python -m py_compile tmp/v115.py tmp/v132.py
+      - name: Direct matched H2H seeds 309-316 both seats
+        run: |
+          python - <<'PY'
+          import json
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v132.py','tmp/v115.py',pairs=8,jobs=4,seed_start=309)
+          out={
+            'metric':'candidate_minus_champion = candidate - champion direct pair margin',
+            'seeds':[309,316],
+            'wins':s['wins'],'losses':s['losses'],'ties':s['draws'],
+            'candidate_minus_champion_mean':s['pair_diff_mean'],
+            'candidate_minus_champion_se':s['pair_diff_stderr'],
+            'mean_ge_2se': bool(s['pair_diff_mean']>0 and s['pair_diff_mean'] >= 2*s['pair_diff_stderr']),
+            'worst': min(s['pair_diffs']) if s.get('pair_diffs') else None,
+            'best': max(s['pair_diffs']) if s.get('pair_diffs') else None,
+            'candidate_exceptions':s['exceptions']['a'],
+            'champion_exceptions':s['exceptions']['b'],
+            'matches_detail':s['matches_detail'],
+          }
+          open('results/direct.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='matches_detail'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v132-screen-direct
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+
+  starter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact agents
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v132_from_v115.py tmp/v115.py tmp/v132.py
+          python -m py_compile tmp/v115.py tmp/v132.py
+      - name: Starter regression seeds 309-316 both seats
+        run: |
+          python ci/eval_candidate_vs_champion_panel.py \
+            --candidate tmp/v132.py --champion tmp/v115.py --opponent starter \
+            --seed-start 309 --seed-count 8 --jobs 4 --out results/starter.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v132-screen-starter
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
