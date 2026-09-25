@@ -34,56 +34,133 @@ jobs:
           print('kaggriculture runtime OK')
           PY
 
-      - name: Build loader-safe v77 from frozen v27
+      - name: Build loader-safe v77 and live-herd transfer candidate
         run: |
           mkdir -p tmp
           cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
           (cd tmp && patch --batch -p3 < ../ci/v76.patch)
           printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
           mv tmp/main.py tmp/v77.py
-          python -m py_compile tmp/v77.py
+          cp tmp/v77.py tmp/v77_liveherd.py
+          cat >> tmp/v77_liveherd.py <<'PY'
+
+          # Conservative transfer of the v123 live-herd mechanism tested on v115.
+          # Public concept source: GzmCR/Kaggriculture reactive livestock scoring.
+          _LH_PARENT = agent
+          _LH_TARGET_BASE = _y_target
+          _LH_OBS = None
+          _LH_RATIO = 1.15
+          _LH_BASE_PRICE = {'MILK':160.0,'WOOL':200.0}
+          _LH_SHOP_PRODUCTS = {
+              'BAKERY':('EGG','WHEAT'), 'PIZZA_SHOP':('MILK','TOMATO','WHEAT'),
+              'BRUNCH_SPOT':('EGG','WHEAT','STRAWBERRY'), 'YARN_STORE':('WOOL',),
+              'ICE_CREAM_SHOP':('STRAWBERRY','MILK','WHEAT'), 'PET_CAFE':('CARROT',),
+              'SMOOTHIE_SHOP':('STRAWBERRY','MILK'),
+              'FARMERS_MARKET':('WHEAT','CARROT','TOMATO','STRAWBERRY'),
+          }
+          _LH_REPORT={'calls':0,'considered':0,'swaps':0,'errors':0}
+
+          def _lh_counts(obs, seat):
+              out={'COW':0,'SHEEP':0}
+              for row in obs['farms'][seat].get('tiles',[]) or []:
+                  for tile in row:
+                      if isinstance(tile,dict) and tile.get('animal') in out:
+                          out[tile['animal']]+=1
+              return out
+
+          def _lh_demand(obs, product):
+              day=int(obs.get('day',0) or 0)
+              total=2*(4 if day>=20 else 2 if day>=10 else 1)
+              for name in ((obs.get('town') or {}).get('unlocked_shops',[]) or []):
+                  products=_LH_SHOP_PRODUCTS.get(name,())
+                  if product in products:
+                      total += 12 if len(products)==1 else 6
+              return total
+
+          def _lh_score(obs, animal, own, rival):
+              product='MILK' if animal=='COW' else 'WOOL'
+              price=float((obs.get('market') or {}).get('prices',{}).get(product,_LH_BASE_PRICE[product]) or _LH_BASE_PRICE[product])
+              return (price/_LH_BASE_PRICE[product])*(1.0+0.012*_lh_demand(obs,product))/(1.0+0.18*rival+0.08*own)
+
+          def _y_target(kind, shops, cfg):
+              base=_LH_TARGET_BASE(kind,shops,cfg)
+              if base is not None:
+                  return base
+              obs=_LH_OBS
+              if obs is None or kind not in ('COW','SHEEP'):
+                  return None
+              try:
+                  day=int(obs.get('day',0) or 0)
+                  if not (cfg['days'][0] <= day <= cfg['days'][1]):
+                      return None
+                  seat=int(obs.get('player',0) or 0)
+                  own=_lh_counts(obs,seat); rival=_lh_counts(obs,1-seat)
+                  other='SHEEP' if kind=='COW' else 'COW'
+                  a=_lh_score(obs,kind,own[kind],rival[kind]); b=_lh_score(obs,other,own[other],rival[other])
+                  _LH_REPORT['considered']+=1
+                  milk_shops=sum(1 for name in shops if name in ('PIZZA_SHOP','ICE_CREAM_SHOP','SMOOTHIE_SHOP'))
+                  structural=(kind!='SHEEP' or other!='COW' or milk_shops>=2)
+                  if structural and b>a*_LH_RATIO:
+                      _LH_REPORT['swaps']+=1
+                      return other
+              except Exception:
+                  _LH_REPORT['errors']+=1
+              return None
+
+          def agent(observation, configuration=None):
+              global _LH_OBS
+              _LH_REPORT['calls']+=1
+              _LH_OBS=observation
+              try:
+                  return _LH_PARENT(observation,configuration)
+              finally:
+                  _LH_OBS=None
+
+          agent.telemetry=_LH_REPORT
+          kaggle_submission_agent_v77_liveherd=agent
+          PY
+          python -m py_compile tmp/v77.py tmp/v77_liveherd.py
           python - <<'PY'
           import importlib.util
-          from pathlib import Path
-          p=Path('tmp/v77.py')
-          s=importlib.util.spec_from_file_location('_diag_v77',p)
-          m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-          last_name=None; last=None
-          for k,v in vars(m).items():
-              if callable(v): last_name,last=k,v
-          print('last callable:', last_name, getattr(last,'__name__',None))
-          assert last_name == 'kaggle_submission_agent_v77'
+          for path,want in [('tmp/v77.py','kaggle_submission_agent_v77'),('tmp/v77_liveherd.py','kaggle_submission_agent_v77_liveherd')]:
+              s=importlib.util.spec_from_file_location('_diag',path);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+              last_name=None
+              for k,v in vars(m).items():
+                  if callable(v): last_name=k
+              print(path,'last callable:',last_name)
+              assert last_name==want
           PY
 
-      - name: Run fixed repo 2-seed panel
+      - name: Run matched 4-seed public-opponent panel
         shell: bash
         run: |
           mkdir -p results
           run_eval() {
-            name="$1"
-            path="$2"
-            echo "===== ${name}: ${path} ====="
-            if [ ! -f "$path" ]; then
-              echo "missing: $path" | tee "results/${name}.log"
-              return 0
-            fi
+            name="$1"; a="$2"; b="$3"
+            echo "===== ${name}: ${a} vs ${b} ====="
             set +e
-            python scripts/eval.py tmp/v77.py "$path" -n 2 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            python scripts/eval.py "$a" "$b" -n 4 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
             cat "results/${name}.log"
           }
-          run_eval beat_v48 opponents/beat_v48/main.py
-          run_eval bl_v20 opponents/bl_v20/main.py
-          run_eval bl_v21 opponents/bl_v21/main.py
-          run_eval farming_v2 opponents/farming_v2/main.py
-          run_eval frontier_prvsiyan opponents/frontier_prvsiyan/main.py
+          run_eval direct_liveherd tmp/v77_liveherd.py tmp/v77.py
+          for spec in \
+            'beat_v48 opponents/beat_v48/main.py' \
+            'bl_v20 opponents/bl_v20/main.py' \
+            'bl_v21 opponents/bl_v21/main.py' \
+            'farming_v2 opponents/farming_v2/main.py' \
+            'frontier_prvsiyan opponents/frontier_prvsiyan/main.py'; do
+            set -- $spec; name="$1"; path="$2"
+            run_eval "base_${name}" tmp/v77.py "$path"
+            run_eval "liveherd_${name}" tmp/v77_liveherd.py "$path"
+          done
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fixed-opponent-eval-results
+          name: liveherd-public-opponent-eval-results
           path: results/
           retention-days: 7
