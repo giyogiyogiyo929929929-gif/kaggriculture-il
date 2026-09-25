@@ -1,0 +1,206 @@
+name: v148 room guard future-reserve screen
+
+on:
+  push:
+    branches: [eval-v115-v148-room-guard-future-reserve-20260926]
+    paths:
+      - ".github/workflows/v148-v115-room-guard-future-reserve-screen.yml"
+      - "ci/build_v148_room_guard_future_reserve.py"
+      - "ci/build_v144_public_room_guard.py"
+      - "ci/reconstruct_exact_v115.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print('engine', kaggle_environments.__version__)"
+
+      - name: Reconstruct exact v115 and build v144/v148
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python ci\build_v144_public_room_guard.py tmp\v115.py tmp\v144.py
+          if ($LASTEXITCODE -ne 0) { throw 'v144 build failed' }
+          python ci\build_v148_room_guard_future_reserve.py tmp\v115.py tmp\v148.py
+          if ($LASTEXITCODE -ne 0) { throw 'v148 build failed' }
+          python -m py_compile tmp\v115.py tmp\v144.py tmp\v148.py ci\build_v148_room_guard_future_reserve.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          champ=Path('tmp/v115.py')
+          v144=Path('tmp/v144.py')
+          v148=Path('tmp/v148.py')
+          sha=hashlib.sha256(champ.read_bytes()).hexdigest()
+          print('v115_sha256',sha)
+          print('v144_sha256',hashlib.sha256(v144.read_bytes()).hexdigest())
+          print('v148_sha256',hashlib.sha256(v148.read_bytes()).hexdigest())
+          assert sha == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          c=champ.read_text(encoding='utf-8')
+          a=v144.read_text(encoding='utf-8')
+          b=v148.read_text(encoding='utf-8')
+          old="avail = max(0, view.shed.get(item, 0) - planned_sells.get(item, 0))"
+          new="avail = max(0, view.shed.get(item, 0) - planned_sells.get(item, 0) - self.future_sells(route, item, step + 1))"
+          assert a == c.replace("'room_guard': False", "'room_guard': True", 1)
+          expected=c.replace("'room_guard': False", "'room_guard': True", 1).replace(old,new,1)
+          assert b == expected
+          for s in ("'budget_guard': False","'clamp_sells': False","'dead_stock': False","'terminal_liquidation': False","'front_run': False"):
+              assert b.count(s) == 1, s
+          print('v148_localized_change_verified=true')
+          '@
+          $check | python -
+
+      - name: Focused synthetic future reserve
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import copy, importlib.util
+          from types import SimpleNamespace
+          def load(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+          m144=load('v144','tmp/v144.py')
+          m148=load('v148','tmp/v148.py')
+          def run(m,future_qty,step=23,shed=99,buy=2):
+              tape=[copy.deepcopy(m.PASS_ACTION) for _ in range(719)]
+              if future_qty:
+                  tape[24]={'farmer':['PASS'],'hands':[],'market':[['SELL','WHEAT',future_qty]]}
+              ch=m.Chassis({'r':tape}, settings={'room_guard':True})
+              view=SimpleNamespace(invs=[],positions=[],tiles=[],shed={'WHEAT':shed},prices={'WHEAT':10})
+              market=[] if not buy else [['BUY_PRODUCT','MILK',buy]]
+              action={'farmer':['PASS'],'hands':[],'market':market}
+              ch._room_guard(action,view,'r',step)
+              return action
+          no_future_144=run(m144,0)
+          no_future_148=run(m148,0)
+          assert no_future_144 == no_future_148, (no_future_144,no_future_148)
+          assert ['SELL','WHEAT',2] in no_future_148['market'], no_future_148
+          reserved_144=run(m144,98)
+          reserved_148=run(m148,98)
+          assert ['SELL','WHEAT',2] in reserved_144['market'], reserved_144
+          assert ['SELL','WHEAT',1] in reserved_148['market'], reserved_148
+          no_overflow=run(m148,0,shed=98,buy=1)
+          assert not any(o and o[0]=='SELL' for o in no_overflow['market']), no_overflow
+          wrong_hour=run(m148,0,step=22)
+          assert not any(o and o[0]=='SELL' for o in wrong_hour['market']), wrong_hour
+          print('synthetic_future_reserve=true')
+          print('reserved_v144',reserved_144)
+          print('reserved_v148',reserved_148)
+          '@
+          $code | python -
+
+      - name: Runtime smoke burned seed 693
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts\eval.py tmp\v148.py tmp\v115.py -n 1 -j 1 --seed-start 693 --json results\runtime_693.json
+          if ($LASTEXITCODE -ne 0) { throw 'runtime smoke failed' }
+          $code = @'
+          import json
+          d=json.load(open('results/runtime_693.json',encoding='utf-8'))
+          assert d['exceptions']['a']==0 and d['exceptions']['b']==0
+          assert d['timings']['a']['max'] < 0.2, d['timings']['a']
+          print('runtime_candidate',d['timings']['a'])
+          '@
+          $code | python -
+
+      - name: Burned v148 vs exact v115 seeds 681-692
+        run: |
+          python scripts\eval.py tmp\v148.py tmp\v115.py -n 12 -j 4 --seed-start 681 --json results\burned_v148_vs_v115.json
+          if ($LASTEXITCODE -ne 0) { throw 'burned v148-v115 failed' }
+
+      - name: Burned v148 vs v144 seeds 681-692
+        run: |
+          python scripts\eval.py tmp\v148.py tmp\v144.py -n 12 -j 4 --seed-start 681 --json results\burned_v148_vs_v144.json
+          if ($LASTEXITCODE -ne 0) { throw 'burned v148-v144 failed' }
+
+      - name: Fresh development v148 vs exact v115 seeds 721001-721008
+        run: |
+          python scripts\eval.py tmp\v148.py tmp\v115.py -n 8 -j 4 --seed-start 721001 --json results\fresh_721001_721008.json
+          if ($LASTEXITCODE -ne 0) { throw 'fresh development failed' }
+
+      - name: Aggregate
+        if: always()
+        run: |
+          $code = @'
+          import json,statistics
+          from pathlib import Path
+          def summarize(path):
+              p=Path(path)
+              if not p.exists(): return None
+              d=json.loads(p.read_text(encoding='utf-8'))
+              by={}
+              for g in d['matches_detail']:
+                  by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':s,'delta':statistics.mean(v),'seat_diffs':v} for s,v in sorted(by.items())]
+              vals=[r['delta'] for r in rows]
+              return {'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.mean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'candidate_exceptions':d['exceptions']['a'],'reference_exceptions':d['exceptions']['b'],'rows':rows}
+          out={
+              'candidate':'v148_room_guard_future_reserve',
+              'champion':'v115_champion_same_turn_open_squeeze',
+              'engine':'kaggle_environments==1.32.7',
+              'metric':'candidate_minus_reference = candidate - reference',
+              'burned_vs_v115':summarize('results/burned_v148_vs_v115.json'),
+              'burned_vs_v144':summarize('results/burned_v148_vs_v144.json'),
+              'fresh_vs_v115':summarize('results/fresh_721001_721008.json'),
+              'v144_historical_reference':{'seeds':'681-692','wins':9,'losses':1,'ties':2,'mean':49.67,'best_seed683':492,'worst_seed689':-84},
+              'decision':'DIAGNOSTIC ONLY; no automatic promotion'
+          }
+          for key in ('burned_vs_v115','burned_vs_v144','fresh_vs_v115'):
+              x=out[key]
+              if x:
+                  assert x['candidate_exceptions']==0 and x['reference_exceptions']==0, (key,x)
+          Path('results/v148_screen_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-room-guard-future-reserve-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
