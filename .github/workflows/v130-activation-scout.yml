@@ -1,0 +1,144 @@
+name: V130 Activation Scout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v130-activation-scout.yml"
+      - "eval_assets/v130/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scout:
+    name: ${{ matrix.id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - { id: starter, opponent: starter }
+          - { id: random, opponent: random }
+          - { id: first_in_line, opponent: opponents/first_in_line }
+          - { id: farming_v2, opponent: opponents/farming_v2 }
+          - { id: bl_v16rc2, opponent: opponents/bl_v16rc2 }
+          - { id: bl_v21, opponent: opponents/bl_v21 }
+          - { id: bl_v29, opponent: opponents/bl_v29 }
+          - { id: dz_v111, opponent: opponents/dz_v111 }
+          - { id: beat_v48, opponent: opponents/beat_v48 }
+          - { id: frontier_prvsiyan, opponent: opponents/frontier_prvsiyan }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
+          print("kaggle_environments", kaggle_environments.__version__)
+          PY
+
+      - name: Rebuild exact v121 and v130
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+
+      - name: Candidate against matched opponent
+        run: |
+          mkdir -p results/${{ matrix.id }}
+          python scripts/ci/run_exact_pair.py \
+            --candidate eval_agents/v130/v130_candidate_late_town_draw_gate24.py \
+            --baseline "${{ matrix.opponent }}" \
+            --seed-start 380001 --seed-count 6 \
+            --out results/${{ matrix.id }}/candidate.json
+
+      - name: Champion against matched opponent
+        run: |
+          python scripts/ci/run_exact_pair.py \
+            --candidate eval_agents/v130/v121_champion_same_turn_unwind.py \
+            --baseline "${{ matrix.opponent }}" \
+            --seed-start 380001 --seed-count 6 \
+            --out results/${{ matrix.id }}/champion.json
+
+      - name: Normalize candidate_minus_champion
+        run: |
+          python eval_assets/v130/compare_candidate_champion.py \
+            --candidate-json results/${{ matrix.id }}/candidate.json \
+            --champion-json results/${{ matrix.id }}/champion.json \
+            --opponent "${{ matrix.opponent }}" \
+            --out results/${{ matrix.id }}/summary.json
+
+      - name: Upload opponent result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v130-scout-${{ matrix.id }}
+          path: results/${{ matrix.id }}/
+          retention-days: 30
+
+  aggregate:
+    name: aggregate
+    if: always()
+    needs: scout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v130-scout-*
+          path: artifacts
+
+      - name: Aggregate scout
+        run: |
+          python - <<'PY'
+          import glob,json,math,statistics
+          from pathlib import Path
+          ss=[]
+          for p in sorted(glob.glob('artifacts/**/summary.json',recursive=True)):
+              ss.append(json.load(open(p,encoding='utf-8')))
+          rows=[r for s in ss for r in s.get('rows',[])]
+          ds=[float(r['candidate_minus_champion']) for r in rows]
+          n=len(ds); mean=statistics.fmean(ds) if ds else 0.0
+          sd=statistics.stdev(ds) if n>1 else 0.0; se=sd/math.sqrt(n) if n else 0.0
+          out={
+            'engine':'kaggle_environments==1.32.7',
+            'seed_start':380001,'seed_count_per_opponent':6,
+            'opponents':len(ss),'paired_rows':n,
+            'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),
+            'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,
+            'worst_regression':min(ds) if ds else 0.0,'best_improvement':max(ds) if ds else 0.0,
+            'activation_worlds':[s['opponent'] for s in ss if s['wins'] or s['losses']],
+            'regression_worlds':[s['opponent'] for s in ss if s['losses']],
+            'all_ok':len(ss)==10 and all(s.get('all_ok') for s in ss),
+            'summaries':ss,
+          }
+          Path('v130_scout_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          lines=['# v130 activation scout','',f"Engine: `{out['engine']}`",f"Rows: {n}; W/L/D = {out['wins']}/{out['losses']}/{out['draws']}",f"mean candidate_minus_champion = {mean:+.3f}; SE = {se:.3f}; mean-2SE = {mean-2*se:+.3f}",f"worst = {out['worst_regression']:+.3f}; best = {out['best_improvement']:+.3f}",'', '| opponent | W/L/D | mean | m-2SE | worst | seat0 | seat1 |','|---|---:|---:|---:|---:|---:|---:|']
+          for s in ss:
+              lines.append(f"| {s['opponent']} | {s['wins']}/{s['losses']}/{s['draws']} | {s['mean_candidate_minus_champion']:+.3f} | {s['mean_minus_2se']:+.3f} | {s['worst_regression']:+.3f} | {s['seat0_mean']:+.3f} | {s['seat1_mean']:+.3f} |")
+          Path('v130_scout_summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          print('\n'.join(lines))
+          if not out['all_ok']:
+              raise SystemExit('technical gate failed')
+          PY
+          cat v130_scout_summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v130-scout-summary
+          path: |
+            v130_scout_summary.json
+            v130_scout_summary.md
+          retention-days: 30
