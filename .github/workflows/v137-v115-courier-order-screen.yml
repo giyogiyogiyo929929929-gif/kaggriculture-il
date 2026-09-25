@@ -1,0 +1,126 @@
+name: v137 courier order fix screen
+
+on:
+  push:
+    branches: [eval-public-opponents-20260923]
+    paths: [".github/workflows/v137-v115-courier-order-screen.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115/v137
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v137_courier_order_fix.py tmp/v115.py tmp/v137.py
+          python -m py_compile tmp/v115.py tmp/v137.py
+          sha256sum tmp/v115.py tmp/v137.py
+      - name: Direct matched both-seat H2H seeds 561-572
+        run: |
+          python - <<'PY'
+          import json, math, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v137.py','tmp/v115.py',pairs=12,jobs=4,seed_start=561)
+          by={}
+          for g in s['matches_detail']: by.setdefault(int(g['seed']),[]).append(g)
+          rows=[]; seat0=[]; seat1=[]
+          for seed in sorted(by):
+              vals=[]
+              for g in sorted(by[seed],key=lambda x:bool(x['swap'])):
+                  d=float(g['money'][0])-float(g['money'][1]); vals.append(d)
+                  (seat1 if g['swap'] else seat0).append(d)
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.mean(vals)})
+          vals=[r['candidate_minus_champion'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'metric':'candidate_minus_champion = candidate - champion','pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'candidate_minus_champion_mean':mean,'se':se,'mean_minus_2se':mean-2*se,'mean_ge_2se':bool(mean>0 and mean>=2*se),'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(seat0),'seat1_mean':statistics.mean(seat1),'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],'rows':rows}
+          open('results/direct.json','w').write(json.dumps(out,indent=2)); print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2)); print('DIFFERING',[(r['seed'],r['candidate_minus_champion']) for r in rows if r['candidate_minus_champion']])
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: v137-direct-screen, path: results/, retention-days: 14}
+
+  public:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {name: beat_v48, opponent: opponents/beat_v48/main.py}
+          - {name: bl_v20, opponent: opponents/bl_v20/main.py}
+          - {name: bl_v21, opponent: opponents/bl_v21/main.py}
+          - {name: farming_v2, opponent: opponents/farming_v2/main.py}
+          - {name: frontier_prvsiyan, opponent: opponents/frontier_prvsiyan/main.py}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115/v137 and telemetry twin
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v137_courier_order_fix.py tmp/v115.py tmp/v137.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tmp/v137.py').read_text()
+          a='_V9_COURIER_REPORT = dict(courier_trips=0, courier_units=0, courier_errors=0)'
+          b='_V9_COURIER_REPORT = dict(courier_trips=0, courier_units=0, courier_errors=0, courier_multi=0, courier_order_changes=0)'
+          assert s.count(a)==1; s=s.replace(a,b)
+          a='_V9_COURIER_REPORT.update(courier_trips=0, courier_units=0, courier_errors=0)'
+          b='_V9_COURIER_REPORT.update(courier_trips=0, courier_units=0, courier_errors=0, courier_multi=0, courier_order_changes=0)'
+          assert s.count(a)==1; s=s.replace(a,b)
+          a="        for item, n in sorted(delivered.items(), key=lambda kv: int(prices.get(kv[0], 0)) * kv[1]):\n"
+          b="        _old=sorted(delivered.items(), key=lambda kv: -int(prices.get(kv[0],0))*kv[1])\n        _new=sorted(delivered.items(), key=lambda kv: int(prices.get(kv[0],0))*kv[1])\n        if len(delivered)>1:_V9_COURIER_REPORT['courier_multi']+=1\n        if [x[0] for x in _old] != [x[0] for x in _new]:_V9_COURIER_REPORT['courier_order_changes']+=1\n        for item, n in _new:\n"
+          assert s.count(a)==1; s=s.replace(a,b)
+          Path('tmp/v137_probe.py').write_text(s)
+          PY
+          python -m py_compile tmp/v115.py tmp/v137.py tmp/v137_probe.py
+      - name: Matched panel seeds 561-564
+        run: |
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v137.py --champion tmp/v115.py --opponent '${{ matrix.opponent }}' --seed-start 561 --seed-count 4 --jobs 4 --out results/panel.json
+      - name: Activation telemetry
+        env: {OPPONENT: '${{ matrix.opponent }}'}
+        run: |
+          python - <<'PY'
+          import json, os
+          from kaggle_environments import make
+          from scripts.eval import resolve_agent
+          rows=[]
+          for seed in range(561,565):
+              for swap in (False,True):
+                  cand=resolve_agent('tmp/v137_probe.py'); opp=resolve_agent(os.environ['OPPONENT'])
+                  env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run([opp,cand] if swap else [cand,opp])
+                  tel=dict(getattr(cand,'telemetry',{}) or {})
+                  rows.append({'seed':seed,'swap':swap,'courier_trips':int(tel.get('courier_trips',0) or 0),'courier_units':int(tel.get('courier_units',0) or 0),'courier_multi':int(tel.get('courier_multi',0) or 0),'courier_order_changes':int(tel.get('courier_order_changes',0) or 0),'courier_errors':int(tel.get('courier_errors',0) or 0)})
+          out={'opponent':os.environ['OPPONENT'],'games_with_courier':sum(r['courier_trips']>0 for r in rows),'courier_trips_total':sum(r['courier_trips'] for r in rows),'courier_units_total':sum(r['courier_units'] for r in rows),'games_with_multi':sum(r['courier_multi']>0 for r in rows),'courier_multi_total':sum(r['courier_multi'] for r in rows),'games_with_order_change':sum(r['courier_order_changes']>0 for r in rows),'courier_order_changes_total':sum(r['courier_order_changes'] for r in rows),'errors':sum(r['courier_errors'] for r in rows),'rows':rows}
+          open('results/telemetry.json','w').write(json.dumps(out,indent=2)); print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: 'v137-public-${{ matrix.name }}', path: results/, retention-days: 14}
