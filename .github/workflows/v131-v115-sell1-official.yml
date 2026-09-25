@@ -1,0 +1,86 @@
+name: Exact v115 sell1 preempt development
+
+on:
+  push:
+    branches: [gpt-v115-sell1-official]
+    paths:
+      - '.github/workflows/v131-v115-sell1-official.yml'
+      - 'ci/v131_v115_sell1_overlay.py'
+      - 'ci/eval_v115_sell1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact Kaggriculture 1.32.7
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          from kaggle_environments import make
+          assert kaggle_environments.__version__ == '1.32.7'
+          env=make('kaggriculture',configuration={'seed':410000},debug=True)
+          env.run(['starter','starter'])
+          assert len(env.steps)==720
+          PY
+      - name: Reconstruct exact v115 and append one-unit overlay
+        run: |
+          set -euo pipefail
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          cat tmp/v115.py ci/v131_v115_sell1_overlay.py > tmp/v131_sell1.py
+          python -m py_compile tmp/v115.py tmp/v131_sell1.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected_base='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          expected_cand='80cc64cd15e8ec83c93d3c992608fa133eb78195ff0bb58b82b7c7f4949b7cc9'
+          for path,expected in [('tmp/v115.py',expected_base),('tmp/v131_sell1.py',expected_cand)]:
+              got=hashlib.sha256(Path(path).read_bytes()).hexdigest()
+              print(path,got)
+              assert got==expected,(path,got,expected)
+          PY
+      - name: Fresh same-seed both-seat H2H with telemetry
+        run: |
+          python ci/eval_v115_sell1.py \
+            --candidate tmp/v131_sell1.py \
+            --champion tmp/v115.py \
+            --seed-start 410001 --seed-count 24 \
+            --out results/v131_sell1_dev.json
+      - name: Show differing seeds and telemetry
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('results/v131_sell1_dev.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          print('SUMMARY',{k:v for k,v in d.items() if k!='rows'})
+          for r in d['rows']:
+              if r['candidate_minus_champion'] != 0 or r['candidate_telemetry_normal'].get('fires') or r['candidate_telemetry_swapped'].get('fires'):
+                  print('ROW',r['seed'],r['candidate_minus_champion'],r['normal_margin'],r['swapped_margin'])
+                  print(' T0',r['candidate_telemetry_normal'])
+                  print(' T1',r['candidate_telemetry_swapped'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-v115-v131-sell1-dev
+          path: results/v131_sell1_dev.json
+          if-no-files-found: warn
+          retention-days: 30
