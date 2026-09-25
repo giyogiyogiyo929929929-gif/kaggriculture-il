@@ -1,6 +1,6 @@
 # v147 confirmed-v111 clone experiment
 
-Status: **KEEP TESTING** (public-opponent gate pending)
+Status: **KEEP TESTING** (public gate passed; final runtime/preflight pending)
 
 ## Identity
 
@@ -75,7 +75,7 @@ Representative official-engine replays:
 
 For the sampled sealed games, the candidate differs only when the gated second pass actually changes the order book; sampled no-change games remain equal. This supports the intended mechanism, though it is not by itself a causal proof for every seed.
 
-## Public-opponent reproducibility gate
+## Public-opponent reproducibility gate — PASS
 
 Historical v140 calibration target, seeds 641-644:
 
@@ -94,23 +94,81 @@ Pinned opponent blobs at commit `a045f9cec962a1ab23b90c7289808ddca65d7597`:
 - farming_v2: git blob `000f64b6b9a4273fc52b8c59a8409d1f5e9c1943`
 - frontier_prvsiyan: git blob `55e9af781ac03da062a3601a6d3bafee7cf03b14`
 
-`v147-selfhosted-public-panel.yml` first verifies exact v115/v147 SHA and requires exact v140 calibration before running v147. Previous v143 self-hosted failure was traced to a stale auxiliary source-count assertion after successful agent reconstruction; exact v115 reconstruction itself matched the required SHA.
+Successful formal run:
 
-Current v147 self-hosted run `36143337087` is queued because no self-hosted runner is assigned. Hosted Ubuntu fallback run `36143538053` failed before step 1 (`steps=[]`, runner_id=0), so it is infrastructure evidence only and not a candidate failure.
+- GitHub Actions run: `36143337087`
+- run head: `504f55bc5e453a51994d5a25f378588c690f005a`
+- artifact: `v147-selfhosted-public-panel`
+- artifact id: `10877217590`
+- artifact digest: `sha256:15a77cfca7c5bf38a28a4d3fbdf9595ee4f75de1dda4d7f08fbe6abbb6c6b05a`
+- engine: `kaggle_environments==1.32.7`
+- exact historical v140 calibration: PASS before v147 was counted
 
-## Runtime
+v147 vs exact v115 result across six public/starter opponents, seeds 641-644, both seats:
 
-Local timing showed v147 median/p99 essentially equal to v115. Shared large outliers occurred in both agents in the local environment, so the formal runtime gate remains pending on the intended runner/preflight environment.
+- opponents: starter / beat_v48 / bl_v20 / bl_v21 / farming_v2 / frontier_prvsiyan
+- matched pairs: **24**
+- wins / losses / ties: **0 / 0 / 24**
+- mean candidate_minus_champion: **0.0**
+- SE: **0.0**
+- worst regression: **0.0**
+- best improvement: **0.0**
+- candidate exceptions: **0**
+- champion exceptions: **0**
+
+Every public/starter matched pair was exact equality. The public-opponent regression gate therefore passes.
+
+## Runtime / preflight
+
+Previous local timing showed v147 median/p99 essentially equal to v115. Shared large outliers occurred in both agents in that local environment, so an official-engine final runtime check was requested.
+
+### Actions infrastructure status
+
+- self-hosted runtime run `36163027401`: remains queued; no runner assigned / no candidate steps executed.
+- hosted fallback workflow added at commit `d0a1045f452797c28f485059804b10d509380b88`.
+- hosted fallback run `36169993623`: failed before step 1 with `steps=[]` and no job logs; this is runner-start infrastructure evidence, not a candidate runtime failure.
+
+No additional sealed seeds were consumed for these attempts.
+
+### Exact local identity reconstruction
+
+On 2026-09-26, the saved `v115_exact.py` was materialized and hashed:
+
+- v115 SHA256: `c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2` — exact match.
+- applying the repository's v147 append produced SHA256 `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923` — exact match.
+- both sources pass `py_compile`.
+
+The local container does not have `kaggle_environments`; direct pip installation of 1.32.7 is blocked by DNS/network isolation. Kaggle's official repository commit `28b6d8af3ce73926b3d0fda1410c1ddd8384ab8c` identifies itself as version 1.32.7, but the full dependency/runtime environment has not yet been reconstructed locally, so this does **not** replace the formal engine runtime gate.
+
+### Broken-observation gate audit
+
+The repository `scripts/preflight.py` defines:
+
+`BROKEN_OBSERVATIONS = [{}, {"player": 0}, {"farms": []}, {"player": 5, "farms": [{}]}, None]`
+
+Using its Kaggle-like loader/call semantics on the exact v115 and exact v147 sources:
+
+- exported callable: `agent` for both.
+- first four broken-observation cases: valid fallback action for both.
+- `None`: both exact v115 and exact v147 raise the same `AttributeError` before returning an action.
+
+Therefore the current workflow assertion that **all five** broken observations must return a valid action is stricter than the existing formal champion and would reject v115 and v147 equally. This must not be interpreted as a v147 regression. A corrected final preflight should treat this as champion-parity/invalid-input audit while retaining the actual runtime thresholds on valid official observations.
 
 ## Decision
 
 **KEEP TESTING. Do not promote yet.**
 
-Remaining promotion gates:
+Completed promotion gates:
 
-1. exact historical v140 public-panel calibration;
-2. v147 vs v115 on the same six public/starter panels with no unacceptable regression;
-3. final runtime/preflight check;
-4. update handover/SCORES and create a new champion artifact only if all gates pass.
+1. matched development/stress improvement with worst regression 0;
+2. sealed replication on unused seeds 721-732, both seats, mean-2SE > 0, worst regression 0;
+3. telemetry mechanism check;
+4. exact historical v140 public-panel calibration;
+5. v147 vs v115 public/starter panel: 24/24 matched pairs equal, worst regression 0;
+6. exact source identity / builder SHA verification.
 
-Do not consume another sealed seed range merely because infrastructure is unavailable.
+Remaining promotion gate:
+
+1. final runtime on the intended `kaggle_environments==1.32.7` execution environment, requiring no candidate-specific exceptions/timeouts and acceptable p99/worst turn time relative to the documented thresholds.
+
+Do not consume another sealed seed range merely because runtime infrastructure is unavailable. Do not change the formal champion until the runtime gate is complete.
