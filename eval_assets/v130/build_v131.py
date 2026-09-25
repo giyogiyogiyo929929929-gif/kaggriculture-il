@@ -18,7 +18,7 @@ def main() -> int:
     text=src.read_text(encoding='utf-8')
     if text.count(OLD)!=1: raise RuntimeError(f"expected exactly one gate, found {text.count(OLD)}")
     text=text.replace(OLD,NEW)
-    out.parent.mkdir(parents=True,exist_ok=True); out.write_text(text,encoding='utf-8')
+    out.parent.mkdir(parents=True,exist_ok=True); out.write_bytes(text.encode('utf-8'))
     compile(text,str(out),'exec')
     if sha(out)!=V131_SHA256: raise RuntimeError(f"v131 sha256 mismatch: {sha(out)}")
     print(f"v131_sha256={V131_SHA256}")
