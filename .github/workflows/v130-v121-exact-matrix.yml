@@ -1,0 +1,106 @@
+name: v130-v121 exact differential matrix
+
+on:
+  push:
+    branches: [eval-v130-v121-exact-20260925]
+    paths:
+      - '.github/workflows/v130-v121-exact-matrix.yml'
+      - 'scripts/ci/rebuild_v130_v121_agents.py'
+      - 'scripts/ci/run_differential_panel.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {panel: activation, name: bl_v16rc2, opponent: opponents/bl_v16rc2, seeds: '383001,383002,383003,383004,383005,383006,383007,383008,383009,383010'}
+          - {panel: activation, name: bl_v21, opponent: opponents/bl_v21, seeds: '383001,383002,383003,383004,383005,383006,383007,383008,383009,383010'}
+          - {panel: activation, name: bl_v29, opponent: opponents/bl_v29, seeds: '383001,383002,383003,383004,383005,383006,383007,383008,383009,383010'}
+          - {panel: activation, name: dz_v111, opponent: opponents/dz_v111, seeds: '383001,383002,383003,383004,383005,383006,383007,383008,383009,383010'}
+          - {panel: activation, name: beat_v48, opponent: opponents/beat_v48, seeds: '383001,383002,383003,383004,383005,383006,383007,383008,383009,383010'}
+          - {panel: activation, name: frontier_prvsiyan, opponent: opponents/frontier_prvsiyan, seeds: '383001,383002,383003,383004,383005,383006,383007,383008,383009,383010'}
+          - {panel: weak_holdout, name: starter, opponent: starter, seeds: '384001,384002,384003,384004,384005,384006,384007,384008,384009,384010'}
+          - {panel: weak_holdout, name: dz_more_wheat, opponent: opponents/dz_more_wheat, seeds: '384001,384002,384003,384004,384005,384006,384007,384008,384009,384010'}
+          - {panel: weak_holdout, name: dz_one_more_wheat, opponent: opponents/dz_one_more_wheat, seeds: '384001,384002,384003,384004,384005,384006,384007,384008,384009,384010'}
+          - {panel: strong, name: farming_v2, opponent: opponents/farming_v2, seeds: '385001,385002,385003,385004,385005,385006,385007,385008,385009,385010'}
+          - {panel: strong, name: farming_v2_b, opponent: opponents/farming_v2_b, seeds: '385001,385002,385003,385004,385005,385006,385007,385008,385009,385010'}
+          - {panel: strong, name: first_in_line, opponent: opponents/first_in_line, seeds: '385001,385002,385003,385004,385005,385006,385007,385008,385009,385010'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'kaggle-environments==1.32.7'
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == '1.32.7', kaggle_environments.__version__
+          print(kaggle_environments.__version__)
+          PY
+      - name: Rebuild verified v121 and v130
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
+      - name: Exact same-seed seat-swap differential
+        run: |
+          mkdir -p out
+          python scripts/ci/run_differential_panel.py \
+            --candidate eval_agents/v130/v130_candidate_late_town_draw_gate24.py \
+            --champion eval_agents/v130/v121_champion_same_turn_unwind.py \
+            --opponent '${{ matrix.opponent }}' \
+            --seeds '${{ matrix.seeds }}' \
+            --out 'out/${{ matrix.panel }}__${{ matrix.name }}.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v130-v121-${{ matrix.panel }}-${{ matrix.name }}
+          path: out/*.json
+          if-no-files-found: warn
+
+  aggregate:
+    needs: differential
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v130-v121-*
+          path: all
+          merge-multiple: true
+      - name: Aggregate panel statistics
+        run: |
+          python - <<'PY'
+          import glob,json,math,statistics
+          from collections import defaultdict
+          groups=defaultdict(list); errors=[]
+          for p in glob.glob('all/*.json'):
+              d=json.load(open(p)); panel=p.split('/')[-1].split('__')[0]
+              groups[panel].append(d)
+          out={}
+          for panel,ds in groups.items():
+              vals=[]; rows=[]; ce=he=0
+              for d in ds:
+                  ce+=d.get('candidate_exceptions',0); he+=d.get('champion_exceptions',0)
+                  for r in d.get('rows',[]):
+                      if r.get('ok'):
+                          vals.append(float(r['candidate_minus_champion'])); rows.append({'opponent':d['opponent'],**r})
+              n=len(vals); mean=statistics.mean(vals) if vals else None
+              se=statistics.stdev(vals)/math.sqrt(n) if n>1 else (0.0 if n==1 else None)
+              out[panel]={'opponents':len(ds),'n':n,'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'draws':sum(v==0 for v in vals),'mean':mean,'se':se,'mean_minus_2se':mean-2*se if mean is not None and se is not None else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'candidate_exceptions':ce,'champion_exceptions':he,'negative_rows':[r for r in rows if r['candidate_minus_champion']<0]}
+          json.dump(out,open('v130_v121_matrix_summary.json','w'),indent=2)
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v130-v121-matrix-summary
+          path: v130_v121_matrix_summary.json
