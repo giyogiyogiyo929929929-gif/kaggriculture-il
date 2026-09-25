@@ -1,0 +1,144 @@
+name: v94-lineage v96 H2H
+
+on:
+  push:
+    branches: ["exp/v94-lineage-actions"]
+    paths:
+      - ".github/workflows/v94-lineage-v96-h2h.yml"
+      - "ci/build_v96_generic_sell_lead1.py"
+      - "ci/v94_lineage_bundle.b64.part*"
+      - "scripts/ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE: candidates/v96_generic_sell_lead1/main.py
+  CHAMPION: champion/v94_adaptive_h14_yarn2_nomilk/main.py
+  SEED_START: "242001"
+  SEED_COUNT: "20"
+  BUNDLE_SHA256: a65f9d0120ba3aacfb260de06640654bed878511f996c3178deb8ffa5f236fd7
+  V94_SHA256: 869b7e9fe727694ca52710716921856fea6511ccae71b0613be26f4e9236baa3
+  V96_SHA256: 8a7e2b372d9c8492274e6aea9281c535c02c8d0d2133d09c2ee5b468d6e31a24
+
+jobs:
+  h2h:
+    name: shard-${{ matrix.shard }}
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Restore exact v94 and deterministically build v96
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parts = Get-ChildItem ci\v94_lineage_bundle.b64.part* | Sort-Object Name
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\v94_lineage_bundle.zip", [Convert]::FromBase64String($b64))
+          $verifyBundle = @'
+          import hashlib, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'v94_lineage_bundle.zip'
+          got=hashlib.sha256(p.read_bytes()).hexdigest()
+          assert got == os.environ['BUNDLE_SHA256'], (got, os.environ['BUNDLE_SHA256'])
+          '@
+          $verifyBundle | python -
+          Expand-Archive -Force "$env:RUNNER_TEMP\v94_lineage_bundle.zip" .
+          python ci\build_v96_generic_sell_lead1.py
+          $verifySources = @'
+          import hashlib, os, py_compile, sys
+          print('python', sys.version)
+          for name,key in [(os.environ['CHAMPION'],'V94_SHA256'),(os.environ['CANDIDATE'],'V96_SHA256')]:
+              got=hashlib.sha256(open(name,'rb').read()).hexdigest()
+              want=os.environ[key]
+              print(name, got)
+              assert got == want, (name,got,want)
+              py_compile.compile(name,doraise=True)
+          '@
+          $verifySources | python -
+
+      - name: Install exact Kaggriculture engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments,sys; print(sys.version); assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Engine smoke
+        if: matrix.shard == 0
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          python scripts\ci\run_exact_pair.py --candidate "$env:CANDIDATE" --baseline "$env:CHAMPION" --seed-start 241001 --seed-count 1 --out smoke\pair.json
+
+      - name: Run exact paired shard
+        id: run
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          python scripts\ci\run_exact_pair.py --candidate "$env:CANDIDATE" --baseline "$env:CHAMPION" --seed-start $env:SEED_START --seed-count $env:SEED_COUNT --shard-index "${{ matrix.shard }}" --shard-count 4 --out "results\shard-${{ matrix.shard }}.json"
+
+      - name: Upload shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v96-v94-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Propagate shard failure
+        if: steps.run.outcome == 'failure'
+        run: exit 1
+
+  aggregate:
+    name: aggregate
+    if: always()
+    needs: h2h
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v96-v94-shard-*
+          path: artifacts
+      - name: Aggregate candidate_minus_champion
+        run: |
+          python scripts\ci\aggregate_h2h.py --input-dir artifacts --candidate "$env:CANDIDATE" --baseline "$env:CHAMPION" --seed-start $env:SEED_START --seed-count $env:SEED_COUNT --json-out h2h_summary.json --md-out h2h_summary.md
+          Get-Content h2h_summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Technical gate only
+        run: |
+          $gate = @'
+          import json
+          s=json.load(open('h2h_summary.json',encoding='utf-8'))
+          assert s['pairs_completed'] == 20, s
+          assert s['failed_pairs'] == 0, s
+          assert s['candidate_exceptions'] == 0, s
+          print('candidate_minus_champion = candidate - champion')
+          '@
+          $gate | python -
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v96-v94-summary-242001-242020
+          path: |
+            h2h_summary.json
+            h2h_summary.md
+          retention-days: 30
