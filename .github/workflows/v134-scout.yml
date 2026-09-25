@@ -27,18 +27,28 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
           python -m pip install "kaggle-environments==1.32.7"
+          if ($LASTEXITCODE -ne 0) { throw "engine install failed" }
           python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "engine version check failed" }
       - name: Rebuild v121 through v134
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          if (-not (Get-Command patch.exe -ErrorAction SilentlyContinue)) { throw "Git patch.exe not found" }
           python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "v121/v130 rebuild failed" }
           python eval_assets/v130/build_v131.py --source eval_agents/v130/v130_candidate_late_town_draw_gate24.py --out eval_agents/v130/v131_candidate_persistent_late_lead5000.py
+          if ($LASTEXITCODE -ne 0) { throw "v131 rebuild failed" }
           python eval_assets/v130/build_v132_variants.py --source eval_agents/v130/v131_candidate_persistent_late_lead5000.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "v132 rebuild failed" }
           python eval_assets/v130/build_v133_variants.py --source eval_agents/v130/v132_lastday.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "v133 rebuild failed" }
           python scripts/ci/rebuild_v134_from_v133.py --source eval_agents/v130/v133_center_only.py --out eval_agents/v130/v134_strict_future_center_tick.py
+          if ($LASTEXITCODE -ne 0) { throw "v134 rebuild failed" }
       - name: Matched-seed seat-swap scout
         run: |
           $ErrorActionPreference = 'Stop'
