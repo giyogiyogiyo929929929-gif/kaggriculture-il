@@ -54,3 +54,13 @@ The currently queued formal run `36144084808` is pinned to its earlier commit an
 Do not PROMOTE or REJECT v135 from runner scheduling state.
 
 Next executable step is still the intended v135 matched-seat panel. If the original formal run executes successfully, use it. If it hangs or fails technically, rerun the same evaluation with the guarded runner before changing candidate logic.
+
+## 2026-09-26 follow-up
+
+- The previously blocking exploratory run `36143337087` later completed successfully. Its job `108098248881` finished all evaluation and artifact-upload steps.
+- Its `v147` artifact is not a promotion signal for the formal v121 line: `v147_confirmed_v111_clone` was exactly tied with its own `v115_champion_same_turn_open_squeeze` baseline on all 24 paired rows (0 wins / 0 losses / 24 draws, mean `candidate_minus_champion = 0.0`, exceptions 0).
+- After that completion, repository Actions showed `0` jobs in progress and `9` queued runs. Formal v135 run `36144084808` / job `108100737763` was still queued.
+- This changes the blocker diagnosis: the earlier long-running v147 job is no longer occupying `CIYOI`; the remaining evidence is consistent with the self-hosted runner not currently accepting jobs. No candidate logic conclusion follows from this state.
+- Do not create duplicate unguarded v135 evaluations while the original formal job is still queued. Once `CIYOI` is accepting work again, consume the existing formal run first; if it hangs or fails technically after assignment, switch to the guarded exact runner.
+
+Decision remains **KEEP TESTING; champion v121 unchanged**.
