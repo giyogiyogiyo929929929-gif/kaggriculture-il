@@ -40,7 +40,7 @@ def main() -> None:
         patch_path = td / "v77_to_v115.patch"
         patch_path.write_bytes(patch)
         subprocess.run(
-            ["patch", "--batch", "-p0", "-i", str(patch_path)],
+            ["patch", "--binary", "--batch", "-p0", "-i", str(patch_path)],
             cwd=td,
             check=True,
         )
