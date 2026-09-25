@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse, base64, gzip, hashlib, shutil, subprocess, tempfile
+from pathlib import Path
+
+V121_SHA256 = "1a44487de886d59f612cfbd083cacadf872ad56d0db13604cbf8af0056c600c2"
+V96_SHA256 = "dc0938fa82952e6599b04725f1e397ac1f317a0ddffaefbae204e265171b0a22"
+V97_SHA256 = "3597c6e8f0f32139cb84eece0552e733b969f1578c7a7530c9898a539c9101fb"
+PATCH_V121_TO_V96_GZ_B64 = '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'
+PATCH_V96_TO_V97_GZ_B64 = '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'
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def apply_patch(target: Path, encoded: str) -> None:
+    raw = gzip.decompress(base64.b64decode(encoded))
+    with tempfile.NamedTemporaryFile(suffix=".patch", delete=False) as f:
+        f.write(raw)
+        name = f.name
+    try:
+        subprocess.run(["patch", "--batch", "--silent", str(target), name], check=True)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out-dir", default="eval_agents/v97")
+    args = ap.parse_args()
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    base_dir = out / "_base"
+    subprocess.run([
+        "python", "eval_assets/v130/rebuild_eval_agents.py",
+        "--out-dir", str(base_dir),
+    ], check=True)
+    v121 = base_dir / "v121_champion_same_turn_unwind.py"
+    if sha256(v121) != V121_SHA256:
+        raise RuntimeError(f"v121 sha mismatch: {sha256(v121)}")
+    v96 = out / "v96_champion_lead11_milkshops2.py"
+    v97 = out / "v97_candidate_actual_trade_race.py"
+    shutil.copyfile(v121, v96)
+    apply_patch(v96, PATCH_V121_TO_V96_GZ_B64)
+    if sha256(v96) != V96_SHA256:
+        raise RuntimeError(f"v96 sha mismatch: {sha256(v96)}")
+    shutil.copyfile(v96, v97)
+    apply_patch(v97, PATCH_V96_TO_V97_GZ_B64)
+    if sha256(v97) != V97_SHA256:
+        raise RuntimeError(f"v97 sha mismatch: {sha256(v97)}")
+    compile(v96.read_text(encoding="utf-8"), str(v96), "exec")
+    compile(v97.read_text(encoding="utf-8"), str(v97), "exec")
+    print(f"v96={V96_SHA256}")
+    print(f"v97={V97_SHA256}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
