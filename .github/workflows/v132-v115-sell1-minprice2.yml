@@ -1,0 +1,59 @@
+name: Exact v115 sell1 minprice2 development
+
+on:
+  push:
+    branches: [gpt-v115-sell1-official]
+    paths: ['.github/workflows/v132-v115-sell1-minprice2.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {id: 0, seed_start: 410001}
+          - {id: 1, seed_start: 410007}
+          - {id: 2, seed_start: 410013}
+          - {id: 3, seed_start: 410019}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact v115 and v132
+        run: |
+          set -euo pipefail
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          cat tmp/v115.py ci/v131_v115_sell1_overlay.py > tmp/v131.py
+          python ci/build_v132_sell1_minprice2.py tmp/v131.py tmp/v132.py
+          python -m py_compile tmp/v115.py tmp/v132.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()=='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert hashlib.sha256(Path('tmp/v132.py').read_bytes()).hexdigest()=='d62360c16f4229976695714ee233b858d6b0ad703464244285312b1cf6689209'
+          PY
+      - name: Development matched both-seat pairs
+        run: |
+          python ci/eval_v115_sell1.py --candidate tmp/v132.py --champion tmp/v115.py --seed-start ${{ matrix.seed_start }} --seed-count 6 --out results/shard-${{ matrix.id }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-v115-v132-minprice2-shard-${{ matrix.id }}
+          path: results/shard-${{ matrix.id }}.json
+          if-no-files-found: warn
+          retention-days: 30
