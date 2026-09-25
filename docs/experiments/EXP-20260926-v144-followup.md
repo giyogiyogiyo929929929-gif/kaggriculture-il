@@ -46,7 +46,7 @@ Do not build/promote a reserve variant until corrected causal telemetry identifi
 
 `room_guard_disposable_qty = max(0, shed_qty - future_planned_sell_qty)`
 
-Use disposable quantity first; only consume planned-SSELL reserve if overflow remains. This should be a separate candidate with one principal tactical change.
+Use disposable quantity first; only consume planned SELL reserve if overflow remains. This should be a separate candidate with one principal tactical change.
 
 ## Required next steps
 
