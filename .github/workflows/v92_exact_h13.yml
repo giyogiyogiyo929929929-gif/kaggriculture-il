@@ -6,7 +6,6 @@ on:
       - chatgpt-v92-exact-h13
     paths:
       - '.github/workflows/v92_exact_h13.yml'
-      - 'experiments/chatgpt_v92/**'
   workflow_dispatch:
 
 jobs:
