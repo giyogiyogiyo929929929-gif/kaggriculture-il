@@ -129,38 +129,55 @@ jobs:
               assert last_name==want
           PY
 
-      - name: Run matched 8-seed public-opponent panel
-        shell: bash
+      - name: Serial runtime gate
         run: |
           mkdir -p results
+          python - <<'PY' | tee results/runtime_preflight.log
+          from pathlib import Path
+          from scripts.preflight import load_like_kaggle, check_turn_time
+          agent = load_like_kaggle(Path('tmp/v77_liveherd.py'))
+          result = check_turn_time(agent)
+          print(result.line())
+          if not result.ok:
+              raise SystemExit(1)
+          PY
+
+      - name: Run 20-pair acceptance comparisons
+        shell: bash
+        run: |
           run_eval() {
-            name="$1"; a="$2"; b="$3"
+            name="$1"; a="$2"; b="$3"; jobs="$4"
             echo "===== ${name}: ${a} vs ${b} ====="
-            set +e
-            # This panel is for paired score comparison, not acceptance timing.
-            # Two workers cut wall-clock time; timing acceptance remains a separate -j 1 check.
-            python scripts/eval.py "$a" "$b" -n 8 -j 2 --json "results/${name}.json" > "results/${name}.log" 2>&1
-            code=$?
-            set -e
-            echo "exit_code=${code}" >> "results/${name}.log"
-            cat "results/${name}.log"
+            python scripts/eval.py "$a" "$b" -n 20 -j "$jobs" --json "results/${name}.json" | tee "results/${name}.log"
           }
-          run_eval direct_liveherd tmp/v77_liveherd.py tmp/v77.py
-          for spec in \
-            'beat_v48 opponents/beat_v48/main.py' \
-            'bl_v20 opponents/bl_v20/main.py' \
-            'bl_v21 opponents/bl_v21/main.py' \
-            'farming_v2 opponents/farming_v2/main.py' \
-            'frontier_prvsiyan opponents/frontier_prvsiyan/main.py'; do
-            set -- $spec; name="$1"; path="$2"
-            run_eval "base_${name}" tmp/v77.py "$path"
-            run_eval "liveherd_${name}" tmp/v77_liveherd.py "$path"
-          done
+          # Score significance does not depend on worker count because seeds are fixed.
+          # Runtime itself was measured separately above in a single process.
+          run_eval direct20 tmp/v77_liveherd.py tmp/v77.py 2
+          run_eval starter20 tmp/v77_liveherd.py starter 2
+          python - <<'PY' | tee results/acceptance_check.log
+          import json
+          direct=json.load(open('results/direct20.json',encoding='utf-8'))
+          starter=json.load(open('results/starter20.json',encoding='utf-8'))
+          checks={
+              'direct_positive_2se': direct['pair_diff_mean'] > 0 and direct['pair_diff_mean'] >= 2*direct['pair_diff_stderr'],
+              'starter_19_of_20': starter['wins'] >= 19,
+              'exceptions_zero': direct['exceptions']['a']==0 and starter['exceptions']['a']==0,
+              'animals_lost_zero': direct['health']['a']['animals_lost']==0 and starter['health']['a']['animals_lost']==0,
+              'shed_under_100': direct['health']['a']['shed_final'] < 100 and starter['health']['a']['shed_final'] < 100,
+              'crop_loss_under_5pct': all(
+                  s['health']['a']['crop_losses'] <= 0.05*max(1,s['health']['a']['planted'])
+                  for s in (direct,starter)
+              ),
+          }
+          print(json.dumps({'checks':checks,'direct':{'mean':direct['pair_diff_mean'],'stderr':direct['pair_diff_stderr'],'wins':direct['wins'],'losses':direct['losses'],'draws':direct['draws']},'starter':{'wins':starter['wins'],'losses':starter['losses'],'draws':starter['draws']}},ensure_ascii=False,indent=2))
+          if not all(checks.values()):
+              raise SystemExit(2)
+          PY
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liveherd-public-opponent-eval-results
+          name: liveherd-acceptance-results
           path: results/
           retention-days: 7
