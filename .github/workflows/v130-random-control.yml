@@ -1,0 +1,83 @@
+name: V130 Random Control
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v130-random-control.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7"
+          PY
+      - name: Rebuild exact agents
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+      - name: Champion random replicate A
+        run: |
+          mkdir -p results
+          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline random --seed-start 380001 --seed-count 6 --out results/champion_random_a.json
+      - name: Champion random replicate B
+        run: |
+          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline random --seed-start 380001 --seed-count 6 --out results/champion_random_b.json
+      - name: Direct v130 vs v121 safety
+        run: |
+          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v130_candidate_late_town_draw_gate24.py --baseline eval_agents/v130/v121_champion_same_turn_unwind.py --seed-start 380001 --seed-count 6 --out results/direct_v130_v121.json
+      - name: Analyze reproducibility
+        run: |
+          python - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          a=json.load(open('results/champion_random_a.json'))
+          b=json.load(open('results/champion_random_b.json'))
+          d=json.load(open('results/direct_v130_v121.json'))
+          aa={r['seed']:r for r in a}; bb={r['seed']:r for r in b}
+          reps=[]
+          for seed in sorted(aa):
+              x=aa[seed]; y=bb[seed]
+              reps.append({
+                'seed':seed,
+                'pair_margin_a':x['candidate_minus_baseline'],
+                'pair_margin_b':y['candidate_minus_baseline'],
+                'replicate_delta':x['candidate_minus_baseline']-y['candidate_minus_baseline'],
+                'normal_rewards_equal':x['normal']['rewards']==y['normal']['rewards'],
+                'swapped_rewards_equal':x['swapped']['rewards']==y['swapped']['rewards'],
+              })
+          direct=[r['candidate_minus_baseline'] for r in d]
+          out={
+            'engine':'kaggle_environments==1.32.7',
+            'random_reproducible':all(r['replicate_delta']==0 and r['normal_rewards_equal'] and r['swapped_rewards_equal'] for r in reps),
+            'random_replicates':reps,
+            'direct_v130_minus_v121':{
+              'values':direct,
+              'wins':sum(x>0 for x in direct),'losses':sum(x<0 for x in direct),'draws':sum(x==0 for x in direct),
+              'mean':statistics.fmean(direct) if direct else 0.0,
+              'worst':min(direct) if direct else 0.0,
+            },
+          }
+          Path('results/control_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v130-random-control
+          path: results/
+          retention-days: 30
