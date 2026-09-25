@@ -1,4 +1,4 @@
-name: v144 room guard telemetry hosted fallback
+name: v144 room guard telemetry self-hosted fallback
 
 on:
   push:
@@ -13,8 +13,11 @@ permissions:
 
 jobs:
   telemetry:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,50 +25,63 @@ jobs:
           python-version: "3.11"
       - name: Install exact engine
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
           python -m pip install --no-deps "kaggle-environments==1.32.7"
           python -m pip install jsonschema requests
-          python - <<'PY'
-          import kaggle_environments
-          assert kaggle_environments.__version__ == '1.32.7'
-          print(kaggle_environments.__version__)
-          PY
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
       - name: Reconstruct exact v115 and room guard candidate
         run: |
-          set -euo pipefail
-          mkdir -p tmp results
-          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
-          python - <<'PY'
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
           from pathlib import Path
           for name in ('tmp/main.py','ci/v76.patch'):
               p=Path(name)
               p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
-          PY
-          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
-          python - <<'PY'
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
           from pathlib import Path
           p=Path('tmp/main.py')
           p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
-          PY
-          mv tmp/main.py tmp/v77.py
-          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
-          python ci/build_v144_public_room_guard.py tmp/v115.py tmp/room_guard.py
-          python -m py_compile tmp/v115.py tmp/room_guard.py ci/diagnose_public_room_guard.py
-          python - <<'PY'
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v144_public_room_guard.py tmp\v115.py tmp\room_guard.py
+          python -m py_compile tmp\v115.py tmp\room_guard.py ci\diagnose_public_room_guard.py
+          $check = @'
           import hashlib
           from pathlib import Path
           got=hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()
           print('v115_sha256',got)
           assert got == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
-          PY
+          text=Path('tmp/v115.py').read_text(encoding='utf-8')
+          key="'room_guard': False"
+          pos=text.index(key)
+          lo=max(0,pos-12000); hi=min(len(text),pos+12000)
+          Path('results/room_guard_source_context.txt').write_text(text[lo:hi],encoding='utf-8')
+          print('room_guard_context_written',lo,hi)
+          '@
+          $check | python -
       - name: Burned causal telemetry 683 689 693 both seats
         run: |
-          set -euo pipefail
-          python ci/diagnose_public_room_guard.py --v115 tmp/v115.py --candidate tmp/room_guard.py --out results/public_room_guard_telemetry.json
+          $ErrorActionPreference = 'Stop'
+          python ci\diagnose_public_room_guard.py --v115 tmp\v115.py --candidate tmp\room_guard.py --out results\public_room_guard_telemetry.json
+          if ($LASTEXITCODE -ne 0) { throw 'telemetry failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v144-public-room-guard-telemetry-hosted
+          name: v144-public-room-guard-telemetry-self-hosted
           path: results/
           if-no-files-found: error
           retention-days: 30
