@@ -1,0 +1,82 @@
+name: v130 advanced-sale quote-priority vs exact v115
+
+on:
+  push:
+    branches:
+      - eval-v130-adv-quote-priority-20260925
+    paths:
+      - ".github/workflows/v130-v115-design.yml"
+      - "ci/build_v130_quote_from_v115.py"
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install canonical engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact v115 and exact library v130
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v130_quote_from_v115.py tmp/v115.py tmp/v130.py
+          python -m py_compile tmp/v115.py tmp/v130.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/v115.py').read_text(); c=Path('tmp/v130.py').read_text()
+          assert "[['BUY_PRODUCT','WHEAT',_OPEN_ATTACK],['SELL','WHEAT',_OPEN_ATTACK]]" in p
+          assert "key=lambda it:-int(prices.get(it,0))" in p
+          assert "key=_adv_priority,reverse=True" in c
+          print('source_invariants=PASS')
+          PY
+      - name: Fresh design H2H seeds 42001-42020 both seats
+        run: |
+          python - <<'PY'
+          import json, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v130.py','tmp/v115.py',pairs=20,jobs=4,seed_start=42001)
+          by={}
+          seats={}
+          for g in s['matches_detail']:
+            d=g['money'][0]-g['money'][1]
+            by.setdefault(g['seed'],[]).append(d)
+            seats.setdefault(str(g['seed']),{})['swap' if g['swap'] else 'normal']=d
+          pd={str(k):sum(v)/len(v) for k,v in sorted(by.items())}
+          vals=list(pd.values())
+          out={
+            'metric':'candidate_minus_champion = candidate - champion direct pair margin',
+            'phase':'fresh-design','seeds':[42001,42020],'pairs':20,
+            'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+            'candidate_minus_champion_mean':statistics.mean(vals),
+            'candidate_minus_champion_median':statistics.median(vals),
+            'candidate_minus_champion_se':s['pair_diff_stderr'],
+            'mean_minus_2se':statistics.mean(vals)-2*s['pair_diff_stderr'],
+            'mean_ge_2se':bool(statistics.mean(vals)>0 and statistics.mean(vals)>=2*s['pair_diff_stderr']),
+            'worst':min(vals),'best':max(vals),'pair_diffs':pd,'seat_diffs':seats,
+            'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],
+            'candidate_health':s['health']['a'],'champion_health':s['health']['b'],
+            'matches_detail':s['matches_detail']}
+          open('results/v130_design.json','w').write(json.dumps(out,indent=2))
+          print('V130='+json.dumps({k:v for k,v in out.items() if k!='matches_detail'},separators=(',',':')))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v130-v115-design
+          path: results/
+          if-no-files-found: warn
+          retention-days: 30
