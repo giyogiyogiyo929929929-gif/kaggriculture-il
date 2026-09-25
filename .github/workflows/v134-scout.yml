@@ -13,8 +13,11 @@ permissions:
 
 jobs:
   scout:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,77 +25,79 @@ jobs:
           python-version: "3.11"
       - name: Install exact engine
         run: |
+          $ErrorActionPreference = 'Stop'
           python -m pip install --upgrade pip
           python -m pip install "kaggle-environments==1.32.7"
-          python - <<'PY'
-          import kaggle_environments
-          assert kaggle_environments.__version__ == "1.32.7"
-          PY
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
       - name: Rebuild v121 through v134
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = 'Stop'
           python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
           python eval_assets/v130/build_v131.py --source eval_agents/v130/v130_candidate_late_town_draw_gate24.py --out eval_agents/v130/v131_candidate_persistent_late_lead5000.py
           python eval_assets/v130/build_v132_variants.py --source eval_agents/v130/v131_candidate_persistent_late_lead5000.py --out-dir eval_agents/v130
           python eval_assets/v130/build_v133_variants.py --source eval_agents/v130/v132_lastday.py --out-dir eval_agents/v130
           python scripts/ci/rebuild_v134_from_v133.py --source eval_agents/v130/v133_center_only.py --out eval_agents/v130/v134_strict_future_center_tick.py
       - name: Matched-seed seat-swap scout
-        shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p results
-          run_panel() {
-            id="$1"; opp="$2"; seed="$3"; count="$4"
-            mkdir -p "results/$id"
-            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v134_strict_future_center_tick.py --baseline "$opp" --seed-start "$seed" --seed-count "$count" --out "results/$id/candidate.json"
-            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline "$opp" --seed-start "$seed" --seed-count "$count" --out "results/$id/champion.json"
-            python eval_assets/v130/compare_candidate_champion.py --candidate-json "results/$id/candidate.json" --champion-json "results/$id/champion.json" --opponent "$opp" --out "results/$id/summary.json"
-            python - "$id" "$seed" "$count" <<'PY'
-          import json,sys
-          from pathlib import Path
-          ident,seed,count=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
-          p=Path('results')/ident/'summary.json'
-          s=json.loads(p.read_text())
-          s.update(panel_id=ident,seed_start=seed,seed_count_requested=count)
-          p.write_text(json.dumps(s,indent=2),encoding='utf-8')
-          PY
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          function Run-Panel([string]$id, [string]$opp, [int]$seed, [int]$count) {
+            $dir = Join-Path results $id
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v134_strict_future_center_tick.py --baseline $opp --seed-start $seed --seed-count $count --out "$dir/candidate.json"
+            if ($LASTEXITCODE -ne 0) { throw "candidate run failed: $id" }
+            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline $opp --seed-start $seed --seed-count $count --out "$dir/champion.json"
+            if ($LASTEXITCODE -ne 0) { throw "champion run failed: $id" }
+            python eval_assets/v130/compare_candidate_champion.py --candidate-json "$dir/candidate.json" --champion-json "$dir/champion.json" --opponent $opp --out "$dir/summary.json"
+            if ($LASTEXITCODE -ne 0) { throw "compare failed: $id" }
+            @'
+import json,sys
+from pathlib import Path
+ident,seed,count=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+p=Path('results')/ident/'summary.json'
+s=json.loads(p.read_text(encoding='utf-8'))
+s.update(panel_id=ident,seed_start=seed,seed_count_requested=count)
+p.write_text(json.dumps(s,indent=2),encoding='utf-8')
+'@ | python - $id $seed $count
+            if ($LASTEXITCODE -ne 0) { throw "metadata update failed: $id" }
           }
-          run_panel regression-bl21-382002 opponents/bl_v21 382002 1
-          run_panel fresh-bl16 opponents/bl_v16rc2 382001 6
-          run_panel fresh-starter starter 382001 6
-          run_panel fresh-weak opponents/dz_more_wheat 382101 6
-          run_panel fresh-frontier opponents/frontier_prvsiyan 382001 6
-          run_panel strong-farming opponents/farming_v2 382001 6
-          run_panel strong-first opponents/first_in_line 382001 6
+          Run-Panel regression-bl21-382002 opponents/bl_v21 382002 1
+          Run-Panel fresh-bl16 opponents/bl_v16rc2 382001 6
+          Run-Panel fresh-starter starter 382001 6
+          Run-Panel fresh-weak opponents/dz_more_wheat 382101 6
+          Run-Panel fresh-frontier opponents/frontier_prvsiyan 382001 6
+          Run-Panel strong-farming opponents/farming_v2 382001 6
+          Run-Panel strong-first opponents/first_in_line 382001 6
       - name: Aggregate candidate_minus_champion
         if: always()
         run: |
-          python - <<'PY'
-          import glob,json,math,statistics
-          from pathlib import Path
-          ss=[]
-          for p in sorted(glob.glob('results/*/summary.json')):
-              try: ss.append(json.load(open(p,encoding='utf-8')))
-              except Exception as e: print('skip',p,e)
-          rows=[(s,r) for s in ss for r in s.get('rows',[])]
-          ds=[float(r['candidate_minus_champion']) for s,r in rows]
-          n=len(ds); mean=statistics.fmean(ds) if n else 0.0
-          sd=statistics.stdev(ds) if n>1 else 0.0; se=sd/math.sqrt(n) if n else 0.0
-          out={
-            'candidate':'v134_strict_future_center_tick',
-            'champion':'v121_champion_same_turn_unwind',
-            'engine':'kaggle_environments==1.32.7',
-            'paired_rows':n,
-            'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),
-            'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,
-            'worst_regression':min(ds) if ds else 0.0,'best_improvement':max(ds) if ds else 0.0,
-            'technical_ok':bool(ss) and all(s.get('all_ok') for s in ss),
-            'panels':ss,
-          }
-          Path('v134_scout_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
-          print(json.dumps({k:v for k,v in out.items() if k!='panels'},indent=2))
-          PY
+          @'
+import glob,json,math,statistics
+from pathlib import Path
+ss=[]
+for p in sorted(glob.glob('results/*/summary.json')):
+    try: ss.append(json.load(open(p,encoding='utf-8')))
+    except Exception as e: print('skip',p,e)
+rows=[(s,r) for s in ss for r in s.get('rows',[])]
+ds=[float(r['candidate_minus_champion']) for s,r in rows]
+n=len(ds); mean=statistics.fmean(ds) if n else 0.0
+sd=statistics.stdev(ds) if n>1 else 0.0; se=sd/math.sqrt(n) if n else 0.0
+out={
+  'candidate':'v134_strict_future_center_tick',
+  'champion':'v121_champion_same_turn_unwind',
+  'engine':'kaggle_environments==1.32.7',
+  'paired_rows':n,
+  'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),
+  'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,
+  'worst_regression':min(ds) if ds else 0.0,'best_improvement':max(ds) if ds else 0.0,
+  'technical_ok':bool(ss) and all(s.get('all_ok') for s in ss),
+  'panels':ss,
+}
+Path('v134_scout_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+print(json.dumps({k:v for k,v in out.items() if k!='panels'},indent=2))
+'@ | python -
       - uses: actions/upload-artifact@v4
         if: always()
         with:
