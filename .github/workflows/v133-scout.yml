@@ -1,0 +1,141 @@
+name: V133 Scout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v133-scout.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    name: ${{ matrix.variant }}-${{ matrix.id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - { variant: center_only, id: anchor-v130-beat, opponent: opponents/beat_v48, seed: 380001, count: 1 }
+          - { variant: center_only, id: anchor-v131-frontier, opponent: opponents/frontier_prvsiyan, seed: 380012, count: 1 }
+          - { variant: center_only, id: anchor-v132-frontier, opponent: opponents/frontier_prvsiyan, seed: 381001, count: 2 }
+          - { variant: center_only, id: anchor-v132-beat, opponent: opponents/beat_v48, seed: 381003, count: 1 }
+          - { variant: center_only, id: anchor-v132-first, opponent: opponents/first_in_line, seed: 381005, count: 1 }
+          - { variant: center_only, id: fresh-frontier, opponent: opponents/frontier_prvsiyan, seed: 382001, count: 6 }
+          - { variant: center_only, id: fresh-bl16, opponent: opponents/bl_v16rc2, seed: 382001, count: 6 }
+          - { variant: center_only, id: fresh-bl21, opponent: opponents/bl_v21, seed: 382001, count: 6 }
+          - { variant: center_only, id: fresh-starter, opponent: starter, seed: 382001, count: 6 }
+          - { variant: center_only, id: fresh-beat, opponent: opponents/beat_v48, seed: 382001, count: 6 }
+          - { variant: center_only, id: fresh-first, opponent: opponents/first_in_line, seed: 382001, count: 6 }
+          - { variant: center_only, id: fresh-weak, opponent: opponents/dz_more_wheat, seed: 382101, count: 6 }
+          - { variant: center_only, id: strong-farming, opponent: opponents/farming_v2, seed: 382001, count: 6 }
+          - { variant: center_only, id: strong-farming-b, opponent: opponents/farming_v2_b, seed: 382001, count: 6 }
+          - { variant: lead9000, id: anchor-v130-beat, opponent: opponents/beat_v48, seed: 380001, count: 1 }
+          - { variant: lead9000, id: anchor-v131-frontier, opponent: opponents/frontier_prvsiyan, seed: 380012, count: 1 }
+          - { variant: lead9000, id: anchor-v132-frontier, opponent: opponents/frontier_prvsiyan, seed: 381001, count: 2 }
+          - { variant: lead9000, id: anchor-v132-beat, opponent: opponents/beat_v48, seed: 381003, count: 1 }
+          - { variant: lead9000, id: anchor-v132-first, opponent: opponents/first_in_line, seed: 381005, count: 1 }
+          - { variant: lead9000, id: fresh-frontier, opponent: opponents/frontier_prvsiyan, seed: 382001, count: 6 }
+          - { variant: lead9000, id: fresh-bl16, opponent: opponents/bl_v16rc2, seed: 382001, count: 6 }
+          - { variant: lead9000, id: fresh-bl21, opponent: opponents/bl_v21, seed: 382001, count: 6 }
+          - { variant: lead9000, id: fresh-starter, opponent: starter, seed: 382001, count: 6 }
+          - { variant: lead9000, id: fresh-beat, opponent: opponents/beat_v48, seed: 382001, count: 6 }
+          - { variant: lead9000, id: fresh-first, opponent: opponents/first_in_line, seed: 382001, count: 6 }
+          - { variant: lead9000, id: fresh-weak, opponent: opponents/dz_more_wheat, seed: 382101, count: 6 }
+          - { variant: lead9000, id: strong-farming, opponent: opponents/farming_v2, seed: 382001, count: 6 }
+          - { variant: lead9000, id: strong-farming-b, opponent: opponents/farming_v2_b, seed: 382001, count: 6 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7"
+          PY
+      - name: Rebuild v121 through v133
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          python eval_assets/v130/build_v131.py --source eval_agents/v130/v130_candidate_late_town_draw_gate24.py --out eval_agents/v130/v131_candidate_persistent_late_lead5000.py
+          python eval_assets/v130/build_v132_variants.py --source eval_agents/v130/v131_candidate_persistent_late_lead5000.py --out-dir eval_agents/v130
+          python eval_assets/v130/build_v133_variants.py --source eval_agents/v130/v132_lastday.py --out-dir eval_agents/v130
+      - name: Candidate against matched opponent
+        run: |
+          mkdir -p results
+          python scripts/ci/run_exact_pair.py --candidate "eval_agents/v130/v133_${{ matrix.variant }}.py" --baseline "${{ matrix.opponent }}" --seed-start "${{ matrix.seed }}" --seed-count "${{ matrix.count }}" --out results/candidate.json
+      - name: Champion against matched opponent
+        run: |
+          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline "${{ matrix.opponent }}" --seed-start "${{ matrix.seed }}" --seed-count "${{ matrix.count }}" --out results/champion.json
+      - name: Normalize candidate_minus_champion
+        run: |
+          python eval_assets/v130/compare_candidate_champion.py --candidate-json results/candidate.json --champion-json results/champion.json --opponent "${{ matrix.opponent }}" --out results/summary.json
+      - name: Stamp metadata
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('results/summary.json'); s=json.loads(p.read_text())
+          s.update(variant='${{ matrix.variant }}',panel_id='${{ matrix.id }}',seed_start=int('${{ matrix.seed }}'),seed_count_requested=int('${{ matrix.count }}'))
+          p.write_text(json.dumps(s,indent=2),encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v133-${{ matrix.variant }}-${{ matrix.id }}
+          path: results/
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: panel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v133-*
+          path: artifacts
+      - name: Aggregate variants
+        run: |
+          python - <<'PY'
+          import glob,json,math,statistics
+          from pathlib import Path
+          ss=[]
+          for p in sorted(glob.glob('artifacts/**/summary.json',recursive=True)):
+              try: ss.append(json.load(open(p,encoding='utf-8')))
+              except Exception as e: print('skip',p,e)
+          out={'engine':'kaggle_environments==1.32.7','variants':{}}
+          for variant in ('center_only','lead9000'):
+              xs=[s for s in ss if s.get('variant')==variant]
+              rows=[r for s in xs for r in s.get('rows',[])]
+              ds=[float(r['candidate_minus_champion']) for r in rows]
+              n=len(ds); mean=statistics.fmean(ds) if n else 0.0
+              sd=statistics.stdev(ds) if n>1 else 0.0; se=sd/math.sqrt(n) if n else 0.0
+              regress=[{'panel':s.get('panel_id'),'opponent':s.get('opponent'),'worst':s.get('worst_regression'),'losses':s.get('losses')} for s in xs if s.get('losses',0)]
+              out['variants'][variant]={
+                  'panels':len(xs),'paired_rows':n,
+                  'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),
+                  'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,
+                  'worst_regression':min(ds) if ds else 0.0,'best_improvement':max(ds) if ds else 0.0,
+                  'regression_panels':regress,
+                  'technical_ok':len(xs)==14 and all(s.get('all_ok') for s in xs),
+                  'summaries':xs,
+              }
+          Path('v133_scout_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:{kk:vv for kk,vv in v.items() if kk!='summaries'} for kk,vv in out['variants'].items()},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v133-scout-summary
+          path: v133_scout_summary.json
+          retention-days: 30
