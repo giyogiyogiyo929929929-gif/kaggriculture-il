@@ -2,11 +2,11 @@ name: v97 Official Evaluation
 
 on:
   push:
-    branches:
-      - eval-v97-official
+    branches: [eval-v97-official]
     paths:
-      - '.github/workflows/v97-official-eval.yml'
-      - 'eval_assets/v97/**'
+      - ".github/workflows/v97-official-eval.yml"
+      - "eval_assets/v97/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      GITHUB_TOKEN: ${{ github.token }}
       CANDIDATE: eval_agents/v97/v97_candidate_actual_trade_race.py
       CHAMPION: eval_agents/v97/v96_champion_lead11_milkshops2.py
     steps:
@@ -24,19 +23,21 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install exact engine
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'kaggle-environments==1.32.7'
+          python -m pip install "kaggle-environments==1.32.7"
           python - <<'PY'
           import kaggle_environments
-          assert kaggle_environments.__version__ == '1.32.7', kaggle_environments.__version__
-          print('kaggle_environments', kaggle_environments.__version__)
+          assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
+          print("kaggle_environments", kaggle_environments.__version__)
           PY
 
       - name: Rebuild exact v96 and v97
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/base
           python eval_assets/v97/build_v97_eval.py \
