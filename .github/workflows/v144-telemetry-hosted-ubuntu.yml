@@ -5,6 +5,7 @@ on:
     branches: [eval-v115-v144-public-room-guard-20260925]
     paths:
       - ".github/workflows/v144-telemetry-hosted-ubuntu.yml"
+      - "ci/diagnose_public_room_guard.py"
   workflow_dispatch:
 
 permissions:
