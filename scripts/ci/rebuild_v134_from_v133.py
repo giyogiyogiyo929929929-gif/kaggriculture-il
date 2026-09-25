@@ -45,7 +45,7 @@ def main() -> int:
     body = text.replace(OLD, NEW)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(body, encoding="utf-8")
+    out.write_bytes(body.encode("utf-8"))
     compile(body, str(out), "exec")
     print(f"v134_sha256={sha(out.read_bytes())}")
     return 0
