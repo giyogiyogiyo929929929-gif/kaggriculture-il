@@ -31,7 +31,7 @@ jobs:
           print('kaggriculture runtime OK')
           PY
 
-      - name: Build loader-safe v77 and live-herd transfer candidate
+      - name: Build loader-safe v77 and exact-v124 transfer candidate
         run: |
           mkdir -p tmp
           cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
@@ -41,7 +41,8 @@ jobs:
           cp tmp/v77.py tmp/v77_liveherd.py
           cat >> tmp/v77_liveherd.py <<'PY'
 
-          # Conservative transfer of the v123 live-herd mechanism tested on v115.
+          # Exact structural gate used by v124 on the v115 line:
+          # SHEEP -> COW requires >=2 PIZZA_SHOP instances; COW -> SHEEP remains score-gated.
           # Public concept source: GzmCR/Kaggriculture reactive livestock scoring.
           _LH_PARENT = agent
           _LH_TARGET_BASE = _y_target
@@ -95,8 +96,8 @@ jobs:
                   other='SHEEP' if kind=='COW' else 'COW'
                   a=_lh_score(obs,kind,own[kind],rival[kind]); b=_lh_score(obs,other,own[other],rival[other])
                   _LH_REPORT['considered']+=1
-                  milk_shops=sum(1 for name in shops if name in ('PIZZA_SHOP','ICE_CREAM_SHOP','SMOOTHIE_SHOP'))
-                  structural=(kind!='SHEEP' or other!='COW' or milk_shops>=2)
+                  pizza_shops=sum(1 for name in shops if name=='PIZZA_SHOP')
+                  structural=(kind!='SHEEP' or other!='COW' or pizza_shops>=2)
                   if structural and b>a*_LH_RATIO:
                       _LH_REPORT['swaps']+=1
                       return other
