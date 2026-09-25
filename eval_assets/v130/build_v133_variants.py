@@ -36,7 +36,7 @@ def main() -> int:
     outdir=Path(a.out_dir); outdir.mkdir(parents=True,exist_ok=True)
     for name,body in variants.items():
         out=outdir/f'v133_{name}.py'
-        out.write_text(body,encoding='utf-8')
+        out.write_bytes(body.encode('utf-8'))
         compile(body,str(out),'exec')
         digest=sha(out.read_bytes())
         if digest != EXPECTED[name]:
