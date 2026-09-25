@@ -1,0 +1,84 @@
+name: v142 exact-v115 burned calibration
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths: [".github/workflows/v142-v115-burned-calibration.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: |
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == '1.32.7'
+          PY
+      - name: Build exact v115 and v142
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v142_v92_single_unit_exposure_k2.py tmp/v115.py tmp/v142.py
+          python -m py_compile tmp/v115.py tmp/v142.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          v115=hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()
+          v142=hashlib.sha256(Path('tmp/v142.py').read_bytes()).hexdigest()
+          assert v115 == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2', v115
+          assert v142 == '228bfbb0497bcea1121c6f6af94278d6730b7d822aeee378b965bd291efa8a0a', v142
+          print('exact_v115_sha256='+v115)
+          print('v142_sha256='+v142)
+          PY
+      - name: Evaluate burned seeds 641-652
+        run: |
+          python - <<'PY'
+          import json, math, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v142.py','tmp/v115.py',pairs=12,jobs=4,seed_start=641)
+          by={}
+          for g in s['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(g)
+          rows=[]
+          for seed in sorted(by):
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in by[seed]]
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.mean(vals),'seat_diffs':vals})
+          vals=[r['candidate_minus_champion'] for r in rows]
+          se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={
+              'metric':'candidate_minus_champion = candidate - champion direct pair margin',
+              'candidate':'v142_candidate_v92_single_unit_exposure_k2',
+              'champion':'v115_champion_same_turn_open_squeeze',
+              'seed_start':641,'seed_count':12,'pairs':len(vals),
+              'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),
+              'mean':statistics.mean(vals),'median':statistics.median(vals),'se':se,
+              'mean_minus_2se':statistics.mean(vals)-2*se,
+              'worst':min(vals),'best':max(vals),
+              'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],
+              'rows':rows}
+          print(json.dumps(out,indent=2))
+          open('results/calibration.json','w').write(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v142-exact-v115-burned-calibration
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
