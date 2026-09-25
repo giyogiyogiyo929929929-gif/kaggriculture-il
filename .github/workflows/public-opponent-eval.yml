@@ -89,8 +89,6 @@ jobs:
                   prices=(obs.get('market') or {}).get('prices',{}) or {}
                   milk_price=float(prices.get('MILK',160.0) or 160.0)
                   milk_demand=_lh_demand(obs,'MILK')
-                  # High MILK price alone can be a transient market spike. Above ~+34% vs base,
-                  # require stronger town demand before replacing SHEEP with COW.
                   demand_backed=(milk_price < 215.0 or milk_demand >= 20)
               if structural and demand_backed and b>a*_LH_RATIO: return other
               return None
@@ -124,17 +122,35 @@ jobs:
           with open('results/dev.json','w') as f: json.dump(out,f,indent=2)
           PY
 
-      - name: Sealed 80-pair v129 evaluation
+      - name: Sealed 80-pair v129 evaluation (2 shards)
+        shell: bash
         run: |
-          python - <<'PY' | tee results/sealed.log
-          import json, math, statistics
+          run_shard() {
+            START="$1" END="$2" OUT="$3"
+            START="$START" END="$END" OUT="$OUT" python - <<'PY'
+          import json, os
           from scripts.eval import evaluate
+          start=int(os.environ['START']); end=int(os.environ['END']); out=os.environ['OUT']
           rows=[]
-          for seed in range(201,281):
+          for seed in range(start,end):
               s=evaluate('tmp/v129.py','tmp/v77.py',pairs=1,jobs=1,seed_start=seed)
               d=float(s['pair_diff_mean'])
               rows.append({'seed':seed,'pair_diff':d,'exceptions':s['exceptions']['a']})
-              print(seed,d)
+              print(seed,d,flush=True)
+          with open(out,'w') as f: json.dump(rows,f,indent=2)
+          PY
+          }
+          run_shard 201 241 results/shard_a.json > results/shard_a.log 2>&1 & P1=$!
+          run_shard 241 281 results/shard_b.json > results/shard_b.log 2>&1 & P2=$!
+          wait "$P1"
+          wait "$P2"
+          cat results/shard_a.log results/shard_b.log
+          python - <<'PY' | tee results/sealed.log
+          import json, math, statistics
+          rows=[]
+          for path in ['results/shard_a.json','results/shard_b.json']:
+              with open(path) as f: rows.extend(json.load(f))
+          rows.sort(key=lambda r:r['seed'])
           vals=[r['pair_diff'] for r in rows]
           mean=statistics.mean(vals)
           se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
