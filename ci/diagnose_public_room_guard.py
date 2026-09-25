@@ -16,6 +16,13 @@ from kaggle_environments import make
 from scripts.eval import resolve_agent
 
 
+EXPECTED_DIRECT_MARGIN = {
+    683: {0: 492.0, 1: 492.0},
+    689: {0: -84.0, 1: -84.0},
+    693: {0: 479.0, 1: 479.0},
+}
+
+
 def canon(v: Any) -> str:
     return json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -36,7 +43,8 @@ def summarize_obs(obs: dict[str, Any]) -> dict[str, Any]:
     step = _int(obs.get("step", 0))
     private = obs.get("private") or {}
     shed = copy.deepcopy(private.get("shed") or {})
-    farm = (obs.get("farms") or [{}, {}])[player]
+    farms = obs.get("farms") or [{}, {}]
+    farm = farms[player] if player < len(farms) else {}
     unit_invs = []
     farmer = farm.get("farmer") or {}
     unit_invs.append(copy.deepcopy(farmer.get("inventory") or farmer.get("inv") or {}))
@@ -60,24 +68,31 @@ def summarize_obs(obs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class TraceAgent:
-    def __init__(self, spec: str):
-        self.agent = resolve_agent(spec)
-        code = getattr(self.agent, "__code__", None)
-        self.argcount = code.co_argcount if code is not None else 2
-        self.trace: list[dict[str, Any]] = []
-        self.exceptions: list[str] = []
+def make_trace_runner(spec: str):
+    """Return a normal function closure so kaggle_environments invokes it normally.
 
-    def __call__(self, obs, config=None):
+    The previous diagnostic passed a callable class instance directly to env.run.
+    On the self-hosted runner that object was never invoked, yielding trace_len=0
+    and a false-success diagnostic. A function closure has the same calling shape
+    as scripts.eval._TimedAgent's underlying submission function and exposes
+    __code__.co_argcount to Kaggle's agent adapter.
+    """
+    agent = resolve_agent(spec)
+    code = getattr(agent, "__code__", None)
+    argcount = code.co_argcount if code is not None else 2
+    trace: list[dict[str, Any]] = []
+    exceptions: list[str] = []
+
+    def runner(obs, config=None):
         before = copy.deepcopy(obs)
         try:
-            action = self.agent(*[obs, config][: self.argcount])
+            action = agent(*[obs, config][:argcount])
         except Exception as exc:
-            self.exceptions.append(repr(exc))
+            exceptions.append(repr(exc))
             raise
         action = copy.deepcopy(action)
-        self.trace.append({
-            "step": _int(before.get("step", len(self.trace))),
+        trace.append({
+            "step": _int(before.get("step", len(trace))),
             "obs_hash": digest(before),
             "obs": summarize_obs(before),
             "action_hash": digest(action),
@@ -85,19 +100,29 @@ class TraceAgent:
         })
         return action
 
+    return runner, trace, exceptions
+
 
 def run(focal_spec: str, opponent_spec: str, seed: int, seat: int) -> dict[str, Any]:
-    focal = TraceAgent(focal_spec)
+    focal, trace, exceptions = make_trace_runner(focal_spec)
     opponent = resolve_agent(opponent_spec)
     env = make("kaggriculture", configuration={"seed": seed})
     env.run([focal, opponent] if seat == 0 else [opponent, focal])
     rewards = [float(state.get("reward") or 0) for state in env.state]
+    statuses = [state.get("status") for state in env.state]
+    if len(trace) < 700:
+        raise RuntimeError(
+            f"trace unexpectedly short seed={seed} seat={seat}: len={len(trace)} statuses={statuses} rewards={rewards}"
+        )
     return {
         "focal_reward": rewards[seat],
         "rival_reward": rewards[1 - seat],
         "margin": rewards[seat] - rewards[1 - seat],
-        "trace": focal.trace,
-        "exceptions": focal.exceptions,
+        "trace": trace,
+        "trace_len": len(trace),
+        "exceptions": exceptions,
+        "statuses": statuses,
+        "steps": len(env.steps),
     }
 
 
@@ -125,21 +150,38 @@ def compact_obs(entry: dict[str, Any]) -> dict[str, Any]:
         "shed": obs["shed"],
         "shed_total": obs["shed_total"],
         "carried_total": obs["carried_total"],
+        "unit_inventories": obs["unit_inventories"],
         "market_prices": obs["market_prices"],
+        "market_inventory": obs["market_inventory"],
         "market": market(entry["action"]),
     }
+
+
+def sell_events(
+    trace: list[dict[str, Any]], start_idx: int, item: str, horizon: int = 96
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    end = min(len(trace), start_idx + horizon + 1)
+    for i in range(start_idx + 1, end):
+        entry = trace[i]
+        for order in market(entry["action"]):
+            if len(order) >= 3 and str(order[0]).upper() == "SELL" and str(order[1]) == item:
+                out.append({
+                    "trace_index": i,
+                    "step": entry["step"],
+                    "day": entry["obs"]["day"],
+                    "hour": entry["obs"]["hour"],
+                    "item": item,
+                    "qty": _int(order[2]),
+                    "visible_price": _int((entry["obs"].get("market_prices") or {}).get(item, 0)),
+                    "shed_qty": _int((entry["obs"].get("shed") or {}).get(item, 0)),
+                })
+    return out
 
 
 def post_divergence_window(
     base: dict[str, Any], cand: dict[str, Any], idx: int, horizon: int = 48
 ) -> list[dict[str, Any]]:
-    """Trace two days after the first causal action split.
-
-    The window intentionally records observable downstream behavior instead of
-    depending on private route internals.  If room_guard pre-sells inventory
-    reserved for a later scheduled SELL, the baseline's later market action,
-    shed balance, price and money path remain visible here.
-    """
     bt, ct = base["trace"], cand["trace"]
     end = min(len(bt), len(ct), idx + horizon + 1)
     rows = []
@@ -163,6 +205,19 @@ def first_div(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any]:
         return {"first_action_mismatch": None, "trace_len": [len(bt), len(ct)]}
     b, c = bt[idx], ct[idx]
     bm, cm = market(b["action"]), market(c["action"])
+    added = multiset_delta(cm, bm)
+    removed = multiset_delta(bm, cm)
+    added_sell_items = sorted({
+        str(order[1])
+        for order in added
+        if len(order) >= 3 and str(order[0]).upper() == "SELL"
+    })
+    future = {}
+    for item in added_sell_items:
+        future[item] = {
+            "v115_next_96_turn_sell_events": sell_events(bt, idx, item, 96),
+            "room_guard_next_96_turn_sell_events": sell_events(ct, idx, item, 96),
+        }
     return {
         "first_action_mismatch": idx,
         "step": b["step"],
@@ -170,8 +225,10 @@ def first_div(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any]:
         "observation": b["obs"],
         "v115_action": b["action"],
         "room_guard_action": c["action"],
-        "added_market_orders": multiset_delta(cm, bm),
-        "removed_market_orders": multiset_delta(bm, cm),
+        "added_market_orders": added,
+        "removed_market_orders": removed,
+        "added_sell_items": added_sell_items,
+        "future_sell_evidence": future,
         "post_divergence_window_turns": 48,
         "post_divergence_window": post_divergence_window(base, cand, idx, 48),
     }
@@ -185,25 +242,43 @@ def main() -> None:
     args = ap.parse_args()
 
     # All seeds below are already consumed by the room-guard screen/runtime.
-    # 683 = largest direct gain (+492 pair), 689 = only direct loss (-84 pair),
-    # 693 = runtime smoke with +479 direct pair margin.
+    # 683 = largest direct margin (+492), 689 = only direct loss (-84),
+    # 693 = runtime smoke with +479 direct margin.
     cases = [(seed, seat) for seed in (683, 689, 693) for seat in (0, 1)]
     rows = []
     for seed, seat in cases:
         baseline = run(args.v115, args.v115, seed, seat)
         candidate = run(args.candidate, args.v115, seed, seat)
+        expected = EXPECTED_DIRECT_MARGIN[seed][seat]
+        if candidate["margin"] != expected:
+            raise AssertionError(
+                f"candidate direct margin mismatch seed={seed} seat={seat}: got={candidate['margin']} expected={expected}"
+            )
+        divergence = first_div(baseline, candidate)
+        if divergence["first_action_mismatch"] is None:
+            raise AssertionError(
+                f"expected v115/v144 action divergence missing seed={seed} seat={seat}"
+            )
         rows.append({
             "seed": seed,
             "seat": seat,
-            "candidate_minus_champion_focal_money": candidate["focal_reward"] - baseline["focal_reward"],
-            "candidate_minus_champion_margin": candidate["margin"] - baseline["margin"],
+            "expected_direct_margin": expected,
+            "candidate_direct_margin": candidate["margin"],
+            "candidate_minus_selfplay_focal_money": candidate["focal_reward"] - baseline["focal_reward"],
+            "candidate_minus_selfplay_rival_money": candidate["rival_reward"] - baseline["rival_reward"],
+            "candidate_minus_selfplay_margin": candidate["margin"] - baseline["margin"],
             "baseline_focal_money": baseline["focal_reward"],
-            "candidate_focal_money": candidate["focal_reward"],
+            "baseline_rival_money": baseline["rival_reward"],
             "baseline_margin": baseline["margin"],
-            "candidate_margin": candidate["margin"],
+            "candidate_focal_money": candidate["focal_reward"],
+            "candidate_rival_money": candidate["rival_reward"],
+            "baseline_trace_len": baseline["trace_len"],
+            "candidate_trace_len": candidate["trace_len"],
+            "baseline_statuses": baseline["statuses"],
+            "candidate_statuses": candidate["statuses"],
             "baseline_exceptions": baseline["exceptions"],
             "candidate_exceptions": candidate["exceptions"],
-            "divergence": first_div(baseline, candidate),
+            "divergence": divergence,
         })
 
     out = {
@@ -211,6 +286,7 @@ def main() -> None:
         "candidate": "public_room_guard",
         "champion": "exact_v115",
         "engine": "kaggle_environments==1.32.7",
+        "validation": "candidate run margin must reproduce original v144-v115 screen for every seed/seat",
         "rows": rows,
     }
     dst = Path(args.out)
