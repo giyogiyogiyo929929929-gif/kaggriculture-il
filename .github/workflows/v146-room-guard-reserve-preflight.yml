@@ -1,0 +1,90 @@
+name: v146 room guard reserve gated preflight
+
+on:
+  push:
+    branches: [eval-v115-v144-public-room-guard-20260925]
+    paths:
+      - ".github/workflows/v146-room-guard-reserve-preflight.yml"
+      - "ci/build_v146_room_guard_planned_reserve.py"
+      - "ci/test_v146_room_guard_reserve.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+      - name: Reconstruct exact v115 and build v144/v146
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v144_public_room_guard.py tmp\v115.py tmp\v144.py
+          python ci\build_v146_room_guard_planned_reserve.py tmp\v115.py tmp\v146.py
+          python -m py_compile tmp\v115.py tmp\v144.py tmp\v146.py ci\build_v146_room_guard_planned_reserve.py ci\test_v146_room_guard_reserve.py
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()
+          print('v115_sha256', got)
+          assert got == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          a=Path('tmp/v144.py').read_text(encoding='utf-8')
+          b=Path('tmp/v146.py').read_text(encoding='utf-8')
+          assert a.count("'room_guard': True") == 1
+          assert b.count("'room_guard': True") == 1
+          assert 'for protect_future in (True, False):' not in a
+          assert b.count('for protect_future in (True, False):') == 1
+          print('static_delta_ok')
+          '@
+          $check | python -
+      - name: Focused synthetic room guard tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python ci\test_v146_room_guard_reserve.py --v144 tmp\v144.py --v146 tmp\v146.py --out results\v146_synthetic.json
+          if ($LASTEXITCODE -ne 0) { throw 'v146 synthetic failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v146-room-guard-reserve-gated-preflight
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
