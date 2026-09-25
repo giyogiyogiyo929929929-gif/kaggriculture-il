@@ -1,0 +1,181 @@
+--- /mnt/data/main.py	2026-09-23 09:19:39.800192722 +0000
++++ /mnt/data/v76_mainline_candidate.py	2026-09-23 13:06:30.006065222 +0000
+@@ -6228,9 +6228,9 @@
+ _V92_P_ITEMS = ("MILK", "WOOL", "STRAWBERRY", "EGG", "MELON")
+ _V92_P_USE = ('MILK', 'WOOL', 'STRAWBERRY')
+ _V92_P_H = 48
+-_V92_P_K = 4
+-_V92_P_TOP = 1
+-_V92_P_EVERY = 3
++_V92_P_K = 1
++_V92_P_TOP = 3
++_V92_P_EVERY = 1
+ _V92_EP = None          # panel: current episode (library excludes same-parity episodes)
+ _V92_P_LIB = None
+ _V92_P = {}
+@@ -6731,11 +6731,14 @@
+               for order in market]
+     bought = {order[1] for order in orders
+               if order and len(order) > 1 and order[0] == "BUY_PRODUCT"}
++    sold_products = {order[1] for order in orders
++                     if order and len(order) > 1 and order[0] == "SELL"}
+     slots, sells, fixed = [], [], []
+     for index, order in enumerate(orders):
+         if not order:
+             continue
+-        if order[0] in _V27_FIXED:
++        if order[0] in _V27_FIXED or (order[0] == "BUY_PRODUCT" and len(order) > 1
++                                      and order[1] == "WHEAT" and "WHEAT" not in sold_products):
+             slots.append(index)
+             fixed.append(order)
+         elif order[0] == "SELL" and len(order) > 1 and order[1] not in bought:
+@@ -6790,3 +6793,149 @@
+ 
+ agent.telemetry = _V27_REPORT
+ 
++
++# ---- EXP: stable empty-slot compaction after v28 ----
++_V30_PARENT = agent
++_V30_REPORT = dict(reordered_turns=0, estimated_gain=0.0, evaluations=0, errors=0)
++
++def _v30_candidates_block(block):
++    sells = [list(o) for o in block if o and o[0] == 'SELL']
++    if not sells or len(sells) == len(block):
++        return
++    # Preserve the sell order selected by v28; only choose timing slots.
++    for pos in _v27_it.combinations(range(len(block)), len(sells)):
++        out = [[] for _ in block]
++        for i, order in zip(pos, sells): out[i] = order
++        yield out
++
++def _v30_compact(observation, action):
++    market = action.get('market') or []
++    if len(market) < 2 or not any(not o for o in market):
++        return action
++    orders = [list(o) if isinstance(o,(list,tuple)) else o for o in market]
++    params = _v44y_params(observation)
++    stock = {k:max(0,int(v)) for k,v in projected_shed(action,FarmView(observation)).items()}
++    inv = {k:int(v) for k,v in observation['market']['inventory'].items()}
++    # Opponent model is the pre-compaction v28 schedule.
++    factor = _v44y_factor_margin(orders, inv, stock, params)
++    base = best = factor(orders); best_orders = None
++    i=0; evaluations=0
++    while i < len(orders):
++        if not (not orders[i] or (orders[i] and orders[i][0]=='SELL')):
++            i += 1; continue
++        j=i
++        while j < len(orders) and (not orders[j] or (orders[j] and orders[j][0]=='SELL')):
++            j += 1
++        block=orders[i:j]
++        if any(not o for o in block) and any(o and o[0]=='SELL' for o in block):
++            for cand_block in _v30_candidates_block(block):
++                cand = orders[:i] + cand_block + orders[j:]
++                if cand == orders: continue
++                evaluations += 1
++                value = factor(cand)
++                if value > best + 0.5:
++                    best, best_orders = value, cand
++        if best_orders is not None:
++            orders = best_orders; best_orders = None
++        i=j
++    _V30_REPORT['evaluations'] += evaluations
++    if best <= base + 0.5:
++        return action
++    _V30_REPORT['reordered_turns'] += 1; _V30_REPORT['estimated_gain'] += best-base
++    return dict(action, market=orders)
++
++def agent(observation, configuration=None):
++    action = _V30_PARENT(observation, configuration)
++    try:
++        if int(observation.get('step',0)) == 0:
++            _V30_REPORT.update(reordered_turns=0,estimated_gain=0.0,evaluations=0,errors=0)
++        return _v30_compact(observation, action)
++    except Exception:
++        _V30_REPORT['errors'] += 1
++        return action
++agent.telemetry = _V30_REPORT
++
++# ---- EXP: globally stable empty-slot timing search ----
++_V31_PARENT = agent
++_V31_REPORT = dict(reordered_turns=0, estimated_gain=0.0, evaluations=0, errors=0)
++
++def _v31_stable(observation, action):
++    market = action.get('market') or []
++    if len(market) < 2 or not any(not o for o in market):
++        return action
++    orders=[list(o) if isinstance(o,(list,tuple)) else o for o in market]
++    nonempty=[o for o in orders if o]
++    if not nonempty or len(nonempty)==len(orders):
++        return action
++    params=_v44y_params(observation)
++    stock={k:max(0,int(v)) for k,v in projected_shed(action,FarmView(observation)).items()}
++    inv={k:int(v) for k,v in observation['market']['inventory'].items()}
++    factor=_v44y_factor_margin(orders,inv,stock,params)
++    base=best=factor(orders);best_orders=None;evals=0
++    for pos in _v27_it.combinations(range(len(orders)),len(nonempty)):
++        cand=[[] for _ in orders]
++        for i,o in zip(pos,nonempty): cand[i]=o
++        if cand==orders: continue
++        evals += 1
++        value=factor(cand)
++        if value>best+0.5:
++            best,best_orders=value,cand
++    _V31_REPORT['evaluations'] += evals
++    if best_orders is None:
++        return action
++    _V31_REPORT['reordered_turns'] += 1;_V31_REPORT['estimated_gain'] += best-base
++    return dict(action,market=best_orders)
++
++def agent(observation, configuration=None):
++    action=_V31_PARENT(observation,configuration)
++    try:
++        if int(observation.get('step',0))==0:
++            _V31_REPORT.update(reordered_turns=0,estimated_gain=0.0,evaluations=0,errors=0)
++        return _v31_stable(observation,action)
++    except Exception:
++        _V31_REPORT['errors'] += 1
++        return action
++agent.telemetry=_V31_REPORT
++
++# ---- EXP: stable scheduling across the full 10 market slots ----
++_V32_PARENT = agent
++_V32_REPORT = dict(reordered_turns=0, estimated_gain=0.0, evaluations=0, errors=0)
++
++def _v32_schedule(observation, action):
++    market=action.get('market') or []
++    nonempty=[list(o) if isinstance(o,(list,tuple)) else o for o in market if o]
++    if not nonempty or len(nonempty)>=10:
++        return action
++    # Keep every non-empty order in the same relative order; only choose lockstep slots.
++    base_orders=[list(o) if isinstance(o,(list,tuple)) else o for o in market]
++    params=_v44y_params(observation)
++    stock={k:max(0,int(v)) for k,v in projected_shed(action,FarmView(observation)).items()}
++    inv={k:int(v) for k,v in observation['market']['inventory'].items()}
++    factor=_v44y_factor_margin(base_orders,inv,stock,params)
++    base=best=factor(base_orders);best_orders=None;evals=0
++    for pos in _v27_it.combinations(range(10),len(nonempty)):
++        cand=[[] for _ in range(10)]
++        for i,o in zip(pos,nonempty): cand[i]=o
++        # compare semantic slot placement; trailing blanks are allowed and meaningful to the opponent lockstep
++        if cand[:len(base_orders)]==base_orders and not any(cand[len(base_orders):]):
++            continue
++        evals += 1
++        value=factor(cand)
++        if value>best+0.5:
++            best,best_orders=value,cand
++    _V32_REPORT['evaluations'] += evals
++    if best_orders is None:
++        return action
++    _V32_REPORT['reordered_turns'] += 1;_V32_REPORT['estimated_gain'] += best-base
++    return dict(action,market=best_orders)
++
++def agent(observation, configuration=None):
++    action=_V32_PARENT(observation,configuration)
++    try:
++        if int(observation.get('step',0))==0:
++            _V32_REPORT.update(reordered_turns=0,estimated_gain=0.0,evaluations=0,errors=0)
++        return _v32_schedule(observation,action)
++    except Exception:
++        _V32_REPORT['errors'] += 1
++        return action
++agent.telemetry=_V32_REPORT

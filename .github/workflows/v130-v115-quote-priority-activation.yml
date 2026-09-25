@@ -1,0 +1,130 @@
+name: v130 quote priority activation panel
+
+on:
+  push:
+    branches:
+      - eval-public-opponents-20260923
+    paths:
+      - ".github/workflows/v130-v115-quote-priority-activation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - name: beat_v48
+            opponent: opponents/beat_v48/main.py
+          - name: bl_v20
+            opponent: opponents/bl_v20/main.py
+          - name: bl_v21
+            opponent: opponents/bl_v21/main.py
+          - name: farming_v2
+            opponent: opponents/farming_v2/main.py
+          - name: frontier_prvsiyan
+            opponent: opponents/frontier_prvsiyan/main.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact Kaggriculture 1.32.7
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          from kaggle_environments import make
+          assert kaggle_environments.__version__ == '1.32.7'
+          env=make('kaggriculture',configuration={'seed':521},debug=True)
+          env.run(['starter','starter'])
+          assert len(env.steps)==720
+          PY
+      - name: Reconstruct exact v115/v130 and telemetry twin
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v130_adv_quote_priority.py tmp/v115.py tmp/v130.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tmp/v130.py').read_text()
+          a="_ADV_REPORT=dict(adv_turns=0,adv_units=0,adv_errors=0)"
+          b="_ADV_REPORT=dict(adv_turns=0,adv_units=0,adv_errors=0,adv_order_multi=0,adv_order_changes=0)"
+          assert s.count(a)==1; s=s.replace(a,b)
+          a="if int(observation['step'])==0:_ADV_REPORT.update(adv_turns=0,adv_units=0,adv_errors=0)"
+          b="if int(observation['step'])==0:_ADV_REPORT.update(adv_turns=0,adv_units=0,adv_errors=0,adv_order_multi=0,adv_order_changes=0)"
+          assert s.count(a)==1; s=s.replace(a,b)
+          a="    for item in sorted({it for _,it,_ in plan},key=_adv_priority,reverse=True):\n"
+          b="    _adv_items={it for _,it,_ in plan}\n    _adv_old=sorted(_adv_items,key=lambda it:-int(prices.get(it,0)))\n    _adv_new=sorted(_adv_items,key=_adv_priority,reverse=True)\n    if len(_adv_items)>1:_ADV_REPORT['adv_order_multi']+=1\n    if _adv_new!=_adv_old:_ADV_REPORT['adv_order_changes']+=1\n    for item in _adv_new:\n"
+          assert s.count(a)==1; s=s.replace(a,b)
+          Path('tmp/v130_probe.py').write_text(s)
+          PY
+          python -m py_compile tmp/v115.py tmp/v130.py tmp/v130_probe.py
+      - name: Matched candidate-minus-champion panel seeds 521-524
+        run: |
+          python ci/eval_candidate_vs_champion_panel.py \
+            --candidate tmp/v130.py --champion tmp/v115.py --opponent '${{ matrix.opponent }}' \
+            --seed-start 521 --seed-count 4 --jobs 4 --out results/panel.json
+      - name: Activation telemetry seeds 521-524 both seats
+        env:
+          OPPONENT: ${{ matrix.opponent }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from kaggle_environments import make
+          from scripts.eval import resolve_agent
+          opp_path=os.environ['OPPONENT']
+          rows=[]
+          for seed in range(521,525):
+              for swap in (False,True):
+                  cand=resolve_agent('tmp/v130_probe.py')
+                  opp=resolve_agent(opp_path)
+                  env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                  env.run([opp,cand] if swap else [cand,opp])
+                  tel=dict(getattr(cand,'telemetry',{}) or {})
+                  seat=1 if swap else 0; other=1-seat
+                  rewards=[x['reward'] for x in env.state]
+                  rows.append({
+                      'seed':seed,'swap':swap,
+                      'candidate_margin':float(rewards[seat])-float(rewards[other]),
+                      'adv_turns':int(tel.get('adv_turns',0) or 0),
+                      'adv_units':int(tel.get('adv_units',0) or 0),
+                      'adv_order_multi':int(tel.get('adv_order_multi',0) or 0),
+                      'adv_order_changes':int(tel.get('adv_order_changes',0) or 0),
+                      'adv_errors':int(tel.get('adv_errors',0) or 0),
+                  })
+          out={
+              'opponent':opp_path,'seeds':[521,524],
+              'games_with_adv':sum(r['adv_turns']>0 for r in rows),
+              'adv_turns_total':sum(r['adv_turns'] for r in rows),
+              'adv_units_total':sum(r['adv_units'] for r in rows),
+              'games_with_multi_item':sum(r['adv_order_multi']>0 for r in rows),
+              'multi_item_total':sum(r['adv_order_multi'] for r in rows),
+              'games_with_order_change':sum(r['adv_order_changes']>0 for r in rows),
+              'order_changes_total':sum(r['adv_order_changes'] for r in rows),
+              'adv_errors_total':sum(r['adv_errors'] for r in rows),
+              'rows':rows,
+          }
+          open('results/telemetry.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v130-activation-${{ matrix.name }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14

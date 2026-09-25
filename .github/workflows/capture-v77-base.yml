@@ -1,0 +1,40 @@
+name: Capture exact v77 base
+
+on:
+  push:
+    branches:
+      - eval-public-opponents-20260923
+    paths:
+      - ".github/workflows/capture-v77-base.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reconstruct exact v77 base used by eval workflow
+        run: |
+          mkdir -p tmp
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python -m py_compile tmp/v77.py
+          sha256sum tmp/v77.py | tee tmp/v77.sha256
+
+      - name: Upload exact v77 base
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-v77-base-for-v115-delta
+          path: |
+            tmp/v77.py
+            tmp/v77.sha256
+          retention-days: 7

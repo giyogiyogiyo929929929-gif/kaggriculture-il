@@ -1,0 +1,176 @@
+name: v136 preguard quote order screen
+
+on:
+  push:
+    branches:
+      - eval-public-opponents-20260923
+    paths:
+      - ".github/workflows/v136-v115-preguard-screen.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    name: direct-v115
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact Kaggriculture 1.32.7
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          from kaggle_environments import make
+          assert kaggle_environments.__version__ == '1.32.7'
+          env=make('kaggriculture',configuration={'seed':541},debug=True)
+          env.run(['starter','starter'])
+          assert len(env.steps)==720
+          PY
+      - name: Build exact v115 and v136
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v136_preguard_quote_order.py tmp/v115.py tmp/v136.py
+          python -m py_compile tmp/v115.py tmp/v136.py
+          sha256sum tmp/v115.py tmp/v136.py
+      - name: Direct matched both-seat H2H seeds 541-552
+        run: |
+          python - <<'PY'
+          import json, math, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v136.py','tmp/v115.py',pairs=12,jobs=4,seed_start=541)
+          by={}
+          for g in s['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(g)
+          rows=[]; seat0=[]; seat1=[]
+          for seed in sorted(by):
+              gs=sorted(by[seed],key=lambda g:bool(g['swap']))
+              vals=[]; seats=[]
+              for g in gs:
+                  d=float(g['money'][0])-float(g['money'][1])
+                  vals.append(d)
+                  (seat1 if g['swap'] else seat0).append(d)
+                  seats.append({'swap':bool(g['swap']),'candidate_minus_champion':d,'candidate_money':g['money'][0],'champion_money':g['money'][1],'candidate_exceptions':g['exceptions']['a'],'champion_exceptions':g['exceptions']['b']})
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.mean(vals),'seats':seats})
+          vals=[r['candidate_minus_champion'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={
+              'metric':'candidate_minus_champion = candidate - champion direct pair margin',
+              'candidate':'v136_candidate_preguard_quote_order','champion':'v115_champion_same_turn_open_squeeze',
+              'seeds':[541,552],'pairs':len(vals),
+              'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),
+              'candidate_minus_champion_mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,
+              'mean_ge_2se':bool(mean>0 and mean>=2*se),
+              'worst':min(vals),'worst_seed':rows[vals.index(min(vals))]['seed'],
+              'best':max(vals),'best_seed':rows[vals.index(max(vals))]['seed'],
+              'seat0_mean':statistics.mean(seat0),'seat1_mean':statistics.mean(seat1),
+              'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],
+              'rows':rows,
+          }
+          open('results/direct.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          print('DIFFERING',[(r['seed'],r['candidate_minus_champion']) for r in rows if r['candidate_minus_champion']!=0])
+          PY
+      - name: Preguard activation telemetry seeds 541-544 both seats
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tmp/v136.py').read_text()
+          a="_PG_REPORT={'preguard_turns':0,'preguard_units':0,'preguard_errors':0}"
+          b="_PG_REPORT={'preguard_turns':0,'preguard_units':0,'preguard_errors':0,'pg_order_multi':0,'pg_order_changes':0}"
+          assert s.count(a)==1; s=s.replace(a,b)
+          a="    if len(extra)>1:\n        extra=sorted(extra,key=lambda o:_r37_quote_priority(obs,o,stock),reverse=True)\n"
+          b="    if len(extra)>1:\n        _PG_REPORT['pg_order_multi']+=1\n        _pg_new=sorted(extra,key=lambda o:_r37_quote_priority(obs,o,stock),reverse=True)\n        if _pg_new!=extra:_PG_REPORT['pg_order_changes']+=1\n        extra=_pg_new\n"
+          assert s.count(a)==1; s=s.replace(a,b)
+          Path('tmp/v136_probe.py').write_text(s)
+          PY
+          python -m py_compile tmp/v136_probe.py
+          python - <<'PY'
+          import json
+          from kaggle_environments import make
+          from scripts.eval import resolve_agent
+          rows=[]
+          for seed in range(541,545):
+              for swap in (False,True):
+                  cand=resolve_agent('tmp/v136_probe.py'); champ=resolve_agent('tmp/v115.py')
+                  env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                  env.run([champ,cand] if swap else [cand,champ])
+                  tel=dict(getattr(cand,'telemetry',{}) or {})
+                  seat=1 if swap else 0; other=1-seat
+                  rewards=[x['reward'] for x in env.state]
+                  rows.append({'seed':seed,'swap':swap,'candidate_minus_champion':float(rewards[seat])-float(rewards[other]),'preguard_turns':int(tel.get('preguard_turns',0) or 0),'preguard_units':int(tel.get('preguard_units',0) or 0),'pg_order_multi':int(tel.get('pg_order_multi',0) or 0),'pg_order_changes':int(tel.get('pg_order_changes',0) or 0),'preguard_errors':int(tel.get('preguard_errors',0) or 0)})
+          out={'rows':rows,'games_with_preguard':sum(r['preguard_turns']>0 for r in rows),'preguard_turns_total':sum(r['preguard_turns'] for r in rows),'preguard_units_total':sum(r['preguard_units'] for r in rows),'games_with_multi_item':sum(r['pg_order_multi']>0 for r in rows),'multi_item_total':sum(r['pg_order_multi'] for r in rows),'games_with_order_change':sum(r['pg_order_changes']>0 for r in rows),'order_changes_total':sum(r['pg_order_changes'] for r in rows),'preguard_errors_total':sum(r['preguard_errors'] for r in rows)}
+          open('results/telemetry.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v136-direct-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+  public-panel:
+    name: public-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - name: beat_v48
+            opponent: opponents/beat_v48/main.py
+          - name: bl_v20
+            opponent: opponents/bl_v20/main.py
+          - name: bl_v21
+            opponent: opponents/bl_v21/main.py
+          - name: farming_v2
+            opponent: opponents/farming_v2/main.py
+          - name: frontier_prvsiyan
+            opponent: opponents/frontier_prvsiyan/main.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact Kaggriculture 1.32.7
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115/v136
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v136_preguard_quote_order.py tmp/v115.py tmp/v136.py
+          python -m py_compile tmp/v115.py tmp/v136.py
+      - name: Matched candidate-minus-champion panel seeds 541-544
+        run: |
+          python ci/eval_candidate_vs_champion_panel.py \
+            --candidate tmp/v136.py --champion tmp/v115.py --opponent '${{ matrix.opponent }}' \
+            --seed-start 541 --seed-count 4 --jobs 4 --out results/panel.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v136-public-${{ matrix.name }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14

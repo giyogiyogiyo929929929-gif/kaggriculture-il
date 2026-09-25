@@ -1,0 +1,124 @@
+name: v115 multi-sell diagnostic
+
+on:
+  push:
+    branches: [eval-public-opponents-20260923]
+    paths: [".github/workflows/v115-multisell-diagnostic.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {name: beat_v48, opponent: opponents/beat_v48/main.py}
+          - {name: bl_v20, opponent: opponents/bl_v20/main.py}
+          - {name: bl_v21, opponent: opponents/bl_v21/main.py}
+          - {name: farming_v2, opponent: opponents/farming_v2/main.py}
+          - {name: frontier_prvsiyan, opponent: opponents/frontier_prvsiyan/main.py}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct exact v115 and diagnostic twin
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tmp/v115.py').read_text()
+
+          a='_V92_P_REPORT = dict(pred_units=0, pred_fires=0, pred_errors=0)'
+          b='_V92_P_REPORT = dict(pred_units=0, pred_fires=0, pred_errors=0, diag_v92_multi_turns=0, diag_v92_max_items=0)'
+          assert s.count(a)==1, s.count(a); s=s.replace(a,b)
+          a='    stock = projected_shed(action, FarmView(obs))\n    changed = False\n    for i, item in enumerate(_V92_P_ITEMS):'
+          b='    stock = projected_shed(action, FarmView(obs))\n    changed = False\n    _diag_v92_items = 0\n    for i, item in enumerate(_V92_P_ITEMS):'
+          assert s.count(a)==1, s.count(a); s=s.replace(a,b)
+          a='        if qty > 0:\n            market.insert(0, ["SELL", item, qty])\n            _V92_P_REPORT["pred_units"] += qty\n            _V92_P_REPORT["pred_fires"] += 1\n            changed = True\n    if not changed:'
+          b='        if qty > 0:\n            market.insert(0, ["SELL", item, qty])\n            _V92_P_REPORT["pred_units"] += qty\n            _V92_P_REPORT["pred_fires"] += 1\n            _diag_v92_items += 1\n            changed = True\n    if _diag_v92_items > 1:\n        _V92_P_REPORT["diag_v92_multi_turns"] += 1\n    _V92_P_REPORT["diag_v92_max_items"] = max(_V92_P_REPORT["diag_v92_max_items"], _diag_v92_items)\n    if not changed:'
+          assert s.count(a)==1, s.count(a); s=s.replace(a,b)
+
+          a='_KIL_V52_REPORT = dict(copy_games=0, copy_turns=0, evidence=0, mismatches=0,\n                         preempt_fires=0, preempt_units=0, errors=0)'
+          b='_KIL_V52_REPORT = dict(copy_games=0, copy_turns=0, evidence=0, mismatches=0,\n                         preempt_fires=0, preempt_units=0, errors=0, diag_kil_multi_turns=0, diag_kil_max_items=0)'
+          assert s.count(a)==1, s.count(a); s=s.replace(a,b)
+          a='    stock = None\n    changed = False\n    for index, item in enumerate(_V92_P_ITEMS):'
+          b='    stock = None\n    changed = False\n    _diag_kil_items = 0\n    for index, item in enumerate(_V92_P_ITEMS):'
+          assert s.count(a)==1, s.count(a); s=s.replace(a,b)
+          a='        if quantity > 0:\n            market.insert(0, ["SELL", item, quantity])\n            _KIL_V52_REPORT["preempt_fires"] += 1\n            _KIL_V52_REPORT["preempt_units"] += quantity\n            changed = True\n    if not changed:'
+          b='        if quantity > 0:\n            market.insert(0, ["SELL", item, quantity])\n            _KIL_V52_REPORT["preempt_fires"] += 1\n            _KIL_V52_REPORT["preempt_units"] += quantity\n            _diag_kil_items += 1\n            changed = True\n    if _diag_kil_items > 1:\n        _KIL_V52_REPORT["diag_kil_multi_turns"] += 1\n    _KIL_V52_REPORT["diag_kil_max_items"] = max(_KIL_V52_REPORT["diag_kil_max_items"], _diag_kil_items)\n    if not changed:'
+          assert s.count(a)==1, s.count(a); s=s.replace(a,b)
+
+          s += '\n# diagnostic telemetry exposure only\nimport collections as _diag_collections\ntry:\n    agent.telemetry=_diag_collections.ChainMap(_V92_P_REPORT,_KIL_V52_REPORT,getattr(agent,"telemetry",{}))\nexcept Exception:\n    pass\n'
+          Path('tmp/v115_diag.py').write_text(s)
+          PY
+          python -m py_compile tmp/v115.py tmp/v115_diag.py
+          sha256sum tmp/v115.py
+      - name: Diagnostic seeds 581-584 both seats
+        env: {OPPONENT: '${{ matrix.opponent }}'}
+        run: |
+          python - <<'PY'
+          import json, os
+          from kaggle_environments import make
+          from scripts.eval import resolve_agent
+          rows=[]
+          for seed in range(581,585):
+              for swap in (False,True):
+                  agent=resolve_agent('tmp/v115_diag.py'); opp=resolve_agent(os.environ['OPPONENT'])
+                  env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                  env.run([opp,agent] if swap else [agent,opp])
+                  t=dict(getattr(agent,'telemetry',{}) or {})
+                  rows.append({
+                    'seed':seed,'swap':swap,
+                    'v92_pred_fires':int(t.get('pred_fires',0) or 0),
+                    'v92_pred_units':int(t.get('pred_units',0) or 0),
+                    'v92_multi_turns':int(t.get('diag_v92_multi_turns',0) or 0),
+                    'v92_max_items':int(t.get('diag_v92_max_items',0) or 0),
+                    'kil_copy_games':int(t.get('copy_games',0) or 0),
+                    'kil_preempt_fires':int(t.get('preempt_fires',0) or 0),
+                    'kil_preempt_units':int(t.get('preempt_units',0) or 0),
+                    'kil_multi_turns':int(t.get('diag_kil_multi_turns',0) or 0),
+                    'kil_max_items':int(t.get('diag_kil_max_items',0) or 0),
+                    'v92_errors':int(t.get('pred_errors',0) or 0),
+                    'kil_errors':int(t.get('errors',0) or 0),
+                  })
+          out={
+            'opponent':os.environ['OPPONENT'],'seeds':[581,584],
+            'games':len(rows),
+            'games_v92_active':sum(r['v92_pred_fires']>0 for r in rows),
+            'v92_pred_fires_total':sum(r['v92_pred_fires'] for r in rows),
+            'v92_multi_turns_total':sum(r['v92_multi_turns'] for r in rows),
+            'v92_max_items':max(r['v92_max_items'] for r in rows),
+            'games_kil_copy':sum(r['kil_copy_games']>0 for r in rows),
+            'games_kil_active':sum(r['kil_preempt_fires']>0 for r in rows),
+            'kil_preempt_fires_total':sum(r['kil_preempt_fires'] for r in rows),
+            'kil_multi_turns_total':sum(r['kil_multi_turns'] for r in rows),
+            'kil_max_items':max(r['kil_max_items'] for r in rows),
+            'errors_total':sum(r['v92_errors']+r['kil_errors'] for r in rows),
+            'rows':rows,
+          }
+          open('results/diag.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: multisell-${{ matrix.name }}
+          path: results/
+          retention-days: 14

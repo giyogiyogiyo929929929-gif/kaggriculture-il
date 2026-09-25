@@ -1,0 +1,65 @@
+name: v141 burned calibration only
+
+on:
+  push:
+    branches: [eval-public-opponents-20260923]
+    paths: [".github/workflows/v141-calibration-only.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == '1.32.7'
+          PY
+      - name: Build exact v115 and v141
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v141_v92_single_unit_k2.py tmp/v115.py tmp/v141.py
+          python -m py_compile tmp/v115.py tmp/v141.py
+          sha256sum tmp/v115.py tmp/v141.py
+      - name: Evaluate burned seeds 641-652
+        run: |
+          python - <<'PY'
+          import json, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v141.py','tmp/v115.py',pairs=12,jobs=4,seed_start=641)
+          by={}
+          for g in s['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(g)
+          rows=[]
+          for seed in sorted(by):
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in by[seed]]
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.mean(vals)})
+          vals=[r['candidate_minus_champion'] for r in rows]
+          out={'pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'mean':statistics.mean(vals),'worst':min(vals),'best':max(vals),'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],'rows':rows}
+          print(json.dumps(out,indent=2))
+          open('results/calibration.json','w').write(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v141-burned-calibration-only
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
