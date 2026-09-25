@@ -1,0 +1,94 @@
+name: Exact v115 V141 item-isolated V92 K
+on:
+  push:
+    branches: [gpt-v115-sell1-official]
+    paths: ['.github/workflows/v141-v115-v92-item-k.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {id: 0, seed_start: 440001}
+          - {id: 1, seed_start: 440007}
+          - {id: 2, seed_start: 440013}
+          - {id: 3, seed_start: 440019}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115 and v141
+        run: |
+          set -euo pipefail
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v141_v92_k2_milk_strawberry.py tmp/v115.py tmp/v141.py | tee results/build.txt
+          python -m py_compile tmp/v115.py tmp/v141.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          a=Path('tmp/v115.py').read_text(); b=Path('tmp/v141.py').read_text()
+          assert hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()=='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert a.count('_V92_P_K = 1')==1 and b.count('_V92_P_K = 1')==1
+          assert b.count('>= (1 if item == "WOOL" else 2)')==1
+          PY
+      - name: Fresh matched both-seat H2H
+        run: |
+          python ci/eval_v115_sell1.py --candidate tmp/v141.py --champion tmp/v115.py --seed-start ${{ matrix.seed_start }} --seed-count 6 --out results/shard-${{ matrix.id }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-v115-v141-fresh-${{ matrix.id }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 30
+  burned-sanity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build and check diagnostic seeds only
+        run: |
+          set -euo pipefail
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v141_v92_k2_milk_strawberry.py tmp/v115.py tmp/v141.py
+          for s in 641 642 651 652; do
+            python ci/eval_v115_sell1.py --candidate tmp/v141.py --champion tmp/v115.py --seed-start $s --seed-count 1 --out results/seed-$s.json
+          done
+          python - <<'PY'
+          import json,glob
+          print([(json.load(open(p))['seed_start'],json.load(open(p))['mean']) for p in sorted(glob.glob('results/seed-*.json'))])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v141-burned-sanity
+          path: results/
+          retention-days: 30
