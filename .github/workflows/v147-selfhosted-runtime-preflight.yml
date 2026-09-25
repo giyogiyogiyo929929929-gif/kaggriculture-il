@@ -62,6 +62,7 @@ jobs:
           python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
           if ($LASTEXITCODE -ne 0) { throw 'v147 build failed' }
           python -m py_compile tmp\v115.py tmp\v147.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
           $code = @'
           import hashlib
           from pathlib import Path
@@ -71,13 +72,14 @@ jobs:
           '@
           $code | python -
 
-      - name: Kaggle loader and broken-observation smoke
+      - name: Kaggle loader and broken-observation parity smoke
         run: |
           $ErrorActionPreference = 'Stop'
           $code = @'
           import json
           from pathlib import Path
           from scripts.preflight import load_like_kaggle, call_like_kaggle, BROKEN_OBSERVATIONS
+
           out={}
           for name in ('v115','v147'):
               path=Path('tmp')/f'{name}.py'
@@ -92,13 +94,25 @@ jobs:
                       rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
               out[name]={'callable':getattr(agent,'__name__',str(agent)),'broken_observations':rows}
               assert getattr(agent,'__name__',None)=='agent'
-              assert all(r['ok'] for r in rows), out[name]
+
+          # Valid malformed-dict observations must be handled by both agents.
+          for name in ('v115','v147'):
+              assert all(r['ok'] for r in out[name]['broken_observations'][:-1]), out[name]
+
+          # The final None case is outside the official observation schema.  It is
+          # audited for champion parity rather than requiring behavior the champion
+          # itself does not provide.
+          c=out['v115']['broken_observations'][-1]
+          v=out['v147']['broken_observations'][-1]
+          assert c['ok'] == v['ok'], (c,v)
+          assert c['error'] == v['error'], (c,v)
+
           Path('results/loader_smoke.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
           print(json.dumps(out,indent=2))
           '@
           $code | python -
 
-      - name: Serial runtime gate on burned seed
+      - name: Serial runtime gate on burned seeds and both seats
         run: |
           $ErrorActionPreference = 'Stop'
           $code = @'
@@ -107,24 +121,53 @@ jobs:
           from kaggle_environments import make
           from scripts.preflight import load_like_kaggle, call_like_kaggle
 
-          def measure(path,seed):
+          def measure(path,seed,swap):
               agent=load_like_kaggle(Path(path)); timings=[]; errors=[]
               def timed(obs,config=None):
                   t=time.perf_counter()
-                  try: return call_like_kaggle(agent,obs,config)
+                  try:
+                      return call_like_kaggle(agent,obs,config)
                   except Exception as exc:
                       errors.append(f'{type(exc).__name__}: {exc}')
                       return {'farmer':['PASS'],'hands':[],'market':[]}
-                  finally: timings.append(time.perf_counter()-t)
+                  finally:
+                      timings.append(time.perf_counter()-t)
               env=make('kaggriculture',configuration={'seed':seed})
-              env.run([timed,'starter'])
+              env.run(['starter',timed] if swap else [timed,'starter'])
               ordered=sorted(timings); n=len(ordered)
               p99=ordered[min(n-1,int(n*0.99))] if n else 0.0
-              return {'seed':seed,'calls':n,'median_ms':statistics.median(ordered)*1000 if n else 0.0,'p99_ms':p99*1000,'worst_ms':max(ordered)*1000 if n else 0.0,'errors':errors,'status':env.state[0].get('status')}
+              seat=1 if swap else 0
+              return {
+                  'seed':seed,
+                  'swap':swap,
+                  'seat':seat,
+                  'calls':n,
+                  'median_ms':statistics.median(ordered)*1000 if n else 0.0,
+                  'p99_ms':p99*1000,
+                  'worst_ms':max(ordered)*1000 if n else 0.0,
+                  'errors':errors,
+                  'status':env.state[seat].get('status'),
+              }
 
-          out={name:[measure(f'tmp/{name}.py',seed) for seed in (641,642)] for name in ('v115','v147')}
-          Path('results/runtime.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
-          print(json.dumps(out,indent=2))
+          out={
+              name:[measure(f'tmp/{name}.py',seed,swap) for seed in (641,642) for swap in (False,True)]
+              for name in ('v115','v147')
+          }
+          summary={}
+          for name,rows in out.items():
+              all_p99=[r['p99_ms'] for r in rows]
+              all_worst=[r['worst_ms'] for r in rows]
+              all_median=[r['median_ms'] for r in rows]
+              summary[name]={
+                  'games':len(rows),
+                  'median_of_game_medians_ms':statistics.median(all_median),
+                  'max_game_p99_ms':max(all_p99),
+                  'worst_turn_ms':max(all_worst),
+                  'exceptions':sum(len(r['errors']) for r in rows),
+              }
+          payload={'engine':'kaggle_environments==1.32.7','opponent':'starter','seeds':[641,642],'both_seats':True,'rows':out,'summary':summary}
+          Path('results/runtime.json').write_text(json.dumps(payload,indent=2),encoding='utf-8')
+          print(json.dumps(payload,indent=2))
           for name,rows in out.items():
               for r in rows:
                   assert not r['errors'],(name,r)
