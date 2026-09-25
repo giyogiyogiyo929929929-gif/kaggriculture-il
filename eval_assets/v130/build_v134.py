@@ -56,17 +56,12 @@ def build(v130: str) -> tuple[str, str]:
     return v133, v134
 
 def synthetic() -> None:
-    # Regression world: parent already sells MILK at step 600; v134 must NOT hold
-    # the extra due-step 601 MILK unit, reverting this branch to v121 behavior.
     def blocks(step, due, item, native):
         return item not in native and any(u % 24 == 0 for u in range(step, due))
     assert blocks(600, 601, 'MILK', {'MILK'}) is False
-    # Preserve v133's intended center-only hold when no same-item native sale exists.
     assert blocks(600, 601, 'MILK', set()) is True
     assert blocks(599, 601, 'MILK', set()) is True
-    # No Town Center tick crossed -> no hold.
     assert blocks(601, 604, 'MILK', set()) is False
-    # Same-item test is item-local, not a blanket bypass.
     assert blocks(600, 601, 'EGG', {'MILK'}) is True
 
 def main() -> None:
@@ -75,9 +70,9 @@ def main() -> None:
     ap.add_argument('--out', default='eval_agents/v130/v134_candidate_center_nonsplit.py')
     args=ap.parse_args()
     synthetic()
-    src=Path(args.v130).read_text()
+    src=Path(args.v130).read_text(encoding='utf-8')
     _, out=build(src)
-    p=Path(args.out); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(out)
+    p=Path(args.out); p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(out.encode('utf-8'))
     print(f'v134={p} sha256={sha(out)} synthetic=ok syntax=ok')
 
 if __name__ == '__main__':
