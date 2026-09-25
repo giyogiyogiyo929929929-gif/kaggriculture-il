@@ -1,0 +1,108 @@
+name: V133 Positive Telemetry Selfhosted
+
+on:
+  push:
+    branches: [eval-v130-v121-exact-20260925]
+    paths:
+      - ".github/workflows/v133-positive-telemetry-selfhosted.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install "kaggle-environments==1.32.7"
+          if ($LASTEXITCODE -ne 0) { throw "engine install failed" }
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+      - name: Rebuild v121 v130 and canonical v133
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "base rebuild failed" }
+          $code = @'
+          from pathlib import Path
+          from eval_assets.v130.build_v134 import build, sha, V133_SHA256
+          p=Path('eval_agents/v130/v130_candidate_late_town_draw_gate24.py')
+          v133,_=build(p.read_text(encoding='utf-8'))
+          out=Path('eval_agents/v130/v133_candidate_center_only.py')
+          out.write_text(v133,encoding='utf-8')
+          assert sha(v133)==V133_SHA256
+          compile(v133,str(out),'exec')
+          print('v133',sha(v133))
+          '@
+          $code | python -
+          if ($LASTEXITCODE -ne 0) { throw "v133 rebuild failed" }
+      - name: Trace selected positive worlds
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path traces | Out-Null
+          function Trace-Case([string]$id,[string]$opp,[int]$seed) {
+            foreach ($seat in 0,1) {
+              python eval_assets/v130/trace_single_game.py --target eval_agents/v130/v121_champion_same_turn_unwind.py --opponent $opp --target-seat $seat --seed $seed --out "traces/$id-v121-seat$seat.json"
+              if ($LASTEXITCODE -ne 0) { throw "v121 trace failed $id seat $seat" }
+              python eval_assets/v130/trace_single_game.py --target eval_agents/v130/v133_candidate_center_only.py --opponent $opp --target-seat $seat --seed $seed --out "traces/$id-v133-seat$seat.json"
+              if ($LASTEXITCODE -ne 0) { throw "v133 trace failed $id seat $seat" }
+            }
+          }
+          Trace-Case beat-381003 opponents/beat_v48 381003
+          Trace-Case bl16-382001 opponents/bl_v16rc2 382001
+          Trace-Case bl21-382001 opponents/bl_v21 382001
+          Trace-Case bl21-382004 opponents/bl_v21 382004
+          Trace-Case starter-382001 starter 382001
+      - name: Summarize first divergences
+        run: |
+          $code = @'
+          import glob,json
+          from pathlib import Path
+          def sells(a):
+              out={}
+              for o in (a or {}).get('market',[]) or []:
+                  if o and len(o)>=3 and o[0]=='SELL':
+                      try: out[o[1]]=out.get(o[1],0)+int(o[2])
+                      except Exception: pass
+              return out
+          rows=[]
+          for vp in sorted(glob.glob('traces/*-v133-seat*.json')):
+              cp=vp.replace('-v133-','-v121-')
+              v=json.load(open(vp,encoding='utf-8')); c=json.load(open(cp,encoding='utf-8'))
+              vt={int(x['step']):x for x in v['trace']}; ct={int(x['step']):x for x in c['trace']}
+              first=None
+              for step in sorted(set(vt)&set(ct)):
+                  if vt[step].get('action')!=ct[step].get('action'):
+                      first=step; break
+              target=v['target_seat']; rv=v['rewards']; rc=c['rewards']
+              mv=(rv[target]-rv[1-target])-(rc[target]-rc[1-target])
+              rec={'case':Path(vp).name,'seed':v['seed'],'seat':target,'candidate_minus_champion_margin':mv,'first_divergence':first}
+              if first is not None:
+                  a=vt[first]; b=ct[first]
+                  rec.update(v133_action=a.get('action'),v121_action=b.get('action'),v133_sells=sells(a.get('action')),v121_sells=sells(b.get('action')),own_money=a.get('own_money'),rival_money=a.get('rival_money'),market_inventory=a.get('market_inventory'),market_prices=a.get('market_prices'),late_draw_gate=a.get('late_draw_gate'))
+              rows.append(rec)
+          Path('v133_positive_telemetry_summary.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          print(json.dumps(rows,indent=2))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v133-positive-telemetry-selfhosted
+          path: |
+            traces/
+            v133_positive_telemetry_summary.json
+          retention-days: 30
