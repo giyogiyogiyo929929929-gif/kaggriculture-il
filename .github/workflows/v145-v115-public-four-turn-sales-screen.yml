@@ -1,0 +1,160 @@
+name: v145 public four-turn sales screen
+
+on:
+  push:
+    branches: [eval-v115-v145-public-four-turn-sales-20260925]
+    paths:
+      - ".github/workflows/v145-v115-public-four-turn-sales-screen.yml"
+      - "ci/build_v145_public_four_turn_sales.py"
+      - "ci/reconstruct_exact_v115.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print('engine', kaggle_environments.__version__)"
+
+      - name: Reconstruct exact v115 and build v145
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results,results\public | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python ci\build_v145_public_four_turn_sales.py tmp\v115.py tmp\v145.py
+          if ($LASTEXITCODE -ne 0) { throw 'v145 build inapplicable or failed' }
+          python -m py_compile tmp\v115.py tmp\v145.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          champ=Path('tmp/v115.py'); cand=Path('tmp/v145.py')
+          c=champ.read_text(encoding='utf-8'); v=cand.read_text(encoding='utf-8')
+          sha=hashlib.sha256(champ.read_bytes()).hexdigest()
+          print('v115_sha256',sha)
+          print('v145_sha256',hashlib.sha256(cand.read_bytes()).hexdigest())
+          assert sha == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert c.count("    end=min(695,step+_R37_HORIZONS.get(int(obs['player']),2),(step//72+1)*72-1)\n") == 1
+          assert v.count('_v145_horizon') == 3
+          assert 'if 288 <= step < 696:' in v
+          assert c.replace("    end=min(695,step+_R37_HORIZONS.get(int(obs['player']),2),(step//72+1)*72-1)\n", "    # v145: public V36 / Market-Smart-derived guarded four-turn reservation.\n    # Only extend the sale lookahead inside the published safe window; keep\n    # the existing stock, debt, purchase, block-boundary and terminal guards.\n    _v145_horizon = _R37_HORIZONS.get(int(obs['player']), 2)\n    if 288 <= step < 696:\n        _v145_horizon = max(_v145_horizon, 4)\n    end=min(695,step+_v145_horizon,(step//72+1)*72-1)\n",1) == v
+          print('single_change_verified=true')
+          '@
+          $check | python -
+
+      - name: Runtime smoke 510013
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts\eval.py tmp\v145.py tmp\v115.py -n 1 -j 1 --seed-start 510013 --json results\runtime_510013.json
+          if ($LASTEXITCODE -ne 0) { throw 'runtime smoke failed' }
+          $code = @'
+          import json
+          d=json.load(open('results/runtime_510013.json',encoding='utf-8'))
+          assert d['exceptions']['a']==0 and d['exceptions']['b']==0
+          assert d['timings']['a']['max'] < 0.2, d['timings']['a']
+          print('runtime_candidate',d['timings']['a'])
+          '@
+          $code | python -
+
+      - name: Direct v145 vs exact v115 seeds 510001-510012
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts\eval.py tmp\v145.py tmp\v115.py -n 12 -j 4 --seed-start 510001 --json results\direct_510001_510012.json
+          if ($LASTEXITCODE -ne 0) { throw 'direct evaluation failed' }
+          $code = @'
+          import json,statistics
+          from pathlib import Path
+          d=json.load(open('results/direct_510001_510012.json',encoding='utf-8'))
+          by={}
+          for g in d['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'candidate_minus_champion':statistics.mean(v),'seat_diffs':v} for s,v in sorted(by.items())]
+          vals=[r['candidate_minus_champion'] for r in rows]
+          out={'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.mean(vals),'se':statistics.stdev(vals)/(len(vals)**0.5) if len(vals)>1 else 0.0,'worst':min(vals),'best':max(vals),'candidate_exceptions':d['exceptions']['a'],'champion_exceptions':d['exceptions']['b'],'rows':rows}
+          Path('results/direct_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert out['candidate_exceptions']==0 and out['champion_exceptions']==0
+          '@
+          $code | python -
+
+      - name: Public matched panel seeds 510001-510004
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run-Panel([string]$name, [string]$opp) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v145.py --champion tmp\v115.py --opponent $opp --seed-start 510001 --seed-count 4 --jobs 2 --out "results\public\$name.json"
+            if ($LASTEXITCODE -ne 0) { throw "public panel failed: $name" }
+          }
+          Run-Panel 'starter' 'starter'
+          Run-Panel 'beat_v48' 'opponents\beat_v48\main.py'
+          Run-Panel 'bl_v20' 'opponents\bl_v20\main.py'
+          Run-Panel 'bl_v21' 'opponents\bl_v21\main.py'
+          Run-Panel 'farming_v2' 'opponents\farming_v2\main.py'
+          Run-Panel 'frontier_prvsiyan' 'opponents\frontier_prvsiyan\main.py'
+
+      - name: Aggregate screen
+        if: always()
+        run: |
+          $code = @'
+          import glob,json,statistics
+          from pathlib import Path
+          direct=Path('results/direct_summary.json')
+          d=json.loads(direct.read_text(encoding='utf-8')) if direct.exists() else None
+          panels=[]
+          for p in sorted(glob.glob('results/public/*.json')):
+              x=json.load(open(p,encoding='utf-8'))
+              panels.append({'name':Path(p).stem,'opponent':x['opponent'],'wins':x['wins'],'losses':x['losses'],'ties':x['ties'],'mean':x['candidate_minus_champion_mean'],'se':x['candidate_minus_champion_se'],'worst':x['worst'],'best':x['best'],'seat0_mean':x['seat0_mean'],'seat1_mean':x['seat1_mean'],'candidate_exceptions':x['candidate_exceptions'],'champion_exceptions':x['champion_exceptions'],'rows':[{'seed':r['seed'],'candidate_minus_champion':r['candidate_minus_champion_money']} for r in x['rows']]})
+          vals=[float(r['candidate_minus_champion']) for p in panels for r in p['rows']]
+          out={'candidate':'v145_public_four_turn_sales','champion':'v115_champion_same_turn_open_squeeze','engine':'kaggle_environments==1.32.7','metric':'candidate_minus_champion = candidate - champion','direct':d,'public':panels,'public_wins':sum(x>0 for x in vals),'public_losses':sum(x<0 for x in vals),'public_ties':sum(x==0 for x in vals),'public_mean':statistics.mean(vals) if vals else None,'public_worst':min(vals) if vals else None,'public_best':max(vals) if vals else None,'decision':'KEEP TESTING; no automatic promotion'}
+          Path('results/v145_screen_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v145-public-four-turn-sales-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
