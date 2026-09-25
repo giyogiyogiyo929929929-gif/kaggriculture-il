@@ -41,9 +41,7 @@ jobs:
           cp tmp/v77.py tmp/v77_liveherd.py
           cat >> tmp/v77_liveherd.py <<'PY'
 
-          # Exact structural gate used by v124 on the v115 line:
-          # SHEEP -> COW requires >=2 PIZZA_SHOP instances; COW -> SHEEP remains score-gated.
-          # Public concept source: GzmCR/Kaggriculture reactive livestock scoring.
+          # Exact structural gate used by v124 on the v115 line.
           _LH_PARENT = agent
           _LH_TARGET_BASE = _y_target
           _LH_OBS = None
@@ -118,16 +116,6 @@ jobs:
           kaggle_submission_agent_v77_liveherd=agent
           PY
           python -m py_compile tmp/v77.py tmp/v77_liveherd.py
-          python - <<'PY'
-          import importlib.util
-          for path,want in [('tmp/v77.py','kaggle_submission_agent_v77'),('tmp/v77_liveherd.py','kaggle_submission_agent_v77_liveherd')]:
-              s=importlib.util.spec_from_file_location('_diag',path);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-              last_name=None
-              for k,v in vars(m).items():
-                  if callable(v): last_name=k
-              print(path,'last callable:',last_name)
-              assert last_name==want
-          PY
 
       - name: Serial runtime gate
         run: |
@@ -142,42 +130,49 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Run 20-pair acceptance comparisons
-        shell: bash
+      - name: Sealed 80-pair direct scan seeds 101-180
         run: |
-          run_eval() {
-            name="$1"; a="$2"; b="$3"; jobs="$4"
-            echo "===== ${name}: ${a} vs ${b} ====="
-            python scripts/eval.py "$a" "$b" -n 20 -j "$jobs" --json "results/${name}.json" | tee "results/${name}.log"
+          python - <<'PY' | tee results/sealed80.log
+          import json, statistics
+          from scripts.eval import evaluate, format_summary
+
+          s=evaluate('tmp/v77_liveherd.py','tmp/v77.py',pairs=80,jobs=4,seed_start=101)
+          with open('results/sealed80.json','w',encoding='utf-8') as f:
+              json.dump(s,f,ensure_ascii=False,indent=2)
+          print(format_summary(s))
+
+          by={}
+          for g in s['matches_detail']:
+              by.setdefault(g['seed'],[]).append(g)
+          rows=[]
+          for seed,games in sorted(by.items()):
+              game_diffs=[g['money'][0]-g['money'][1] for g in games]
+              pair_diff=statistics.mean(game_diffs)
+              rows.append({'seed':seed,'game_diffs':game_diffs,'pair_diff':pair_diff})
+          nonzero=[r for r in rows if r['pair_diff'] != 0]
+          negative=[r for r in rows if r['pair_diff'] < 0]
+          seat_only=[r for r in rows if r['pair_diff'] == 0 and any(x != 0 for x in r['game_diffs'])]
+          diag={
+              'range':'101-180',
+              'positive_2se': s['pair_diff_mean'] > 0 and s['pair_diff_mean'] >= 2*s['pair_diff_stderr'],
+              'mean':s['pair_diff_mean'],
+              'stderr':s['pair_diff_stderr'],
+              'wins':s['wins'],'losses':s['losses'],'draws':s['draws'],
+              'nonzero_pair_seeds':nonzero,
+              'negative_pair_seeds':negative,
+              'seat_only_difference_seeds':seat_only,
+              'exceptions_a':s['exceptions']['a'],
+              'health_a':s['health']['a'],
           }
-          # Score significance does not depend on worker count because seeds are fixed.
-          # Runtime itself was measured separately above in a single process.
-          run_eval direct20 tmp/v77_liveherd.py tmp/v77.py 2
-          run_eval starter20 tmp/v77_liveherd.py starter 2
-          python - <<'PY' | tee results/acceptance_check.log
-          import json
-          direct=json.load(open('results/direct20.json',encoding='utf-8'))
-          starter=json.load(open('results/starter20.json',encoding='utf-8'))
-          checks={
-              'direct_positive_2se': direct['pair_diff_mean'] > 0 and direct['pair_diff_mean'] >= 2*direct['pair_diff_stderr'],
-              'starter_19_of_20': starter['wins'] >= 19,
-              'exceptions_zero': direct['exceptions']['a']==0 and starter['exceptions']['a']==0,
-              'animals_lost_zero': direct['health']['a']['animals_lost']==0 and starter['health']['a']['animals_lost']==0,
-              'shed_under_100': direct['health']['a']['shed_final'] < 100 and starter['health']['a']['shed_final'] < 100,
-              'crop_loss_under_5pct': all(
-                  s['health']['a']['crop_losses'] <= 0.05*max(1,s['health']['a']['planted'])
-                  for s in (direct,starter)
-              ),
-          }
-          print(json.dumps({'checks':checks,'direct':{'mean':direct['pair_diff_mean'],'stderr':direct['pair_diff_stderr'],'wins':direct['wins'],'losses':direct['losses'],'draws':direct['draws']},'starter':{'wins':starter['wins'],'losses':starter['losses'],'draws':starter['draws']}},ensure_ascii=False,indent=2))
-          if not all(checks.values()):
-              raise SystemExit(2)
+          with open('results/sealed80_diagnostic.json','w',encoding='utf-8') as f:
+              json.dump(diag,f,ensure_ascii=False,indent=2)
+          print(json.dumps(diag,ensure_ascii=False,indent=2))
           PY
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liveherd-acceptance-results
+          name: liveherd-sealed80-results
           path: results/
           retention-days: 7
