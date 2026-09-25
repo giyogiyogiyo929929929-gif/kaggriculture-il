@@ -1,6 +1,11 @@
 name: Kaggriculture H2H
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggriculture-h2h.yml"
+      - "scripts/ci/**"
   workflow_dispatch:
     inputs:
       candidate:
@@ -23,6 +28,12 @@ on:
         required: true
         default: "20"
         type: string
+
+env:
+  H2H_CANDIDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate || 'main.py' }}
+  H2H_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.baseline || 'opponents/bl_v21/main.py' }}
+  H2H_SEED_START: ${{ github.event_name == 'workflow_dispatch' && inputs.seed_start || '369901' }}
+  H2H_SEED_COUNT: ${{ github.event_name == 'workflow_dispatch' && inputs.seed_count || '4' }}
 
 permissions:
   contents: read
@@ -61,10 +72,10 @@ jobs:
         run: |
           mkdir -p results
           python scripts/ci/run_exact_pair.py \
-            --candidate "${{ inputs.candidate }}" \
-            --baseline "${{ inputs.baseline }}" \
-            --seed-start "${{ inputs.seed_start }}" \
-            --seed-count "${{ inputs.seed_count }}" \
+            --candidate "$H2H_CANDIDATE" \
+            --baseline "$H2H_BASELINE" \
+            --seed-start "$H2H_SEED_START" \
+            --seed-count "$H2H_SEED_COUNT" \
             --shard-index "${{ matrix.shard }}" \
             --shard-count 4 \
             --out "results/shard-${{ matrix.shard }}.json"
@@ -100,10 +111,10 @@ jobs:
         run: |
           python scripts/ci/aggregate_h2h.py \
             --input-dir artifacts \
-            --candidate "${{ inputs.candidate }}" \
-            --baseline "${{ inputs.baseline }}" \
-            --seed-start "${{ inputs.seed_start }}" \
-            --seed-count "${{ inputs.seed_count }}" \
+            --candidate "$H2H_CANDIDATE" \
+            --baseline "$H2H_BASELINE" \
+            --seed-start "$H2H_SEED_START" \
+            --seed-count "$H2H_SEED_COUNT" \
             --json-out h2h_summary.json \
             --md-out h2h_summary.md
           cat h2h_summary.md >> "$GITHUB_STEP_SUMMARY"
