@@ -1,0 +1,142 @@
+name: v115 hard opponent selection
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v115-hard-panel-selection.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select-hard-panel:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+
+      - name: Reconstruct exact v115
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results,results\hard_selection | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python -m py_compile tmp\v115.py
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          p=Path('tmp/v115.py')
+          got=hashlib.sha256(p.read_bytes()).hexdigest()
+          print('v115_sha256',got)
+          assert got == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          '@
+          $check | python -
+
+      - name: Champion-only hard opponent selection 520001-520004
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json, statistics, subprocess, sys
+          from pathlib import Path
+
+          opponents = {
+              'peak_2950': 'opponents/peak_2950/main.py',
+              'salem_2900': 'opponents/salem_2900/main.py',
+              'score_2820': 'opponents/score_2820/main.py',
+              'jaxa_2802': 'opponents/jaxa_2802/main.py',
+              'thomas_router_95': 'opponents/thomas_router_95/main.py',
+              'tetsutani_ms': 'opponents/tetsutani_ms/main.py',
+              'melon_squeeze': 'opponents/melon_squeeze/main.py',
+              'shop_router_v7': 'opponents/shop_router_v7/main.py',
+          }
+          root=Path('results/hard_selection')
+          rows=[]
+          for name, opp in opponents.items():
+              out=root/f'{name}.json'
+              cmd=[sys.executable,'scripts/eval.py','tmp/v115.py',opp,'-n','4','-j','2','--seed-start','520001','--json',str(out)]
+              print('RUN',name,' '.join(cmd), flush=True)
+              subprocess.run(cmd,check=True)
+              d=json.loads(out.read_text(encoding='utf-8'))
+              games=[]
+              by={}
+              for g in d['matches_detail']:
+                  seed=int(g['seed'])
+                  focal=float(g['money'][0]); rival=float(g['money'][1])
+                  margin=focal-rival
+                  games.append({'seed':seed,'margin':margin,'focal_money':focal,'rival_money':rival})
+                  by.setdefault(seed,[]).append(margin)
+              pair_rows=[]
+              for seed,vals in sorted(by.items()):
+                  pair_rows.append({'seed':seed,'seat_margins':vals,'pair_mean_margin':statistics.mean(vals),
+                                    'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals)})
+              margins=[g['margin'] for g in games]
+              wins=sum(x>0 for x in margins); losses=sum(x<0 for x in margins); ties=sum(x==0 for x in margins)
+              row={
+                  'opponent':name,'path':opp,'games':len(games),'wins':wins,'losses':losses,'ties':ties,
+                  'mean_margin':statistics.mean(margins),'worst_margin':min(margins),'best_margin':max(margins),
+                  'pair_rows':pair_rows,
+                  'candidate_exceptions':d['exceptions']['a'],'opponent_exceptions':d['exceptions']['b'],
+              }
+              # Selection is descriptive only. Keep anything with a loss/tie or a narrow worst margin.
+              row['hard_candidate'] = losses>0 or ties>0 or min(margins)<5000
+              rows.append(row)
+              print(json.dumps(row,indent=2), flush=True)
+          selected=[r['opponent'] for r in rows if r['hard_candidate']]
+          summary={
+              'purpose':'development-only Champion difficulty selection; not candidate promotion evidence',
+              'champion':'exact v115','engine':'kaggle_environments==1.32.7',
+              'seeds':[520001,520002,520003,520004], 'seat_swap':True,
+              'selection_rule':'loss or tie in 8 games, or worst seat margin < 5000',
+              'selected':selected,'rows':rows,
+          }
+          Path('results/hard_panel_selection.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          print(json.dumps(summary,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v115-hard-panel-selection
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
