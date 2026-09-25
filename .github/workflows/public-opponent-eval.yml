@@ -8,7 +8,7 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
           print('kaggriculture runtime OK')
           PY
 
-      - name: Build baseline v124 and v129 demand-backed candidate
+      - name: Build baseline and instrumented live-herd agents
         run: |
           mkdir -p tmp results
           cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
@@ -56,6 +56,7 @@ jobs:
               'SMOOTHIE_SHOP':('STRAWBERRY','MILK'),
               'FARMERS_MARKET':('WHEAT','CARROT','TOMATO','STRAWBERRY'),
           }
+          _LH_TELEM=[]
           def _lh_counts(obs,seat):
               out={'COW':0,'SHEEP':0}
               for row in obs['farms'][seat].get('tiles',[]) or []:
@@ -85,12 +86,22 @@ jobs:
               pizza_shops=sum(1 for name in shops if name=='PIZZA_SHOP')
               structural=(kind!='SHEEP' or other!='COW' or pizza_shops>=2)
               demand_backed=True
+              prices=(obs.get('market') or {}).get('prices',{}) or {}
+              milk_price=float(prices.get('MILK',160.0) or 160.0)
+              wool_price=float(prices.get('WOOL',200.0) or 200.0)
+              milk_demand=_lh_demand(obs,'MILK'); wool_demand=_lh_demand(obs,'WOOL')
               if _LH_HIGH_PRICE_GATE and kind=='SHEEP' and other=='COW':
-                  prices=(obs.get('market') or {}).get('prices',{}) or {}
-                  milk_price=float(prices.get('MILK',160.0) or 160.0)
-                  milk_demand=_lh_demand(obs,'MILK')
                   demand_backed=(milk_price < 215.0 or milk_demand >= 20)
-              if structural and demand_backed and b>a*_LH_RATIO: return other
+              would_swap=bool(structural and demand_backed and b>a*_LH_RATIO)
+              if kind=='SHEEP' and other=='COW' and pizza_shops>=2:
+                  _LH_TELEM.append({
+                      'step':int(obs.get('step',-1) or -1),'day':day,'seat':seat,'pizza':pizza_shops,
+                      'own':dict(own),'rival':dict(rival),'milk_price':milk_price,'wool_price':wool_price,
+                      'milk_demand':milk_demand,'wool_demand':wool_demand,'sheep_score':a,'cow_score':b,
+                      'ratio':(b/a if a else 999.0),'demand_backed':demand_backed,'would_swap':would_swap,
+                      'shops':list(shops),
+                  })
+              if would_swap: return other
               return None
           def agent(observation,configuration=None):
               global _LH_OBS
@@ -100,17 +111,16 @@ jobs:
           kaggle_submission_agent___NAME__=agent
           '''
           for name,gate in [('v124','False'),('v129','True')]:
-              text=base+wrapper.replace('__HIGH_PRICE_GATE__',gate).replace('__NAME__',name)
-              Path(f'tmp/{name}.py').write_text(text,encoding='utf-8')
+              Path(f'tmp/{name}.py').write_text(base+wrapper.replace('__HIGH_PRICE_GATE__',gate).replace('__NAME__',name),encoding='utf-8')
           PY
           python -m py_compile tmp/v77.py tmp/v124.py tmp/v129.py
 
-      - name: Recheck development trigger seeds
+      - name: Focused seed216 and reference-seed diagnosis
         run: |
-          python - <<'PY' | tee results/dev.log
+          python - <<'PY' | tee results/diagnosis.log
           import json
           from scripts.eval import evaluate
-          seeds=[1,105,130,133,144,151]
+          seeds=[1,105,130,133,144,151,216]
           out={}
           for name,path in [('v124','tmp/v124.py'),('v129','tmp/v129.py')]:
               out[name]={}
@@ -119,55 +129,48 @@ jobs:
                   row={'pair_diff':s['pair_diff_mean'],'exceptions':s['exceptions']['a']}
                   out[name][str(seed)]=row
                   print(name,seed,row)
-          with open('results/dev.json','w') as f: json.dump(out,f,indent=2)
+          with open('results/diagnosis.json','w') as f: json.dump(out,f,indent=2)
           PY
 
-      - name: Sealed 80-pair v129 evaluation (2 shards)
-        shell: bash
+      - name: Capture live-herd trigger telemetry
         run: |
-          run_shard() {
-            START="$1" END="$2" OUT="$3"
-            START="$START" END="$END" OUT="$OUT" python - <<'PY'
-          import json, os
-          from scripts.eval import evaluate
-          start=int(os.environ['START']); end=int(os.environ['END']); out=os.environ['OUT']
-          rows=[]
-          for seed in range(start,end):
-              s=evaluate('tmp/v129.py','tmp/v77.py',pairs=1,jobs=1,seed_start=seed)
-              d=float(s['pair_diff_mean'])
-              rows.append({'seed':seed,'pair_diff':d,'exceptions':s['exceptions']['a']})
-              print(seed,d,flush=True)
-          with open(out,'w') as f: json.dump(rows,f,indent=2)
-          PY
-          }
-          run_shard 201 241 results/shard_a.json > results/shard_a.log 2>&1 & P1=$!
-          run_shard 241 281 results/shard_b.json > results/shard_b.log 2>&1 & P2=$!
-          wait "$P1"
-          wait "$P2"
-          cat results/shard_a.log results/shard_b.log
-          python - <<'PY' | tee results/sealed.log
-          import json, math, statistics
-          rows=[]
-          for path in ['results/shard_a.json','results/shard_b.json']:
-              with open(path) as f: rows.extend(json.load(f))
-          rows.sort(key=lambda r:r['seed'])
-          vals=[r['pair_diff'] for r in rows]
-          mean=statistics.mean(vals)
-          se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
-          summary={
-              'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
-              'mean':mean,'se':se,'two_se_pass':mean>0 and mean>=2*se,
-              'worst':min(vals),'best':max(vals),'exception_total':sum(r['exceptions'] for r in rows),
-              'rows':rows,
-          }
-          print('SUMMARY',json.dumps({k:v for k,v in summary.items() if k!='rows'},indent=2))
-          with open('results/sealed.json','w') as f: json.dump(summary,f,indent=2)
+          python - <<'PY' | tee results/telemetry.log
+          import importlib.util, json, sys
+          from pathlib import Path
+          from kaggle_environments import make
+
+          def load(path, tag):
+              p=Path(path).resolve()
+              spec=importlib.util.spec_from_file_location(tag,p)
+              m=importlib.util.module_from_spec(spec); sys.modules[tag]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.pop(0)
+              return m
+
+          seeds=[1,105,130,133,144,151,216]
+          all_rows=[]
+          for variant in ['v124','v129']:
+              for seed in seeds:
+                  for swap in [False,True]:
+                      cand=load(f'tmp/{variant}.py',f'cand_{variant}_{seed}_{int(swap)}')
+                      base=load('tmp/v77.py',f'base_{variant}_{seed}_{int(swap)}')
+                      env=make('kaggriculture',configuration={'seed':seed})
+                      agents=[base.agent,cand.agent] if swap else [cand.agent,base.agent]
+                      env.run(agents)
+                      seat=1 if swap else 0
+                      reward=float(env.state[seat]['reward'])
+                      rows=[r for r in cand._LH_TELEM if r.get('would_swap') or r.get('ratio',0)>=1.10]
+                      rec={'variant':variant,'seed':seed,'swap':swap,'candidate_reward':reward,'telemetry':rows}
+                      all_rows.append(rec)
+                      print('CASE',variant,seed,'swap',swap,'reward',reward,'events',json.dumps(rows,sort_keys=True))
+          with open('results/telemetry.json','w') as f: json.dump(all_rows,f,indent=2)
           PY
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liveherd-v129-demand-backed-sealed-results
+          name: liveherd-seed216-telemetry
           path: results/
           retention-days: 7
