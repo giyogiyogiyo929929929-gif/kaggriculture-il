@@ -1,0 +1,180 @@
+name: V135 Milk Quote Boundary Focused
+
+on:
+  push:
+    branches: [eval-v135-milk-quote-boundary-20260925]
+    paths:
+      - ".github/workflows/v135-focused.yml"
+      - "eval_assets/v130/build_v135.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install "kaggle-environments==1.32.7"
+          if ($LASTEXITCODE -ne 0) { throw "engine install failed" }
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "engine version check failed" }
+
+      - name: Rebuild exact v121 v130 and v135
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          if (-not (Get-Command patch.exe -ErrorAction SilentlyContinue)) { throw "Git patch.exe not found" }
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "v121/v130 rebuild failed" }
+          python eval_assets/v130/build_v135.py --v130 eval_agents/v130/v130_candidate_late_town_draw_gate24.py --out eval_agents/v130/v135_candidate_milk_quote_boundary.py
+          if ($LASTEXITCODE -ne 0) { throw "v135 build failed" }
+          python -c "import hashlib,pathlib; p=pathlib.Path('eval_agents/v130/v135_candidate_milk_quote_boundary.py'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path('v135_sha256.txt').write_text(h,encoding='utf-8'); print('v135 sha256',h); compile(p.read_text(encoding='utf-8'),str(p),'exec')"
+          if ($LASTEXITCODE -ne 0) { throw "v135 syntax/sha step failed" }
+
+      - name: Matched-seed seat-swap panel
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          function Run-Panel([string]$id, [string]$opp, [int]$seed, [int]$count) {
+            $dir = Join-Path results $id
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v135_candidate_milk_quote_boundary.py --baseline $opp --seed-start $seed --seed-count $count --out "$dir/candidate.json"
+            if ($LASTEXITCODE -ne 0) { throw "candidate run failed: $id" }
+            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline $opp --seed-start $seed --seed-count $count --out "$dir/champion.json"
+            if ($LASTEXITCODE -ne 0) { throw "champion run failed: $id" }
+            python eval_assets/v130/compare_candidate_champion.py --candidate-json "$dir/candidate.json" --champion-json "$dir/champion.json" --opponent $opp --out "$dir/summary.json"
+            if ($LASTEXITCODE -ne 0) { throw "compare failed: $id" }
+          }
+
+          # Positive-control world from the v133 center-only lineage.
+          Run-Panel positive-beat-v48 opponents/beat_v48 381003 1
+          # Contains both positive controls 382001/382004 and negative control 382002.
+          Run-Panel bl21-mixed-controls opponents/bl_v21 382001 6
+          Run-Panel bl16-positive-panel opponents/bl_v16rc2 382001 6
+          Run-Panel starter-positive-panel starter 382001 6
+          # Regression / generalization panel inherited from the v134 scout.
+          Run-Panel fresh-weak opponents/dz_more_wheat 382101 6
+          Run-Panel fresh-frontier opponents/frontier_prvsiyan 382001 6
+          Run-Panel strong-farming opponents/farming_v2 382001 6
+          Run-Panel strong-farming-b opponents/farming_v2_b 382001 6
+          Run-Panel strong-first opponents/first_in_line 382001 6
+
+      - name: Aggregate candidate_minus_champion
+        if: always()
+        run: |
+          $code = @'
+          import glob,json,math,statistics
+          from pathlib import Path
+          ss=[]
+          for p in sorted(glob.glob('results/*/summary.json')):
+              try: ss.append(json.load(open(p,encoding='utf-8')))
+              except Exception as e: print('skip',p,e)
+          rows=[(s,r) for s in ss for r in s.get('rows',[])]
+          ds=[float(r['candidate_minus_champion']) for s,r in rows]
+          n=len(ds); mean=statistics.fmean(ds) if n else 0.0
+          sd=statistics.stdev(ds) if n>1 else 0.0
+          se=sd/math.sqrt(n) if n else 0.0
+          sha=Path('v135_sha256.txt').read_text(encoding='utf-8').strip() if Path('v135_sha256.txt').exists() else None
+          out={
+            'candidate':'v135_candidate_milk_quote_boundary',
+            'candidate_sha256':sha,
+            'parent':'v133_candidate_center_only',
+            'champion':'v121_champion_same_turn_unwind',
+            'engine':'kaggle_environments==1.32.7',
+            'paired_rows':n,
+            'wins':sum(x>0 for x in ds),
+            'losses':sum(x<0 for x in ds),
+            'draws':sum(x==0 for x in ds),
+            'mean_candidate_minus_champion':mean,
+            'se':se,
+            'mean_minus_2se':mean-2*se,
+            'worst_regression':min(ds) if ds else 0.0,
+            'best_improvement':max(ds) if ds else 0.0,
+            'technical_ok':bool(ss) and all(s.get('all_ok') for s in ss),
+            'panels':ss,
+          }
+          Path('v135_focused_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='panels'},indent=2))
+          '@
+          $code | python -
+
+      - name: Trace positive and negative controls
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path eval_agents/v130/v135_candidate_milk_quote_boundary.py)) { exit 0 }
+          New-Item -ItemType Directory -Force -Path traces | Out-Null
+          function Trace-Case([string]$id,[string]$opp,[int]$seed) {
+            foreach ($seat in 0,1) {
+              python eval_assets/v130/trace_single_game.py --target eval_agents/v130/v121_champion_same_turn_unwind.py --opponent $opp --target-seat $seat --seed $seed --out "traces/$id-v121-seat$seat.json"
+              if ($LASTEXITCODE -ne 0) { throw "v121 trace failed $id seat $seat" }
+              python eval_assets/v130/trace_single_game.py --target eval_agents/v130/v135_candidate_milk_quote_boundary.py --opponent $opp --target-seat $seat --seed $seed --out "traces/$id-v135-seat$seat.json"
+              if ($LASTEXITCODE -ne 0) { throw "v135 trace failed $id seat $seat" }
+            }
+          }
+          Trace-Case beat-381003 opponents/beat_v48 381003
+          Trace-Case bl21-382001 opponents/bl_v21 382001
+          Trace-Case bl21-382002 opponents/bl_v21 382002
+          Trace-Case bl21-382004 opponents/bl_v21 382004
+
+      - name: Summarize first divergences
+        if: always()
+        run: |
+          $code = @'
+          import glob,json
+          from pathlib import Path
+          def sells(a):
+              out={}
+              for o in (a or {}).get('market',[]) or []:
+                  if o and len(o)>=3 and o[0]=='SELL':
+                      try: out[o[1]]=out.get(o[1],0)+int(o[2])
+                      except Exception: pass
+              return out
+          rows=[]
+          for vp in sorted(glob.glob('traces/*-v135-seat*.json')):
+              cp=vp.replace('-v135-','-v121-')
+              if not Path(cp).exists(): continue
+              v=json.load(open(vp,encoding='utf-8')); c=json.load(open(cp,encoding='utf-8'))
+              vt={int(x['step']):x for x in v['trace']}; ct={int(x['step']):x for x in c['trace']}
+              first=None
+              for step in sorted(set(vt)&set(ct)):
+                  if vt[step].get('action')!=ct[step].get('action'):
+                      first=step; break
+              target=v['target_seat']; rv=v['rewards']; rc=c['rewards']
+              mv=(rv[target]-rv[1-target])-(rc[target]-rc[1-target])
+              rec={'case':Path(vp).name,'seed':v['seed'],'seat':target,'candidate_minus_champion_margin':mv,'first_divergence':first}
+              if first is not None:
+                  a=vt[first]; b=ct[first]
+                  rec.update(v135_action=a.get('action'),v121_action=b.get('action'),v135_sells=sells(a.get('action')),v121_sells=sells(b.get('action')),own_money=a.get('own_money'),rival_money=a.get('rival_money'),market_inventory=a.get('market_inventory'),market_prices=a.get('market_prices'),late_draw_gate=a.get('late_draw_gate'))
+              rows.append(rec)
+          Path('v135_control_telemetry.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          print(json.dumps(rows,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v135-milk-quote-boundary-focused
+          path: |
+            results/
+            traces/
+            v135_sha256.txt
+            v135_focused_summary.json
+            v135_control_telemetry.json
+          retention-days: 30
