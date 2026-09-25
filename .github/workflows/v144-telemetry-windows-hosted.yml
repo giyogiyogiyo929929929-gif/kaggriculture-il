@@ -1,4 +1,4 @@
-name: v144 room guard telemetry windows hosted
+name: v144 causal telemetry to gated v146 windows hosted
 
 on:
   push:
@@ -7,6 +7,8 @@ on:
       - ".github/workflows/v144-telemetry-windows-hosted.yml"
       - "ci/diagnose_public_room_guard.py"
       - "ci/classify_public_room_guard_telemetry.py"
+      - "ci/build_v146_room_guard_planned_reserve.py"
+      - "ci/test_v146_room_guard_reserve.py"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +17,7 @@ permissions:
 jobs:
   telemetry:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: powershell
@@ -58,8 +60,8 @@ jobs:
           $append | python -
           Move-Item tmp\main.py tmp\v77.py
           python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
-          python ci\build_v144_public_room_guard.py tmp\v115.py tmp\room_guard.py
-          python -m py_compile tmp\v115.py tmp\room_guard.py ci\diagnose_public_room_guard.py ci\classify_public_room_guard_telemetry.py
+          python ci\build_v144_public_room_guard.py tmp\v115.py tmp\v144.py
+          python -m py_compile tmp\v115.py tmp\v144.py ci\diagnose_public_room_guard.py ci\classify_public_room_guard_telemetry.py ci\build_v146_room_guard_planned_reserve.py ci\test_v146_room_guard_reserve.py
           $check = @'
           import hashlib
           from pathlib import Path
@@ -71,17 +73,96 @@ jobs:
       - name: Burned causal telemetry 683 689 693 both seats
         run: |
           $ErrorActionPreference = 'Stop'
-          python ci\diagnose_public_room_guard.py --v115 tmp\v115.py --candidate tmp\room_guard.py --out results\public_room_guard_telemetry.json
+          python ci\diagnose_public_room_guard.py --v115 tmp\v115.py --candidate tmp\v144.py --out results\public_room_guard_telemetry.json
           if ($LASTEXITCODE -ne 0) { throw 'telemetry failed' }
       - name: Formal seat validation and reserve-invasion classification
         run: |
           $ErrorActionPreference = 'Stop'
           python ci\classify_public_room_guard_telemetry.py results\public_room_guard_telemetry.json --out results\public_room_guard_causal_gate.json
           if ($LASTEXITCODE -ne 0) { throw 'causal classification failed' }
+          $gate = (Get-Content results\public_room_guard_causal_gate.json -Raw | ConvertFrom-Json).planned_sell_reserve_candidate_gate
+          "V146_GATE=$gate" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "V146_GATE=$gate"
+      - name: Build v146 and focused synthetic only if causal gate opens
+        if: env.V146_GATE == 'OPEN_FOR_V146_BURNED_COUNTERFACTUAL'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python ci\build_v146_room_guard_planned_reserve.py tmp\v115.py tmp\v146.py
+          python -m py_compile tmp\v146.py
+          python ci\test_v146_room_guard_reserve.py --v144 tmp\v144.py --v146 tmp\v146.py --out results\v146_synthetic.json
+          if ($LASTEXITCODE -ne 0) { throw 'v146 build/synthetic failed' }
+      - name: Burned matched counterfactual v146 vs v144 and exact v115
+        if: env.V146_GATE == 'OPEN_FOR_V146_BURNED_COUNTERFACTUAL'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import json
+          from scripts.eval import play_match
+
+          seeds=(683,689,693)
+          expected_v144={(683,0):492.0,(683,1):492.0,(689,0):-84.0,(689,1):-84.0,(693,0):479.0,(693,1):479.0}
+
+          def one(a,b,seed,seat):
+              swap=bool(seat)
+              r=play_match(a,b,seed,swap,None)
+              delta=float(r['money'][0])-float(r['money'][1])
+              return {
+                  'seed':seed,'seat':seat,'candidate_money':r['money'][0],'rival_money':r['money'][1],
+                  'candidate_minus_rival':delta,'exceptions':r['exceptions'],'timings':r['timings'],
+                  'steps':r['steps'],'health':r['health']
+              }
+
+          out={
+              'purpose':'burned causal counterfactual only; not promotion evidence',
+              'champion':'exact_v115','engine':'kaggle_environments==1.32.7',
+              'diff_convention':'candidate_minus_champion = candidate - champion',
+              'seeds':list(seeds),'v144_vs_v115':[],'v146_vs_v115':[],'v146_vs_v144':[]
+          }
+          for seed in seeds:
+              for seat in (0,1):
+                  r144=one('tmp/v144.py','tmp/v115.py',seed,seat)
+                  got=r144['candidate_minus_rival']
+                  exp=expected_v144[(seed,seat)]
+                  assert got==exp,(seed,seat,got,exp)
+                  out['v144_vs_v115'].append(r144)
+                  out['v146_vs_v115'].append(one('tmp/v146.py','tmp/v115.py',seed,seat))
+                  out['v146_vs_v144'].append(one('tmp/v146.py','tmp/v144.py',seed,seat))
+
+          for group in ('v144_vs_v115','v146_vs_v115','v146_vs_v144'):
+              for r in out[group]:
+                  assert r['exceptions']['a']==0 and r['exceptions']['b']==0,(group,r)
+
+          def pairs(rows):
+              p={}
+              for seed in seeds:
+                  vals=[r['candidate_minus_rival'] for r in rows if r['seed']==seed]
+                  assert len(vals)==2
+                  p[str(seed)]=sum(vals)/2.0
+              return p
+          out['pair_delta']={
+              'v144_vs_v115':pairs(out['v144_vs_v115']),
+              'v146_vs_v115':pairs(out['v146_vs_v115']),
+              'v146_vs_v144':pairs(out['v146_vs_v144']),
+          }
+          out['v146_minus_v144_direct_margin_by_seat']=[]
+          a={(r['seed'],r['seat']):r['candidate_minus_rival'] for r in out['v144_vs_v115']}
+          b={(r['seed'],r['seat']):r['candidate_minus_rival'] for r in out['v146_vs_v115']}
+          for key in sorted(a):
+              out['v146_minus_v144_direct_margin_by_seat'].append({
+                  'seed':key[0],'seat':key[1],'delta':b[key]-a[key]
+              })
+          out['max_candidate_turn_seconds']=max(
+              r['timings']['a']['max'] for group in ('v146_vs_v115','v146_vs_v144') for r in out[group]
+          )
+          open('results/v146_burned_counterfactual.json','w',encoding='utf-8').write(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          '@
+          $script | python -
+          if ($LASTEXITCODE -ne 0) { throw 'burned v146 counterfactual failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v144-public-room-guard-telemetry-windows-hosted
+          name: v144-causal-to-v146-windows-hosted
           path: results/
           if-no-files-found: error
           retention-days: 30
