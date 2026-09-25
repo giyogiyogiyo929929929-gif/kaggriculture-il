@@ -55,8 +55,9 @@ jobs:
               q=Path(p); print(p,q.stat().st_size,hashlib.sha256(q.read_bytes()).hexdigest())
           assert hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest() == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
           t=Path('tmp/v143.py').read_text(encoding='utf-8')
-          assert t.count('_v143_preds') == 4
+          assert '_v143_preds = [' in t
           assert t.count('sum(1 for x in _v143_preds if x >= 1) == 1') == 1
+          assert t.count('and not any(x >= 2 for x in _v143_preds)') == 1
           PY
 
       - name: Focused direct sanity against v115
