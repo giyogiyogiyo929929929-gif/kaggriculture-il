@@ -1,9 +1,6 @@
 name: Public opponent eval
 
 on:
-  pull_request:
-    branches:
-      - main
   push:
     branches:
       - eval-public-opponents-20260923
@@ -11,7 +8,7 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -139,7 +136,9 @@ jobs:
             name="$1"; a="$2"; b="$3"
             echo "===== ${name}: ${a} vs ${b} ====="
             set +e
-            python scripts/eval.py "$a" "$b" -n 4 -j 1 --json "results/${name}.json" > "results/${name}.log" 2>&1
+            # This panel is for paired score comparison, not acceptance timing.
+            # Two workers cut wall-clock time; timing acceptance remains a separate -j 1 check.
+            python scripts/eval.py "$a" "$b" -n 4 -j 2 --json "results/${name}.json" > "results/${name}.log" 2>&1
             code=$?
             set -e
             echo "exit_code=${code}" >> "results/${name}.log"
