@@ -8,7 +8,7 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,154 +25,107 @@ jobs:
           python -m pip install jsonschema requests
           python - <<'PY'
           from kaggle_environments import make
-          env = make('kaggriculture', configuration={'randomSeed': 1}, debug=True)
-          env.run(['starter', 'starter'])
-          assert len(env.steps) == 720
+          env=make('kaggriculture',configuration={'randomSeed':1},debug=True)
+          env.run(['starter','starter'])
+          assert len(env.steps)==720
           print('kaggriculture runtime OK')
           PY
 
-      - name: Build loader-safe v77 and exact-v124 transfer candidate
+      - name: Build baseline v124 and v125
         run: |
-          mkdir -p tmp
+          mkdir -p tmp results
           cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
           (cd tmp && patch --batch -p3 < ../ci/v76.patch)
           printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
           mv tmp/main.py tmp/v77.py
-          cp tmp/v77.py tmp/v77_liveherd.py
-          cat >> tmp/v77_liveherd.py <<'PY'
+          cp tmp/v77.py tmp/v124.py
+          cat >> tmp/v124.py <<'PY'
 
-          # Exact structural gate used by v124 on the v115 line.
-          _LH_PARENT = agent
-          _LH_TARGET_BASE = _y_target
-          _LH_OBS = None
-          _LH_RATIO = 1.15
-          _LH_BASE_PRICE = {'MILK':160.0,'WOOL':200.0}
-          _LH_SHOP_PRODUCTS = {
-              'BAKERY':('EGG','WHEAT'), 'PIZZA_SHOP':('MILK','TOMATO','WHEAT'),
-              'BRUNCH_SPOT':('EGG','WHEAT','STRAWBERRY'), 'YARN_STORE':('WOOL',),
-              'ICE_CREAM_SHOP':('STRAWBERRY','MILK','WHEAT'), 'PET_CAFE':('CARROT',),
+          _LH_PARENT=agent
+          _LH_TARGET_BASE=_y_target
+          _LH_OBS=None
+          _LH_RATIO=1.15
+          _LH_BASE_PRICE={'MILK':160.0,'WOOL':200.0}
+          _LH_SHOP_PRODUCTS={
+              'BAKERY':('EGG','WHEAT'),'PIZZA_SHOP':('MILK','TOMATO','WHEAT'),
+              'BRUNCH_SPOT':('EGG','WHEAT','STRAWBERRY'),'YARN_STORE':('WOOL',),
+              'ICE_CREAM_SHOP':('STRAWBERRY','MILK','WHEAT'),'PET_CAFE':('CARROT',),
               'SMOOTHIE_SHOP':('STRAWBERRY','MILK'),
               'FARMERS_MARKET':('WHEAT','CARROT','TOMATO','STRAWBERRY'),
           }
-          _LH_REPORT={'calls':0,'considered':0,'swaps':0,'errors':0}
-
-          def _lh_counts(obs, seat):
+          def _lh_counts(obs,seat):
               out={'COW':0,'SHEEP':0}
               for row in obs['farms'][seat].get('tiles',[]) or []:
                   for tile in row:
-                      if isinstance(tile,dict) and tile.get('animal') in out:
-                          out[tile['animal']]+=1
+                      if isinstance(tile,dict) and tile.get('animal') in out: out[tile['animal']]+=1
               return out
-
-          def _lh_demand(obs, product):
-              day=int(obs.get('day',0) or 0)
-              total=2*(4 if day>=20 else 2 if day>=10 else 1)
+          def _lh_demand(obs,product):
+              day=int(obs.get('day',0) or 0); total=2*(4 if day>=20 else 2 if day>=10 else 1)
               for name in ((obs.get('town') or {}).get('unlocked_shops',[]) or []):
                   products=_LH_SHOP_PRODUCTS.get(name,())
-                  if product in products:
-                      total += 12 if len(products)==1 else 6
+                  if product in products: total += 12 if len(products)==1 else 6
               return total
-
-          def _lh_score(obs, animal, own, rival):
+          def _lh_score(obs,animal,own,rival):
               product='MILK' if animal=='COW' else 'WOOL'
               price=float((obs.get('market') or {}).get('prices',{}).get(product,_LH_BASE_PRICE[product]) or _LH_BASE_PRICE[product])
               return (price/_LH_BASE_PRICE[product])*(1.0+0.012*_lh_demand(obs,product))/(1.0+0.18*rival+0.08*own)
-
-          def _y_target(kind, shops, cfg):
+          def _y_target(kind,shops,cfg):
               base=_LH_TARGET_BASE(kind,shops,cfg)
-              if base is not None:
-                  return base
+              if base is not None: return base
               obs=_LH_OBS
-              if obs is None or kind not in ('COW','SHEEP'):
-                  return None
-              try:
-                  day=int(obs.get('day',0) or 0)
-                  if not (cfg['days'][0] <= day <= cfg['days'][1]):
-                      return None
-                  seat=int(obs.get('player',0) or 0)
-                  own=_lh_counts(obs,seat); rival=_lh_counts(obs,1-seat)
-                  other='SHEEP' if kind=='COW' else 'COW'
-                  a=_lh_score(obs,kind,own[kind],rival[kind]); b=_lh_score(obs,other,own[other],rival[other])
-                  _LH_REPORT['considered']+=1
-                  pizza_shops=sum(1 for name in shops if name=='PIZZA_SHOP')
-                  structural=(kind!='SHEEP' or other!='COW' or pizza_shops>=2)
-                  if structural and b>a*_LH_RATIO:
-                      _LH_REPORT['swaps']+=1
-                      return other
-              except Exception:
-                  _LH_REPORT['errors']+=1
+              if obs is None or kind not in ('COW','SHEEP'): return None
+              day=int(obs.get('day',0) or 0)
+              if not (cfg['days'][0] <= day <= cfg['days'][1]): return None
+              seat=int(obs.get('player',0) or 0); own=_lh_counts(obs,seat); rival=_lh_counts(obs,1-seat)
+              other='SHEEP' if kind=='COW' else 'COW'
+              a=_lh_score(obs,kind,own[kind],rival[kind]); b=_lh_score(obs,other,own[other],rival[other])
+              pizza_shops=sum(1 for name in shops if name=='PIZZA_SHOP')
+              structural=(kind!='SHEEP' or other!='COW' or pizza_shops>=2)
+              if structural and b>a*_LH_RATIO: return other
               return None
-
-          def agent(observation, configuration=None):
+          def agent(observation,configuration=None):
               global _LH_OBS
-              _LH_REPORT['calls']+=1
               _LH_OBS=observation
-              try:
-                  return _LH_PARENT(observation,configuration)
-              finally:
-                  _LH_OBS=None
-
-          agent.telemetry=_LH_REPORT
-          kaggle_submission_agent_v77_liveherd=agent
+              try: return _LH_PARENT(observation,configuration)
+              finally: _LH_OBS=None
+          kaggle_submission_agent_v124=agent
           PY
-          python -m py_compile tmp/v77.py tmp/v77_liveherd.py
-
-      - name: Serial runtime gate
-        run: |
-          mkdir -p results
-          python - <<'PY' | tee results/runtime_preflight.log
-          from pathlib import Path
-          from scripts.preflight import load_like_kaggle, check_turn_time
-          agent = load_like_kaggle(Path('tmp/v77_liveherd.py'))
-          result = check_turn_time(agent)
-          print(result.line())
-          if not result.ok:
-              raise SystemExit(1)
+          cp tmp/v124.py tmp/v125.py
+          python - <<'PY'
+          p='tmp/v125.py'
+          s=open(p,encoding='utf-8').read()
+          old="              if base is not None: return base\n              obs=_LH_OBS"
+          new="              if base is not None: return base\n              # v125: preserve existing/base COW->SHEEP rules, but disable new live COW->SHEEP swaps.\n              if kind == 'COW': return None\n              obs=_LH_OBS"
+          assert old in s
+          s=s.replace(old,new,1).replace('kaggle_submission_agent_v124=agent','kaggle_submission_agent_v125=agent',1)
+          open(p,'w',encoding='utf-8').write(s)
           PY
+          python -m py_compile tmp/v77.py tmp/v124.py tmp/v125.py
 
-      - name: Sealed 80-pair direct scan seeds 101-180
+      - name: Focused direction-gate diagnosis
         run: |
-          python - <<'PY' | tee results/sealed80.log
-          import json, statistics
-          from scripts.eval import evaluate, format_summary
-
-          s=evaluate('tmp/v77_liveherd.py','tmp/v77.py',pairs=80,jobs=4,seed_start=101)
-          with open('results/sealed80.json','w',encoding='utf-8') as f:
-              json.dump(s,f,ensure_ascii=False,indent=2)
-          print(format_summary(s))
-
-          by={}
-          for g in s['matches_detail']:
-              by.setdefault(g['seed'],[]).append(g)
-          rows=[]
-          for seed,games in sorted(by.items()):
-              game_diffs=[g['money'][0]-g['money'][1] for g in games]
-              pair_diff=statistics.mean(game_diffs)
-              rows.append({'seed':seed,'game_diffs':game_diffs,'pair_diff':pair_diff})
-          nonzero=[r for r in rows if r['pair_diff'] != 0]
-          negative=[r for r in rows if r['pair_diff'] < 0]
-          seat_only=[r for r in rows if r['pair_diff'] == 0 and any(x != 0 for x in r['game_diffs'])]
-          diag={
-              'range':'101-180',
-              'positive_2se': s['pair_diff_mean'] > 0 and s['pair_diff_mean'] >= 2*s['pair_diff_stderr'],
-              'mean':s['pair_diff_mean'],
-              'stderr':s['pair_diff_stderr'],
-              'wins':s['wins'],'losses':s['losses'],'draws':s['draws'],
-              'nonzero_pair_seeds':nonzero,
-              'negative_pair_seeds':negative,
-              'seat_only_difference_seeds':seat_only,
-              'exceptions_a':s['exceptions']['a'],
-              'health_a':s['health']['a'],
-          }
-          with open('results/sealed80_diagnostic.json','w',encoding='utf-8') as f:
-              json.dump(diag,f,ensure_ascii=False,indent=2)
-          print(json.dumps(diag,ensure_ascii=False,indent=2))
+          python - <<'PY' | tee results/focused.log
+          import json
+          from scripts.eval import evaluate
+          seeds=[1,105,130,133,144,151]
+          agents={'v124':'tmp/v124.py','v125':'tmp/v125.py'}
+          out={}
+          for name,path in agents.items():
+              out[name]={}
+              for seed in seeds:
+                  s=evaluate(path,'tmp/v77.py',pairs=1,jobs=1,seed_start=seed)
+                  games=s['matches_detail']
+                  diffs=[g['money'][0]-g['money'][1] for g in games]
+                  row={'game_diffs':diffs,'pair_diff':s['pair_diff_mean'],'exceptions':s['exceptions']['a']}
+                  out[name][str(seed)]=row
+                  print(name,seed,row)
+          with open('results/focused.json','w',encoding='utf-8') as f: json.dump(out,f,ensure_ascii=False,indent=2)
           PY
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liveherd-sealed80-results
+          name: liveherd-v125-focused-results
           path: results/
           retention-days: 7
