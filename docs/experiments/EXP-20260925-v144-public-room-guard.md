@@ -112,6 +112,20 @@ The old public panel does not validate rating gain because it contains no hard c
 
 A static audit also shows that a new generic terminal-liquidation candidate would be redundant: although exact-v115 keeps the chassis `terminal_liquidation` setting disabled, the inherited downstream agent already has a final-step projected-shed SELL rescue. Do not create that candidate unless a materially different terminal defect is demonstrated.
 
+### Interaction audit: room_guard is stacked on an existing shed guard
+
+Exact v115 already contains a downstream `SHEDROOM` layer that acts at hours 21/22/23 with `_SR_MARGIN = 8`. Therefore v144 does not introduce the first overflow protection; it enables the chassis room_guard before the existing downstream shed guard. The candidate must be interpreted as changing overflow estimation/item selection/order composition on top of an already guarded policy.
+
+The enabled public room_guard computes current-step `planned_sells`, but when it chooses additional SELL quantity its availability is:
+
+```text
+avail = shed[item] - current_step_planned_sell[item]
+```
+
+Future route SELL quantity is used only as a boolean priority key (`has future sell` goes later). It is **not subtracted from `avail`**. Thus, if no-future-sale inventory is insufficient to create enough space, room_guard may sell stock that a later route SELL expects to use. This is a concrete possible cause of the seed689 -84 regression, but it is not yet established causally.
+
+Do **not** implement a blanket future-SSELL reserve yet: full reservation could itself restore night overflow or over-reserve stock that later production would refill. The seed689 telemetry must first show that the added room_guard SELL actually consumed future-planned inventory. If confirmed, the next candidate should make the smallest possible reservation/selection change while retaining emergency overflow relief.
+
 ## Telemetry follow-up
 
 Files:
@@ -135,6 +149,8 @@ Counterfactual protocol:
 No unused/sealed seed is consumed by telemetry.
 
 Initial telemetry run `36136980588` reached candidate construction successfully, then failed immediately in the diagnostic step. This was test infrastructure, not tactical evidence. Root cause audit found `ci/diagnose_public_room_guard.py` imported `scripts.eval` without adding the repository root to `sys.path`, unlike the established CI evaluators. Commit `5c2477d67041bae3fd29240701ca5c79f5e5e6b4` adds the repo root before that import. Repair run: `36140907244`.
+
+The failed-run job log confirms the exact exception was `ModuleNotFoundError: No module named 'scripts'`; no candidate game was run by that failed telemetry attempt.
 
 ## Hard-opponent outcome gate
 
