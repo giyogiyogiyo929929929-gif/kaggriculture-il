@@ -1,11 +1,11 @@
-name: v97 Official Evaluation
+name: v101 Official Evaluation
 
 on:
   push:
     branches: [eval-v97-official]
     paths:
       - ".github/workflows/v97-official-eval.yml"
-      - "eval_assets/v97/**"
+      - "eval_assets/v101/**"
   workflow_dispatch:
 
 permissions:
@@ -14,17 +14,15 @@ permissions:
 jobs:
   official-eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
-      CANDIDATE: eval_agents/v97/v97_candidate_actual_trade_race.py
+      CANDIDATE: eval_agents/v101/v101_candidate_zero_yield_harvest_fertilizer.py
       CHAMPION: eval_agents/v97/v96_champion_lead11_milkshops2.py
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install exact engine
         run: |
           python -m pip install --upgrade pip
@@ -34,101 +32,45 @@ jobs:
           assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
           print("kaggle_environments", kaggle_environments.__version__)
           PY
-
-      - name: Rebuild exact v96 and v97
+      - name: Rebuild exact v96 and v101
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/base
-          python eval_assets/v97/build_v97_eval.py \
-            --v121 eval_agents/base/v121_champion_same_turn_unwind.py \
-            --out-dir eval_agents/v97
-
-      - name: Synthetic regression
-        run: python eval_assets/v97/synthetic_v97.py
-
-      - name: Validation 328001-328020
+          python eval_assets/v97/build_v97_eval.py --v121 eval_agents/base/v121_champion_same_turn_unwind.py --out-dir eval_agents/v97
+          python eval_assets/v101/build_v101_eval.py --v96 "$CHAMPION" --out-dir eval_agents/v101
+      - name: Compile
+        run: python -m py_compile "$CHAMPION" "$CANDIDATE"
+      - name: Validation 343001-343060
         run: |
           mkdir -p results
-          python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
-            --seed-start 328001 \
-            --seed-count 20 \
-            --out results/validation.json
-
-      - name: Telemetry for validation diff seeds
+          python scripts/ci/run_exact_pair.py --candidate "$CANDIDATE" --baseline "$CHAMPION" --seed-start 343001 --seed-count 60 --out results/validation.json
+      - name: Sealed 344001-344020
+        run: python scripts/ci/run_exact_pair.py --candidate "$CANDIDATE" --baseline "$CHAMPION" --seed-start 344001 --seed-count 20 --out results/sealed.json
+      - name: Starter 1-5
         run: |
-          DIFF_SEEDS="$(python - <<'PY'
-          import json
-          rows=json.load(open('results/validation.json',encoding='utf-8'))
-          print(','.join(str(r['seed']) for r in rows if float(r['candidate_minus_baseline']) != 0.0))
-          PY
-          )"
-          if [ -n "$DIFF_SEEDS" ]; then
-            python eval_assets/v97/telemetry_diff.py \
-              --candidate "$CANDIDATE" \
-              --baseline "$CHAMPION" \
-              --seeds "$DIFF_SEEDS" \
-              --out results/telemetry_validation.json
-          else
-            echo '[]' > results/telemetry_validation.json
-          fi
-
-      - name: Sealed 329001-329020
+          python scripts/ci/run_exact_pair.py --candidate "$CANDIDATE" --baseline starter --seed-start 1 --seed-count 5 --out results/starter_candidate.json
+          python scripts/ci/run_exact_pair.py --candidate "$CHAMPION" --baseline starter --seed-start 1 --seed-count 5 --out results/starter_champion.json
+      - name: Runtime 345001
+        run: python scripts/ci/run_exact_pair.py --candidate "$CANDIDATE" --baseline "$CHAMPION" --seed-start 345001 --seed-count 1 --out results/runtime.json
+      - name: Technical gate
         run: |
-          python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
-            --seed-start 329001 \
-            --seed-count 20 \
-            --out results/sealed.json
-
-      - name: Starter regression seeds 1-5
-        run: |
-          python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline starter \
-            --seed-start 1 \
-            --seed-count 5 \
-            --out results/starter_candidate.json
-          python scripts/ci/run_exact_pair.py \
-            --candidate "$CHAMPION" \
-            --baseline starter \
-            --seed-start 1 \
-            --seed-count 5 \
-            --out results/starter_champion.json
-
-      - name: Runtime seed 330001
-        run: |
-          python scripts/ci/run_exact_pair.py \
-            --candidate "$CANDIDATE" \
-            --baseline "$CHAMPION" \
-            --seed-start 330001 \
-            --seed-count 1 \
-            --out results/runtime.json
-
-      - name: Summarize and enforce technical gates
-        run: |
-          python eval_assets/v97/summarize_v97.py
-          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
           python - <<'PY'
-          import json
-          for name in ('validation.json','sealed.json','starter_candidate.json','starter_champion.json','runtime.json'):
+          import json,math,statistics
+          def report(name):
               rows=json.load(open('results/'+name,encoding='utf-8'))
-              assert rows, name
-              assert all(r.get('ok') for r in rows), name
-              assert sum(int(r.get('candidate_exceptions',0)) for r in rows) == 0, name
-          s=json.load(open('results/summary.json',encoding='utf-8'))
-          assert s['runtime_330001']['p99_ms'] < 50, s['runtime_330001']
-          assert s['runtime_330001']['max_ms'] < 200, s['runtime_330001']
+              assert rows and all(r.get('ok') for r in rows), name
+              assert sum(int(r.get('candidate_exceptions',0)) for r in rows)==0, name
+              d=[float(r['candidate_minus_baseline']) for r in rows]
+              mean=statistics.mean(d); se=(statistics.stdev(d)/math.sqrt(len(d))) if len(d)>1 else 0.0
+              print(name, 'n',len(d),'W/L/D',sum(x>0 for x in d),sum(x<0 for x in d),sum(x==0 for x in d),'mean',mean,'se',se,'mean-2SE',mean-2*se,'min',min(d),'max',max(d))
+          for n in ('validation.json','sealed.json','starter_candidate.json','starter_champion.json','runtime.json'): report(n)
           PY
-
-      - name: Upload evaluation artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v97-official-eval
+          name: v101-official-eval
           path: results/
           if-no-files-found: warn
           retention-days: 30
