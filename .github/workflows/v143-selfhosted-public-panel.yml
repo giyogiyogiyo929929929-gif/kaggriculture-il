@@ -41,6 +41,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path tmp,results,results\calibration,results\v143 | Out-Null
           Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          p = Path("tmp/main.py")
+          raw = p.read_bytes()
+          p.write_bytes(raw.replace(b"\r\n", b"\n"))
+          '@
+          $normalize | python -
           Push-Location tmp
           patch --binary --batch -p3 -i ..\ci\v76.patch
           if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
