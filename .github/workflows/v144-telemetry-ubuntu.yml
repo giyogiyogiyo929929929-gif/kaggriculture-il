@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/v144-telemetry-ubuntu.yml"
       - "ci/diagnose_public_room_guard.py"
+      - "ci/classify_public_room_guard_telemetry.py"
   workflow_dispatch:
 
 permissions:
@@ -46,7 +47,7 @@ jobs:
           mv tmp/main.py tmp/v77.py
           python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
           python ci/build_v144_public_room_guard.py tmp/v115.py tmp/room_guard.py
-          python -m py_compile tmp/v115.py tmp/room_guard.py ci/diagnose_public_room_guard.py
+          python -m py_compile tmp/v115.py tmp/room_guard.py ci/diagnose_public_room_guard.py ci/classify_public_room_guard_telemetry.py
           python - <<'PY'
           import hashlib
           from pathlib import Path
@@ -58,6 +59,10 @@ jobs:
         run: |
           set -euxo pipefail
           python ci/diagnose_public_room_guard.py --v115 tmp/v115.py --candidate tmp/room_guard.py --out results/public_room_guard_telemetry.json
+      - name: Validate formal seat margins and classify future-reserve invasion
+        run: |
+          set -euxo pipefail
+          python ci/classify_public_room_guard_telemetry.py results/public_room_guard_telemetry.json --out results/public_room_guard_causal_gate.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
