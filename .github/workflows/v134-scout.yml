@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 120
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,16 +52,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "champion run failed: $id" }
             python eval_assets/v130/compare_candidate_champion.py --candidate-json "$dir/candidate.json" --champion-json "$dir/champion.json" --opponent $opp --out "$dir/summary.json"
             if ($LASTEXITCODE -ne 0) { throw "compare failed: $id" }
-            @'
-          import json,sys
-          from pathlib import Path
-          ident,seed,count=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
-          p=Path('results')/ident/'summary.json'
-          s=json.loads(p.read_text(encoding='utf-8'))
-          s.update(panel_id=ident,seed_start=seed,seed_count_requested=count)
-          p.write_text(json.dumps(s,indent=2),encoding='utf-8')
-          '@ | python - $id $seed $count
-            if ($LASTEXITCODE -ne 0) { throw "metadata update failed: $id" }
           }
           Run-Panel regression-bl21-382002 opponents/bl_v21 382002 1
           Run-Panel fresh-bl16 opponents/bl_v16rc2 382001 6
@@ -73,7 +63,7 @@ jobs:
       - name: Aggregate candidate_minus_champion
         if: always()
         run: |
-          @'
+          $code = @'
           import glob,json,math,statistics
           from pathlib import Path
           ss=[]
@@ -97,7 +87,8 @@ jobs:
           }
           Path('v134_scout_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
           print(json.dumps({k:v for k,v in out.items() if k!='panels'},indent=2))
-          '@ | python -
+          '@
+          $code | python -
       - uses: actions/upload-artifact@v4
         if: always()
         with:
