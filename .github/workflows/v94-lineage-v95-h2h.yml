@@ -1,0 +1,133 @@
+name: v94-lineage v95 H2H
+
+on:
+  push:
+    branches: ["exp/v94-lineage-actions"]
+    paths:
+      - ".github/workflows/v94-lineage-v95-h2h.yml"
+      - "ci/v94_lineage_bundle.b64.part*"
+      - "scripts/ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE: candidates/v95_adaptive_h15_yarn2_nomilk/main.py
+  CHAMPION: champion/v94_adaptive_h14_yarn2_nomilk/main.py
+  SEED_START: "240001"
+  SEED_COUNT: "40"
+  BUNDLE_SHA256: a65f9d0120ba3aacfb260de06640654bed878511f996c3178deb8ffa5f236fd7
+  V94_SHA256: 869b7e9fe727694ca52710716921856fea6511ccae71b0613be26f4e9236baa3
+  V95_SHA256: ba21fe1dcf78113bb5c2531d015f318dbc0af290c608ea5925578b2485ee62cd
+
+jobs:
+  h2h:
+    name: shard-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore and verify exact v94 lineage sources
+        run: |
+          cat ci/v94_lineage_bundle.b64.part* > /tmp/v94_lineage_bundle.b64
+          base64 --decode /tmp/v94_lineage_bundle.b64 > /tmp/v94_lineage_bundle.zip
+          echo "$BUNDLE_SHA256  /tmp/v94_lineage_bundle.zip" | sha256sum -c -
+          unzip -o /tmp/v94_lineage_bundle.zip -d .
+          echo "$V94_SHA256  $CHAMPION" | sha256sum -c -
+          echo "$V95_SHA256  $CANDIDATE" | sha256sum -c -
+          python -m py_compile "$CHAMPION" "$CANDIDATE"
+
+      - name: Install exact Kaggriculture engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7", kaggle_environments.__version__
+          print("kaggle_environments", kaggle_environments.__version__)
+          PY
+
+      - name: Run exact paired shard
+        id: run
+        continue-on-error: true
+        run: |
+          mkdir -p results
+          python scripts/ci/run_exact_pair.py \
+            --candidate "$CANDIDATE" \
+            --baseline "$CHAMPION" \
+            --seed-start "$SEED_START" \
+            --seed-count "$SEED_COUNT" \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-count 4 \
+            --out "results/shard-${{ matrix.shard }}.json"
+
+      - name: Upload shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v95-v94-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Propagate shard failure
+        if: steps.run.outcome == 'failure'
+        run: exit 1
+
+  aggregate:
+    name: aggregate
+    if: always()
+    needs: h2h
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v95-v94-shard-*
+          path: artifacts
+
+      - name: Aggregate candidate_minus_champion
+        run: |
+          python scripts/ci/aggregate_h2h.py \
+            --input-dir artifacts \
+            --candidate "$CANDIDATE" \
+            --baseline "$CHAMPION" \
+            --seed-start "$SEED_START" \
+            --seed-count "$SEED_COUNT" \
+            --json-out h2h_summary.json \
+            --md-out h2h_summary.md
+          cat h2h_summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Technical gate only
+        run: |
+          python - <<'PY'
+          import json
+          s = json.load(open("h2h_summary.json", encoding="utf-8"))
+          assert s["pairs_completed"] == 40, s
+          assert s["failed_pairs"] == 0, s
+          assert s["candidate_exceptions"] == 0, s
+          print("candidate_minus_champion convention verified by runner: candidate is first argument")
+          PY
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v95-v94-summary-240001-240040
+          path: |
+            h2h_summary.json
+            h2h_summary.md
+          retention-days: 30
