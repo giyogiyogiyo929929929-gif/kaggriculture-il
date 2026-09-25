@@ -1,0 +1,194 @@
+name: v143 hosted public panel
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v143-hosted-public-panel.yml"
+      - "ci/build_v143_v92_single_weak_vote.py"
+      - "ci/reconstruct_exact_v115.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine and expose GNU patch
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Build exact v115, historical v140, and v143
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results,results\calibration,results\v143 | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ("tmp/main.py", "ci/v76.patch"):
+              p = Path(name)
+              raw = p.read_bytes()
+              p.write_bytes(raw.replace(b"\r\n", b"\n"))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p = Path("tmp/main.py")
+          p.write_bytes(p.read_bytes() + b"\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n")
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python ci\build_v140_v92_k2_isolated.py tmp\v115.py tmp\v140.py
+          if ($LASTEXITCODE -ne 0) { throw 'v140 build failed' }
+          python ci\build_v143_v92_single_weak_vote.py tmp\v115.py tmp\v143.py
+          if ($LASTEXITCODE -ne 0) { throw 'v143 build failed' }
+          python -m py_compile tmp\v115.py tmp\v140.py tmp\v143.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+          $code = @'
+          import hashlib
+          from pathlib import Path
+          for p in ['tmp/v115.py','tmp/v140.py','tmp/v143.py']:
+              q=Path(p); print(p, q.stat().st_size, hashlib.sha256(q.read_bytes()).hexdigest())
+          v115=hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()
+          assert v115 == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          t=Path('tmp/v143.py').read_text(encoding='utf-8')
+          assert t.count('_v143_preds') == 4
+          assert t.count('sum(1 for x in _v143_preds if x >= 1) == 1') == 1
+          '@
+          $code | python -
+
+      - name: Focused direct sanity against v115
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          expected={642:0.0,649:0.0,651:12.0,440005:0.0,440012:0.0}
+          rows=[]
+          for seed,want in expected.items():
+              s=evaluate('tmp/v143.py','tmp/v115.py',pairs=1,jobs=1,seed_start=seed)
+              ds=[float(g['money'][0])-float(g['money'][1]) for g in s['matches_detail']]
+              got=statistics.mean(ds)
+              rows.append({'seed':seed,'candidate_minus_champion':got,'seat_diffs':ds})
+              assert got == want, (seed,got,want,ds)
+              assert s['exceptions']['a']==0 and s['exceptions']['b']==0
+          Path('results/focused.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          print(json.dumps(rows,indent=2))
+          '@
+          $code | python -
+
+      - name: Reproduce historical v140 public panel
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run-Panel([string]$name, [string]$opp) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v140.py --champion tmp\v115.py --opponent $opp --seed-start 641 --seed-count 4 --jobs 2 --out "results\calibration\$name.json"
+            if ($LASTEXITCODE -ne 0) { throw "v140 calibration failed: $name" }
+          }
+          Run-Panel 'starter' 'starter'
+          Run-Panel 'beat_v48' 'opponents\beat_v48\main.py'
+          Run-Panel 'bl_v20' 'opponents\bl_v20\main.py'
+          Run-Panel 'bl_v21' 'opponents\bl_v21\main.py'
+          Run-Panel 'farming_v2' 'opponents\farming_v2\main.py'
+          Run-Panel 'frontier_prvsiyan' 'opponents\frontier_prvsiyan\main.py'
+          $code = @'
+          import json
+          from pathlib import Path
+          expected={
+            'starter':[190.0,5.0,0.0,26.0],
+            'beat_v48':[1.0,-16.0,-1.0,0.0],
+            'bl_v20':[0.0,22.0,0.0,8.0],
+            'bl_v21':[0.0,22.0,0.0,8.0],
+            'farming_v2':[1.0,-16.0,-1.0,0.0],
+            'frontier_prvsiyan':[93.0,2.0,-1.0,0.0],
+          }
+          for name,want in expected.items():
+              d=json.loads(Path(f'results/calibration/{name}.json').read_text(encoding='utf-8'))
+              got=[float(r['candidate_minus_champion_money']) for r in d['rows']]
+              print('CAL',name,got)
+              assert got == want, (name,got,want)
+              assert d['candidate_exceptions']==0 and d['champion_exceptions']==0
+          print('historical_v140_panel_reproduced=true')
+          '@
+          $code | python -
+
+      - name: Evaluate v143 public panel seeds 641-644
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run-Panel([string]$name, [string]$opp) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v143.py --champion tmp\v115.py --opponent $opp --seed-start 641 --seed-count 4 --jobs 2 --out "results\v143\$name.json"
+            if ($LASTEXITCODE -ne 0) { throw "v143 panel failed: $name" }
+          }
+          Run-Panel 'starter' 'starter'
+          Run-Panel 'beat_v48' 'opponents\beat_v48\main.py'
+          Run-Panel 'bl_v20' 'opponents\bl_v20\main.py'
+          Run-Panel 'bl_v21' 'opponents\bl_v21\main.py'
+          Run-Panel 'farming_v2' 'opponents\farming_v2\main.py'
+          Run-Panel 'frontier_prvsiyan' 'opponents\frontier_prvsiyan\main.py'
+
+      - name: Aggregate v143 candidate_minus_champion
+        if: always()
+        run: |
+          $code = @'
+          import glob,json,math,statistics
+          from pathlib import Path
+          panels=[]
+          for p in sorted(glob.glob('results/v143/*.json')):
+              d=json.load(open(p,encoding='utf-8')); d['panel_name']=Path(p).stem; panels.append(d)
+          rows=[(p,r) for p in panels for r in p.get('rows',[])]
+          vals=[float(r['candidate_minus_champion_money']) for p,r in rows]
+          n=len(vals); mean=statistics.fmean(vals) if vals else 0.0
+          se=statistics.stdev(vals)/math.sqrt(n) if n>1 else 0.0
+          out={
+            'candidate':'v143_single_weak_vote_positive_exposure',
+            'champion':'v115_champion_same_turn_open_squeeze',
+            'engine':'kaggle_environments==1.32.7',
+            'seeds':'641-644 burned public panel',
+            'panel_count':len(panels),'paired_rows':n,
+            'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'draws':sum(x==0 for x in vals),
+            'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,
+            'worst_regression':min(vals) if vals else None,'best_improvement':max(vals) if vals else None,
+            'candidate_exceptions':sum(int(p.get('candidate_exceptions',0)) for p in panels),
+            'champion_exceptions':sum(int(p.get('champion_exceptions',0)) for p in panels),
+            'panels':[{
+              'name':p['panel_name'],'opponent':p['opponent'],'wins':p['wins'],'losses':p['losses'],'ties':p['ties'],
+              'mean':p['candidate_minus_champion_mean'],'worst':p['worst'],'best':p['best'],
+              'rows':[{'seed':r['seed'],'diff':r['candidate_minus_champion_money']} for r in p['rows']]
+            } for p in panels],
+          }
+          Path('results/v143_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v143-hosted-public-panel
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
