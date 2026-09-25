@@ -1,0 +1,201 @@
+name: v130 quote priority vs exact v115 dev
+
+on:
+  push:
+    branches:
+      - eval-public-opponents-20260923
+    paths:
+      - ".github/workflows/v130-v115-quote-priority-dev.yml"
+      - "ci/build_v130_adv_quote_priority.py"
+      - "ci/reconstruct_exact_v115.py"
+      - "ci/v77_to_v115.patch.gz.b64"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    name: direct-v115
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact Kaggriculture 1.32.7
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          from kaggle_environments import make
+          assert kaggle_environments.__version__ == '1.32.7'
+          env=make('kaggriculture',configuration={'seed':501},debug=True)
+          env.run(['starter','starter'])
+          assert len(env.steps)==720
+          print('kaggriculture',kaggle_environments.__version__)
+          PY
+      - name: Reconstruct exact v115 and exact v130
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v130_adv_quote_priority.py tmp/v115.py tmp/v130.py
+          python -m py_compile tmp/v115.py tmp/v130.py
+          sha256sum tmp/v115.py tmp/v130.py
+      - name: Direct matched both-seat H2H seeds 501-512
+        run: |
+          python - <<'PY'
+          import json, math, statistics
+          from scripts.eval import evaluate
+          s=evaluate('tmp/v130.py','tmp/v115.py',pairs=12,jobs=4,seed_start=501)
+          by={}
+          for g in s['matches_detail']:
+              by.setdefault(int(g['seed']),[]).append(g)
+          rows=[]; seat0=[]; seat1=[]
+          for seed in sorted(by):
+              gs=sorted(by[seed],key=lambda g:bool(g['swap']))
+              vals=[]
+              seats=[]
+              for g in gs:
+                  d=float(g['money'][0])-float(g['money'][1])
+                  vals.append(d)
+                  (seat1 if g['swap'] else seat0).append(d)
+                  seats.append({'swap':bool(g['swap']),'candidate_minus_champion':d,'candidate_money':g['money'][0],'champion_money':g['money'][1],'candidate_exceptions':g['exceptions']['a'],'champion_exceptions':g['exceptions']['b']})
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.mean(vals),'seats':seats})
+          vals=[r['candidate_minus_champion'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={
+              'metric':'candidate_minus_champion = candidate - champion direct pair margin',
+              'candidate':'v130_candidate_adv_quote_priority','champion':'v115_champion_same_turn_open_squeeze',
+              'seeds':[501,512],'pairs':len(vals),
+              'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),
+              'candidate_minus_champion_mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,
+              'mean_ge_2se':bool(mean>0 and mean>=2*se),
+              'worst':min(vals),'worst_seed':rows[vals.index(min(vals))]['seed'],
+              'best':max(vals),'best_seed':rows[vals.index(max(vals))]['seed'],
+              'seat0_mean':statistics.mean(seat0),'seat1_mean':statistics.mean(seat1),
+              'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],
+              'rows':rows,
+          }
+          open('results/direct.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          print('DIFFERING',[(r['seed'],r['candidate_minus_champion']) for r in rows if r['candidate_minus_champion']!=0])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v130-v115-direct-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+  starter-regression:
+    name: starter-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct agents
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v130_adv_quote_priority.py tmp/v115.py tmp/v130.py
+          python -m py_compile tmp/v115.py tmp/v130.py
+      - name: Matched starter regression seeds 501-512
+        run: |
+          python ci/eval_candidate_vs_champion_panel.py \
+            --candidate tmp/v130.py --champion tmp/v115.py --opponent starter \
+            --seed-start 501 --seed-count 12 --jobs 4 --out results/starter.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v130-v115-starter-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+  telemetry:
+    name: telemetry
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Reconstruct agents and telemetry twin
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v130_adv_quote_priority.py tmp/v115.py tmp/v130.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tmp/v130.py').read_text()
+          a="_ADV_REPORT=dict(adv_turns=0,adv_units=0,adv_errors=0)"
+          b="_ADV_REPORT=dict(adv_turns=0,adv_units=0,adv_errors=0,adv_order_multi=0,adv_order_changes=0)"
+          assert s.count(a)==1; s=s.replace(a,b)
+          a="if int(observation['step'])==0:_ADV_REPORT.update(adv_turns=0,adv_units=0,adv_errors=0)"
+          b="if int(observation['step'])==0:_ADV_REPORT.update(adv_turns=0,adv_units=0,adv_errors=0,adv_order_multi=0,adv_order_changes=0)"
+          assert s.count(a)==1; s=s.replace(a,b)
+          a="    for item in sorted({it for _,it,_ in plan},key=_adv_priority,reverse=True):\n"
+          b="    _adv_items={it for _,it,_ in plan}\n    _adv_old=sorted(_adv_items,key=lambda it:-int(prices.get(it,0)))\n    _adv_new=sorted(_adv_items,key=_adv_priority,reverse=True)\n    if len(_adv_items)>1:_ADV_REPORT['adv_order_multi']+=1\n    if _adv_new!=_adv_old:_ADV_REPORT['adv_order_changes']+=1\n    for item in _adv_new:\n"
+          assert s.count(a)==1; s=s.replace(a,b)
+          Path('tmp/v130_probe.py').write_text(s)
+          PY
+          python -m py_compile tmp/v115.py tmp/v130.py tmp/v130_probe.py
+      - name: Measure real activation seeds 501-504 both seats
+        run: |
+          python - <<'PY'
+          import json
+          from kaggle_environments import make
+          from scripts.eval import resolve_agent
+          rows=[]
+          for seed in range(501,505):
+              for swap in (False,True):
+                  cand=resolve_agent('tmp/v130_probe.py'); champ=resolve_agent('tmp/v115.py')
+                  env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                  env.run([champ,cand] if swap else [cand,champ])
+                  tel=dict(getattr(cand,'telemetry',{}) or {})
+                  seat=1 if swap else 0
+                  other=1-seat
+                  rewards=[x['reward'] for x in env.state]
+                  rows.append({'seed':seed,'swap':swap,'candidate_minus_champion':float(rewards[seat])-float(rewards[other]),'adv_turns':tel.get('adv_turns',0),'adv_units':tel.get('adv_units',0),'adv_order_multi':tel.get('adv_order_multi',0),'adv_order_changes':tel.get('adv_order_changes',0),'adv_errors':tel.get('adv_errors',0)})
+          out={'policy':'instrumented telemetry twin; behavior identical to v130','rows':rows,'games_with_order_change':sum(r['adv_order_changes']>0 for r in rows),'order_changes_total':sum(r['adv_order_changes'] for r in rows),'multi_item_total':sum(r['adv_order_multi'] for r in rows),'adv_errors_total':sum(r['adv_errors'] for r in rows)}
+          open('results/telemetry.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v130-v115-telemetry-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
