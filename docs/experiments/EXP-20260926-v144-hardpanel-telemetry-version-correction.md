@@ -22,6 +22,18 @@ Therefore:
 
 The old source can be used as implementation reference because it contains the intended one-change two-pass selection logic, but results must be attributed to the correctly versioned candidate only after rebuilding/revalidation.
 
+## Formal direct-screen reference
+
+The canonical screen artifact is `v144-public-room-guard-screen` (artifact ID `10865546301`). Re-reading the actual `matches_detail` establishes the seat-level references directly:
+
+- seed 683: **+492 in seat0 and +492 in seat1**;
+- seed 689: **-84 in seat0 and -84 in seat1**;
+- seed 693 runtime control: **+479 in seat0 and +479 in seat1**.
+
+Therefore an older branch note claiming seed683 seat margins `+984` and `0` is inconsistent with the formal artifact and must not be used as a diagnostic oracle. The user handover value “seed683 both seats +492” is the canonical interpretation.
+
+The per-match health summaries also show no candidate/champion farm-health separation on the regression control: seed689 has the same planted/harvested/crop-loss/final-shed metrics on both sides, with final shed 0. This narrows the regression to market-order/timing/value interaction rather than a gross farm-health failure, but it does not by itself prove future-SELL reserve invasion.
+
 ## Hard-opponent run 36142946286
 
 Protocol: exact v115 and v144 are evaluated independently against the same opponent/seed/seat; seeds `711001..711003`; seat swap; one opponent per resumable job. Primary decision metric is actual outcome conversion, not final-cash padding.
@@ -61,6 +73,8 @@ The exact inherited room_guard subtracts current-turn planned SELL from `avail`,
 2. if insufficient, the guard may emergency-sell stock expected by a later native SELL;
 3. this can front-load inventory into a worse quote/market state or starve a later scheduled sale.
 
+`future_sells(route, item, step)` is a suffix sum over all remaining route SELLs, so the naive reserve proposal is deliberately conservative and can over-reserve stock that later production would replenish. The required two-pass fallback is therefore important: protect reserve first, but still consume it if physical overflow cannot otherwise be prevented.
+
 This is a **static mechanism**, not yet proof that it caused seed689 `-84`.
 
 ## telemetry repair
@@ -71,7 +85,9 @@ This is a **static mechanism**, not yet proof that it caused seed689 `-84`.
 - record the first exact v115/v144 action divergence;
 - monkeypatch/probe `_room_guard` before/after action mutation;
 - capture shed, carried inventory, current-turn production/consumption, BUY/current SELL, projected shed, overflow/guard need, item-wise future planned SELL quantity and future SELL schedule, market inventory/price, and town context;
-- validate the original direct screen correctly as **pair-averaged candidate-v115 direct margins** (`683 +492`, `689 -84`, `693 +479`) rather than comparing a per-seat margin with a pair average.
+- keep the direct-screen quantity distinct from the counterfactual v115-selfplay delta.
+
+For interpretation, the formal seat-level oracle is the artifact-derived reference above: 683 `(+492,+492)`, 689 `(-84,-84)`, 693 `(+479,+479)`. Any telemetry output that reproduces only a pair average while disagreeing with these seat-level values is not accepted as validated.
 
 The latest GitHub-hosted Ubuntu telemetry attempt ended with `steps=[]` before code execution. This is infrastructure failure and is not tactical evidence. Self-hosted telemetry runs remain queued at this checkpoint.
 
