@@ -6,6 +6,10 @@ on:
       - eval-public-opponents-20260923
     paths:
       - ".github/workflows/v131-v115-dev-panel.yml"
+      - "ci/eval_candidate_vs_champion_panel.py"
+      - "ci/build_v131_from_v115.py"
+      - "ci/reconstruct_exact_v115.py"
+      - "ci/v77_to_v115.patch.gz.b64"
 
 permissions:
   contents: read
