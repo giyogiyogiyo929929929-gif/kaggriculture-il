@@ -49,7 +49,7 @@ jobs:
           '@
           $code | python -
           if ($LASTEXITCODE -ne 0) { throw "v133 rebuild failed" }
-      - name: Trace selected positive worlds
+      - name: Trace selected positive and negative worlds
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path traces | Out-Null
@@ -66,6 +66,7 @@ jobs:
           Trace-Case bl21-382001 opponents/bl_v21 382001
           Trace-Case bl21-382004 opponents/bl_v21 382004
           Trace-Case starter-382001 starter 382001
+          Trace-Case bl21-382002 opponents/bl_v21 382002
       - name: Summarize first divergences
         run: |
           $code = @'
