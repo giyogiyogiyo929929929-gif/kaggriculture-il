@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   differential:
+    name: ${{ matrix.panel }} / ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -82,7 +83,7 @@ jobs:
           python - <<'PY'
           import glob,json,math,statistics
           from collections import defaultdict
-          groups=defaultdict(list); errors=[]
+          groups=defaultdict(list)
           for p in glob.glob('all/*.json'):
               d=json.load(open(p)); panel=p.split('/')[-1].split('__')[0]
               groups[panel].append(d)
