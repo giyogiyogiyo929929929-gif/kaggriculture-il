@@ -1,0 +1,10 @@
+name: v130 branch smoke
+on:
+  push:
+    branches: [eval-v130-v121-exact-20260925]
+    paths: ['.github/workflows/v130-smoke.yml']
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
