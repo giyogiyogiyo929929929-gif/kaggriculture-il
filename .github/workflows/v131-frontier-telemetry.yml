@@ -1,0 +1,95 @@
+name: V131 Frontier Telemetry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v131-frontier-telemetry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7"
+          PY
+      - name: Rebuild exact v121/v130 and v131
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          python eval_assets/v130/build_v131.py \
+            --source eval_agents/v130/v130_candidate_late_town_draw_gate24.py \
+            --out eval_agents/v130/v131_candidate_persistent_late_lead5000.py
+      - name: Trace both agents in both seats
+        run: |
+          mkdir -p results
+          for seat in 0 1; do
+            python eval_assets/v130/trace_single_game.py \
+              --target eval_agents/v130/v131_candidate_persistent_late_lead5000.py \
+              --opponent opponents/frontier_prvsiyan --target-seat "$seat" --seed 380012 \
+              --out "results/v131_seat${seat}.json"
+            python eval_assets/v130/trace_single_game.py \
+              --target eval_agents/v130/v121_champion_same_turn_unwind.py \
+              --opponent opponents/frontier_prvsiyan --target-seat "$seat" --seed 380012 \
+              --out "results/v121_seat${seat}.json"
+          done
+      - name: Find first divergence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          def canon(x): return json.dumps(x,sort_keys=True,separators=(',',':'))
+          out={'seed':380012,'opponent':'opponents/frontier_prvsiyan','seats':{}}
+          for seat in (0,1):
+              c=json.load(open(f'results/v131_seat{seat}.json'))
+              h=json.load(open(f'results/v121_seat{seat}.json'))
+              cm={int(r['step']):r for r in c['trace']}; hm={int(r['step']):r for r in h['trace']}
+              diffs=[]
+              for step in sorted(set(cm)&set(hm)):
+                  a,b=cm[step],hm[step]
+                  action_diff=canon(a['action'])!=canon(b['action'])
+                  state_same=a['obs_sha256']==b['obs_sha256']
+                  if action_diff or not state_same:
+                      diffs.append({
+                        'step':step,'incoming_state_same':state_same,'action_diff':action_diff,
+                        'v131_action':a['action'],'v121_action':b['action'],
+                        'v131_gate':a.get('late_draw_gate'),'v121_gate':b.get('late_draw_gate'),
+                        'v131_own_money':a.get('own_money'),'v121_own_money':b.get('own_money'),
+                        'v131_rival_money':a.get('rival_money'),'v121_rival_money':b.get('rival_money'),
+                        'v131_lead':(a.get('own_money')-a.get('rival_money')) if a.get('own_money') is not None and a.get('rival_money') is not None else None,
+                        'v121_lead':(b.get('own_money')-b.get('rival_money')) if b.get('own_money') is not None and b.get('rival_money') is not None else None,
+                        'v131_own_products':a.get('own_products'),'v121_own_products':b.get('own_products'),
+                        'v131_market_inventory':a.get('market_inventory'),'v121_market_inventory':b.get('market_inventory'),
+                        'v131_market_prices':a.get('market_prices'),'v121_market_prices':b.get('market_prices'),
+                        'shops':a.get('shops'),
+                      })
+              out['seats'][str(seat)]={
+                'v131_rewards':c['rewards'],'v121_rewards':h['rewards'],
+                'first_divergence':diffs[0] if diffs else None,
+                'first_action_divergence':next((d for d in diffs if d['action_diff']),None),
+                'divergence_count':len(diffs),
+                'divergences':diffs[:60],
+              }
+          Path('results/telemetry_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({s:{k:v for k,v in d.items() if k!='divergences'} for s,d in out['seats'].items()},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v131-frontier-telemetry
+          path: results/
+          retention-days: 30
