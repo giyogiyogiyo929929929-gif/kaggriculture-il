@@ -1,4 +1,4 @@
-name: v92 exact h13 vs v91 h9
+name: v92 official external safety
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  exact-h2h:
+  exact-safety:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -30,28 +30,41 @@ jobs:
           assert kaggle_environments.__version__ == '1.32.7'
           PY
 
-      - name: Reconstruct v91 and build v92 h13
-        run: python experiments/chatgpt_v92/prepare_agents.py
+      - name: Reconstruct v91/v92 and safety opponents
+        run: |
+          python experiments/chatgpt_v92/prepare_agents.py
+          python experiments/chatgpt_v92/prepare_safety_opponents.py
 
-      - name: Exact same-seed seat-swap panel
+      - name: Exact uploaded_main safety
         run: |
           python experiments/chatgpt_v92/run_exact_panel.py \
             --candidate experiments/chatgpt_v92/v92_chase_h13.py \
-            --champion experiments/chatgpt_v92/v91_chase_h9.py \
-            --seed-start 221001 \
-            --pairs 12 \
-            --output experiments/chatgpt_v92/v92_h13_vs_v91_exact_221001_12.json
+            --champion experiments/chatgpt_v92/uploaded_main.py \
+            --seed-start 217001 \
+            --pairs 4 \
+            --output experiments/chatgpt_v92/v92_h13_vs_uploaded_main_exact_217001_4.json
 
-      - name: Show exact result
+      - name: Exact h4 safety
+        run: |
+          python experiments/chatgpt_v92/run_exact_panel.py \
+            --candidate experiments/chatgpt_v92/v92_chase_h13.py \
+            --champion experiments/chatgpt_v92/h4.py \
+            --seed-start 217001 \
+            --pairs 4 \
+            --output experiments/chatgpt_v92/v92_h13_vs_h4_exact_217001_4.json
+
+      - name: Show safety results
         if: always()
-        run: cat experiments/chatgpt_v92/v92_h13_vs_v91_exact_221001_12.json || true
+        run: |
+          cat experiments/chatgpt_v92/v92_h13_vs_uploaded_main_exact_217001_4.json || true
+          cat experiments/chatgpt_v92/v92_h13_vs_h4_exact_217001_4.json || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: v92-h13-exact-results
+          name: v92-h13-safety-results
           path: |
-            experiments/chatgpt_v92/v92_h13_vs_v91_exact_221001_12.json
-            experiments/chatgpt_v92/v91_chase_h9.py
+            experiments/chatgpt_v92/v92_h13_vs_uploaded_main_exact_217001_4.json
+            experiments/chatgpt_v92/v92_h13_vs_h4_exact_217001_4.json
             experiments/chatgpt_v92/v92_chase_h13.py
           if-no-files-found: warn
