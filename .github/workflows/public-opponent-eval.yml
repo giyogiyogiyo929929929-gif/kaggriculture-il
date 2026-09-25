@@ -6,171 +6,111 @@ on:
       - eval-public-opponents-20260923
 
 jobs:
-  eval:
+  direct-v115:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-
-      - name: Install minimal Kaggriculture runtime
+          python-version: '3.11'
+      - name: Install exact Kaggriculture 1.32.7
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-deps kaggle-environments==1.32.7
           python -m pip install jsonschema requests
           python - <<'PY'
+          import kaggle_environments
           from kaggle_environments import make
-          env=make('kaggriculture',configuration={'randomSeed':1},debug=True)
+          assert kaggle_environments.__version__ == '1.32.7'
+          env=make('kaggriculture',configuration={'seed':621},debug=True)
           env.run(['starter','starter'])
           assert len(env.steps)==720
-          print('kaggriculture runtime OK')
           PY
-
-      - name: Build baseline and instrumented live-herd agents
+      - name: Build exact v115 and v139
         run: |
           mkdir -p tmp results
           cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
           (cd tmp && patch --batch -p3 < ../ci/v76.patch)
           printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
           mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v139_v92_k2.py tmp/v115.py tmp/v139.py
+          python -m py_compile tmp/v115.py tmp/v139.py
+          sha256sum tmp/v115.py tmp/v139.py
+      - name: Direct matched both-seat H2H seeds 621-632
+        run: |
           python - <<'PY'
-          from pathlib import Path
-          base=Path('tmp/v77.py').read_text(encoding='utf-8')
-          wrapper=r'''
-
-          _LH_PARENT=agent
-          _LH_TARGET_BASE=_y_target
-          _LH_OBS=None
-          _LH_RATIO=1.15
-          _LH_HIGH_PRICE_GATE=__HIGH_PRICE_GATE__
-          _LH_BASE_PRICE={'MILK':160.0,'WOOL':200.0}
-          _LH_SHOP_PRODUCTS={
-              'BAKERY':('EGG','WHEAT'),'PIZZA_SHOP':('MILK','TOMATO','WHEAT'),
-              'BRUNCH_SPOT':('EGG','WHEAT','STRAWBERRY'),'YARN_STORE':('WOOL',),
-              'ICE_CREAM_SHOP':('STRAWBERRY','MILK','WHEAT'),'PET_CAFE':('CARROT',),
-              'SMOOTHIE_SHOP':('STRAWBERRY','MILK'),
-              'FARMERS_MARKET':('WHEAT','CARROT','TOMATO','STRAWBERRY'),
-          }
-          _LH_TELEM=[]
-          def _lh_counts(obs,seat):
-              out={'COW':0,'SHEEP':0}
-              for row in obs['farms'][seat].get('tiles',[]) or []:
-                  for tile in row:
-                      if isinstance(tile,dict) and tile.get('animal') in out: out[tile['animal']]+=1
-              return out
-          def _lh_demand(obs,product):
-              day=int(obs.get('day',0) or 0); total=2*(4 if day>=20 else 2 if day>=10 else 1)
-              for name in ((obs.get('town') or {}).get('unlocked_shops',[]) or []):
-                  products=_LH_SHOP_PRODUCTS.get(name,())
-                  if product in products: total += 12 if len(products)==1 else 6
-              return total
-          def _lh_score(obs,animal,own,rival):
-              product='MILK' if animal=='COW' else 'WOOL'
-              price=float((obs.get('market') or {}).get('prices',{}).get(product,_LH_BASE_PRICE[product]) or _LH_BASE_PRICE[product])
-              return (price/_LH_BASE_PRICE[product])*(1.0+0.012*_lh_demand(obs,product))/(1.0+0.18*rival+0.08*own)
-          def _y_target(kind,shops,cfg):
-              base=_LH_TARGET_BASE(kind,shops,cfg)
-              if base is not None: return base
-              obs=_LH_OBS
-              if obs is None or kind not in ('COW','SHEEP'): return None
-              day=int(obs.get('day',0) or 0)
-              if not (cfg['days'][0] <= day <= cfg['days'][1]): return None
-              seat=int(obs.get('player',0) or 0); own=_lh_counts(obs,seat); rival=_lh_counts(obs,1-seat)
-              other='SHEEP' if kind=='COW' else 'COW'
-              a=_lh_score(obs,kind,own[kind],rival[kind]); b=_lh_score(obs,other,own[other],rival[other])
-              pizza_shops=sum(1 for name in shops if name=='PIZZA_SHOP')
-              structural=(kind!='SHEEP' or other!='COW' or pizza_shops>=2)
-              demand_backed=True
-              prices=(obs.get('market') or {}).get('prices',{}) or {}
-              milk_price=float(prices.get('MILK',160.0) or 160.0)
-              wool_price=float(prices.get('WOOL',200.0) or 200.0)
-              milk_demand=_lh_demand(obs,'MILK'); wool_demand=_lh_demand(obs,'WOOL')
-              if _LH_HIGH_PRICE_GATE and kind=='SHEEP' and other=='COW':
-                  demand_backed=(milk_price < 215.0 or milk_demand >= 20)
-              would_swap=bool(structural and demand_backed and b>a*_LH_RATIO)
-              if kind=='SHEEP' and other=='COW' and pizza_shops>=2:
-                  _LH_TELEM.append({
-                      'step':int(obs.get('step',-1) or -1),'day':day,'seat':seat,'pizza':pizza_shops,
-                      'own':dict(own),'rival':dict(rival),'milk_price':milk_price,'wool_price':wool_price,
-                      'milk_demand':milk_demand,'wool_demand':wool_demand,'sheep_score':a,'cow_score':b,
-                      'ratio':(b/a if a else 999.0),'demand_backed':demand_backed,'would_swap':would_swap,
-                      'shops':list(shops),
-                  })
-              if would_swap: return other
-              return None
-          def agent(observation,configuration=None):
-              global _LH_OBS
-              _LH_OBS=observation
-              try: return _LH_PARENT(observation,configuration)
-              finally: _LH_OBS=None
-          kaggle_submission_agent___NAME__=agent
-          '''
-          for name,gate in [('v124','False'),('v129','True')]:
-              Path(f'tmp/{name}.py').write_text(base+wrapper.replace('__HIGH_PRICE_GATE__',gate).replace('__NAME__',name),encoding='utf-8')
-          PY
-          python -m py_compile tmp/v77.py tmp/v124.py tmp/v129.py
-
-      - name: Focused seed216 and reference-seed diagnosis
-        run: |
-          python - <<'PY' | tee results/diagnosis.log
-          import json
+          import json, math, statistics
           from scripts.eval import evaluate
-          seeds=[1,105,130,133,144,151,216]
-          out={}
-          for name,path in [('v124','tmp/v124.py'),('v129','tmp/v129.py')]:
-              out[name]={}
-              for seed in seeds:
-                  s=evaluate(path,'tmp/v77.py',pairs=1,jobs=1,seed_start=seed)
-                  row={'pair_diff':s['pair_diff_mean'],'exceptions':s['exceptions']['a']}
-                  out[name][str(seed)]=row
-                  print(name,seed,row)
-          with open('results/diagnosis.json','w') as f: json.dump(out,f,indent=2)
+          s=evaluate('tmp/v139.py','tmp/v115.py',pairs=12,jobs=4,seed_start=621)
+          by={}
+          for g in s['matches_detail']: by.setdefault(int(g['seed']),[]).append(g)
+          rows=[]; seat0=[]; seat1=[]
+          for seed in sorted(by):
+              vals=[]; seats=[]
+              for g in sorted(by[seed],key=lambda x:bool(x['swap'])):
+                  d=float(g['money'][0])-float(g['money'][1]); vals.append(d)
+                  (seat1 if g['swap'] else seat0).append(d)
+                  seats.append({'swap':bool(g['swap']),'candidate_minus_champion':d,'candidate_money':g['money'][0],'champion_money':g['money'][1],'candidate_exceptions':g['exceptions']['a'],'champion_exceptions':g['exceptions']['b']})
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.mean(vals),'seats':seats})
+          vals=[r['candidate_minus_champion'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'metric':'candidate_minus_champion = candidate - champion direct pair margin','candidate':'v139_candidate_v92_k2','champion':'v115_champion_same_turn_open_squeeze','seeds':[621,632],'pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'candidate_minus_champion_mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'mean_ge_2se':bool(mean>0 and mean>=2*se),'worst':min(vals),'worst_seed':rows[vals.index(min(vals))]['seed'],'best':max(vals),'best_seed':rows[vals.index(max(vals))]['seed'],'seat0_mean':statistics.mean(seat0),'seat1_mean':statistics.mean(seat1),'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b'],'rows':rows}
+          open('results/direct.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          print('DIFFERING',[(r['seed'],r['candidate_minus_champion']) for r in rows if r['candidate_minus_champion']!=0])
           PY
-
-      - name: Capture live-herd trigger telemetry
-        run: |
-          python - <<'PY' | tee results/telemetry.log
-          import importlib.util, json, sys
-          from pathlib import Path
-          from kaggle_environments import make
-
-          def load(path, tag):
-              p=Path(path).resolve()
-              spec=importlib.util.spec_from_file_location(tag,p)
-              m=importlib.util.module_from_spec(spec); sys.modules[tag]=m
-              sys.path.insert(0,str(p.parent))
-              try: spec.loader.exec_module(m)
-              finally: sys.path.pop(0)
-              return m
-
-          seeds=[1,105,130,133,144,151,216]
-          all_rows=[]
-          for variant in ['v124','v129']:
-              for seed in seeds:
-                  for swap in [False,True]:
-                      cand=load(f'tmp/{variant}.py',f'cand_{variant}_{seed}_{int(swap)}')
-                      base=load('tmp/v77.py',f'base_{variant}_{seed}_{int(swap)}')
-                      env=make('kaggriculture',configuration={'seed':seed})
-                      agents=[base.agent,cand.agent] if swap else [cand.agent,base.agent]
-                      env.run(agents)
-                      seat=1 if swap else 0
-                      reward=float(env.state[seat]['reward'])
-                      rows=[r for r in cand._LH_TELEM if r.get('would_swap') or r.get('ratio',0)>=1.10]
-                      rec={'variant':variant,'seed':seed,'swap':swap,'candidate_reward':reward,'telemetry':rows}
-                      all_rows.append(rec)
-                      print('CASE',variant,seed,'swap',swap,'reward',reward,'events',json.dumps(rows,sort_keys=True))
-          with open('results/telemetry.json','w') as f: json.dump(all_rows,f,indent=2)
-          PY
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: liveherd-seed216-telemetry
+          name: v139-direct-screen
           path: results/
-          retention-days: 7
+          retention-days: 14
+
+  panel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: starter
+            opponent: starter
+          - name: beat_v48
+            opponent: opponents/beat_v48/main.py
+          - name: bl_v20
+            opponent: opponents/bl_v20/main.py
+          - name: bl_v21
+            opponent: opponents/bl_v21/main.py
+          - name: farming_v2
+            opponent: opponents/farming_v2/main.py
+          - name: frontier_prvsiyan
+            opponent: opponents/frontier_prvsiyan/main.py
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115 and v139
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v139_v92_k2.py tmp/v115.py tmp/v139.py
+          python -m py_compile tmp/v115.py tmp/v139.py
+      - name: Matched candidate-minus-champion panel seeds 621-624
+        run: |
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v139.py --champion tmp/v115.py --opponent '${{ matrix.opponent }}' --seed-start 621 --seed-count 4 --jobs 4 --out results/panel.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v139-panel-${{ matrix.name }}
+          path: results/
+          retention-days: 14
