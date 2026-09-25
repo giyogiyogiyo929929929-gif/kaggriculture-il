@@ -35,6 +35,28 @@ jobs:
           python -m pip install jsonschema requests
           python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print('engine='+kaggle_environments.__version__)"
 
+      - name: Verify official Kaggriculture 1.32.7 source identity
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import hashlib
+          import importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+
+          expected_version = '1.32.7'
+          expected_sha = 'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          version = importlib.metadata.version('kaggle-environments')
+          path = Path(kg.__file__)
+          got = hashlib.sha256(path.read_bytes()).hexdigest()
+          print('kaggle-environments=' + version)
+          print('kaggriculture.py=' + str(path))
+          print('kaggriculture.py sha256=' + got)
+          assert version == expected_version, (version, expected_version)
+          assert got == expected_sha, (got, expected_sha)
+          '@
+          $code | python -
+
       - name: Build exact v115 and v147
         run: |
           $ErrorActionPreference = 'Stop'
@@ -72,6 +94,37 @@ jobs:
           '@
           $code | python -
 
+      - name: Historical official-interpreter parity calibration
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          from pathlib import Path
+          from scripts.eval import play_match
+
+          v140 = 'submissions/v140_champion_aware_weak_lastresort/main.py'
+          v115 = 'tmp/v115.py'
+          expected = {
+              (641, False): (83887.0, 83887.0),
+              (641, True):  (83887.0, 83887.0),
+              (642, False): (62145.0, 62183.0),
+              (642, True):  (62145.0, 62183.0),
+              (643, False): (89373.0, 89373.0),
+              (643, True):  (89373.0, 89373.0),
+          }
+          rows = []
+          for seed in (641, 642, 643):
+              for swap in (False, True):
+                  result = play_match(v140, v115, seed, swap)
+                  got = tuple(float(x) for x in result['money'])
+                  want = expected[(seed, swap)]
+                  print('seed', seed, 'swap', swap, 'got', got, 'expected', want)
+                  assert got == want, (seed, swap, got, want)
+                  rows.append({'seed':seed,'swap':swap,'v140':got[0],'v115':got[1],'diff':got[0]-got[1]})
+          Path('results/historical_parity.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@
+          $code | python -
+
       - name: Kaggle loader and broken-observation parity smoke
         run: |
           $ErrorActionPreference = 'Stop'
@@ -99,7 +152,7 @@ jobs:
           for name in ('v115','v147'):
               assert all(r['ok'] for r in out[name]['broken_observations'][:-1]), out[name]
 
-          # The final None case is outside the official observation schema.  It is
+          # The final None case is outside the official observation schema. It is
           # audited for champion parity rather than requiring behavior the champion
           # itself does not provide.
           c=out['v115']['broken_observations'][-1]
