@@ -1,0 +1,66 @@
+name: v140 primary V92 fast contrast
+
+on:
+  push:
+    branches: [eval-public-opponents-20260923]
+    paths: [".github/workflows/v140-primary-v92-fast-contrast.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: seed-${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [642, 651]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+      - name: Build exact v115/v140
+        run: |
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v140_v92_k2_isolated.py tmp/v115.py tmp/v140.py
+      - name: Trace both seats
+        env:
+          PYTHONPATH: .
+          SEED: ${{ matrix.seed }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import ci.diagnose_v140_primary_v92 as d
+          seed=int(os.environ['SEED'])
+          d.instrument(Path('tmp/v115.py'),Path('tmp/v115_diag.py'),1)
+          d.instrument(Path('tmp/v140.py'),Path('tmp/v140_diag.py'),2)
+          rows=[]
+          for seat in (0,1):
+              base=d.run('tmp/v115_diag.py','tmp/v115.py',seed,seat)
+              cand=d.run('tmp/v140_diag.py','tmp/v115.py',seed,seat)
+              div=d.first_div(base,cand)
+              rows.append({'seed':seed,'seat':seat,'reward_delta':float(cand['reward'])-float(base['reward']),'divergence':div})
+          Path(f'results/seed{seed}.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          print(json.dumps(rows,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v140-primary-v92-seed-${{ matrix.seed }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
