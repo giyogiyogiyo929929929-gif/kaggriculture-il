@@ -110,9 +110,11 @@ The mechanism is active and direct separation is real. Unlike v143, it shows a b
 
 The old public panel does not validate rating gain because it contains no hard cells. Do not infer rating improvement from its positive mean cash delta.
 
+A static audit also shows that a new generic terminal-liquidation candidate would be redundant: although exact-v115 keeps the chassis `terminal_liquidation` setting disabled, the inherited downstream agent already has a final-step projected-shed SELL rescue. Do not create that candidate unless a materially different terminal defect is demonstrated.
+
 ## Telemetry follow-up
 
-Added:
+Files:
 
 - `ci/diagnose_public_room_guard.py`
 - `.github/workflows/public-room-guard-telemetry.yml`
@@ -132,18 +134,46 @@ Counterfactual protocol:
 
 No unused/sealed seed is consumed by telemetry.
 
-## Hard-opponent gate
+Initial telemetry run `36136980588` reached candidate construction successfully, then failed immediately in the diagnostic step. This was test infrastructure, not tactical evidence. Root cause audit found `ci/diagnose_public_room_guard.py` imported `scripts.eval` without adding the repository root to `sys.path`, unlike the established CI evaluators. Commit `5c2477d67041bae3fd29240701ca5c79f5e5e6b4` adds the repo root before that import. Repair run: `36140907244`.
 
-A separate Champion-only selection workflow now screens stored strong public agents on development seeds 520001..520004, both seats. Future room_guard evaluation should use only opponents where exact v115 actually loses/ties or has a narrow worst margin.
+## Hard-opponent outcome gate
+
+Workflow: `.github/workflows/v144-v115-hard-opponent-screen.yml`
+Commit: `17a4b3797dfa683fc51418f2d4b3aec5ffc7473f`
+Run: `36140496806`
+Development seeds: `711001..711003`, both seats.
+
+Ten stored opponents:
+
+- `k256_h2_q_v1`
+- `metav4_v13`
+- `v49`
+- `v50`
+- `tetsutani_dpts_b`
+- `salem_2900`
+- `peak_2950`
+- `jaxa_2802`
+- `kf_v58`
+- `score_2820`
+
+For every opponent/seed/seat, exact-v115 and v144 are evaluated independently against the same opponent. The primary statistic is outcome conversion, not cash padding:
+
+- improved outcome vs worsened outcome;
+- Champion non-win -> candidate win;
+- Champion loss -> candidate tie;
+- Champion win -> candidate non-win;
+- Champion tie -> candidate loss.
+
+Cash and margin delta are secondary diagnostics. The workflow asserts the exact v115 SHA before evaluation. At the latest checkpoint, candidate construction had passed and the 10-opponent evaluation step was running on self-hosted Windows runner `CIYOI`.
 
 Do not allocate sealed seeds until:
 
 1. seed683/689 telemetry explains the gain/regression;
-2. a fresh direct set preserves positive matched direction with acceptable worst regression;
-3. at least one hard-opponent cell shows a useful loss/tie conversion or robust margin improvement without important outcome regression.
+2. the hard-opponent screen shows useful outcome conversion or a clearly defensible safety effect;
+3. a fresh direct/stress set preserves positive matched direction with acceptable worst regression.
 
 ## Decision
 
 **KEEP TESTING.**
 
-This is currently more promising than v143, but the evidence is not sufficient for PROMOTE. Champion remains exact v115.
+This remains more promising than v143, but the evidence is not sufficient for PROMOTE. Champion remains exact v115.
