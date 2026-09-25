@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/v143-selfhosted-public-panel.yml"
       - "ci/build_v143_v92_single_weak_vote.py"
+      - "ci/reconstruct_exact_v115.py"
   workflow_dispatch:
 
 permissions:
@@ -41,14 +42,24 @@ jobs:
           New-Item -ItemType Directory -Force -Path tmp,results,results\calibration,results\v143 | Out-Null
           Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
           Push-Location tmp
-          patch --batch -p3 -i ..\ci\v76.patch
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
           Pop-Location
-          Add-Content -Path tmp\main.py -Value "`n# Force Kaggle-compatible last-callable selection.`nkaggle_submission_agent_v77 = agent`n"
+          $append = @'
+          from pathlib import Path
+          p = Path("tmp/main.py")
+          p.write_bytes(p.read_bytes() + b"\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n")
+          '@
+          $append | python -
           Move-Item tmp\main.py tmp\v77.py
           python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
           python ci\build_v140_v92_k2_isolated.py tmp\v115.py tmp\v140.py
+          if ($LASTEXITCODE -ne 0) { throw 'v140 build failed' }
           python ci\build_v143_v92_single_weak_vote.py tmp\v115.py tmp\v143.py
+          if ($LASTEXITCODE -ne 0) { throw 'v143 build failed' }
           python -m py_compile tmp\v115.py tmp\v140.py tmp\v143.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
           $code = @'
           import hashlib
           from pathlib import Path
