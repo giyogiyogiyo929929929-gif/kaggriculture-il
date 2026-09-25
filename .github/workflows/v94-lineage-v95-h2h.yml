@@ -39,7 +39,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Restore and verify exact v94 lineage sources
         run: |
@@ -58,8 +58,8 @@ jobs:
           $check | python -
           Expand-Archive -Force "$env:RUNNER_TEMP\v94_lineage_bundle.zip" .
           $verify = @'
-          import hashlib, os, py_compile
-          from pathlib import Path
+          import hashlib, os, py_compile, sys
+          print('python', sys.version)
           checks=[(os.environ['CHAMPION'],os.environ['V94_SHA256']),(os.environ['CANDIDATE'],os.environ['V95_SHA256'])]
           for name,want in checks:
               p=Path(name)
@@ -75,7 +75,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python -m pip install --no-deps "kaggle-environments==1.32.7"
           python -m pip install jsonschema requests
-          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+          python -c "import kaggle_environments,sys; print(sys.version); assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Engine smoke 240001
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          python scripts\ci\run_exact_pair.py --candidate "$env:CANDIDATE" --baseline "$env:CHAMPION" --seed-start 240001 --seed-count 1 --shard-index 0 --shard-count 1 --out "smoke\pair.json"
 
       - name: Run exact paired shard
         id: run
