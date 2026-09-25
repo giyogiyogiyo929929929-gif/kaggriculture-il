@@ -1,6 +1,6 @@
-# EXP-20260925: v144 public room_guard
+# EXP-20260925: public room_guard
 
-Status: EVALUATING
+Status: **KEEP TESTING — NOT PROMOTED**
 
 ## Canonical state
 
@@ -22,94 +22,128 @@ Primary mechanism source:
 - Notebook payload SHA256: `a6027339030e6204e512ccf7cc3641cb158531d8924717d089638c276b94744f`
 - Decoded source SHA256: `2b97e2c653018ac4aeffb8463ec91c8f26b097b4cef81289acc25ccdbc68f916`
 - Mirrored Git blob SHA: `6f7f89ae425caf501a9a987bfded02145c192ffb`
-- Frozen mirror: `S-Riku-tus/pj-kaggriculture/experiments/research_20260918_v120/acquisition/shape_tetsutani/decoded_main_1.py`
 
-License evidence:
-
-- Public downstream Kaggle output `Kaggriculture Rank Your Agent` retains attribution to tetsutani and labels the relevant route-replay derivations Apache-2.0, including the full Apache-2.0 notice.
-- Keep this attribution and re-check the direct notebook license before any formal Kaggle submission artifact is made.
-
-Static source audit:
-
-- Public decoded source states no external data, network access, learned model, or hidden seed is used at runtime.
-- The selected `room_guard` reads only public observation state: shed/inventories, current actions, market prices, and the route's own future planned sells.
-- No notebook execution is required; the mechanism was inspected statically.
-
-## Mechanism
-
-The public `room_guard` is a one-slot day-close capacity reserve:
-
-1. Fire only when `step % 24 == 23`.
-2. Estimate projected end-of-day shed occupancy using current shed, carried inventory, same-turn harvest/collect, consumption/place, buys, and fillable sells.
-3. Reserve one slot: target at most 99 items in a 100-capacity shed.
-4. If projected occupancy exceeds 99, add only the SELL quantity needed to remove the excess.
-5. Prefer items with no remaining planned future sale, then higher current visible price.
-
-This directly targets inventory destruction from day-close overflow while limiting policy surface.
-
-## Why this is a new candidate rather than copied code
-
-The inherited route-replay chassis already contains the public `room_guard` implementation, but the v27 lineage runtime `_SETTINGS` disables it:
-
-```python
-'room_guard': False
-```
-
-v144 does not copy the public source. It changes only that existing switch in exact v115:
+The inherited chassis already contains this public mechanism but exact v115 has it disabled. The candidate changes only:
 
 ```text
 room_guard: False -> True
 ```
 
-The builder fails closed unless exact v115 contains exactly one disabled room_guard and the other dormant public layers remain disabled.
+Explicitly unchanged: budget_guard, clamp_sells, dead_stock, terminal_liquidation, front_run, V92/KIL, farm policy and route tapes.
 
-## Candidate
+## Formal screen
 
-- Candidate: `v144_candidate_public_room_guard`
-- Parent: exact formal v115
-- Builder: `ci/build_v144_public_room_guard.py`
-- Major changes: 1
+Actions run: `36132699144`
+Artifact: `v144-public-room-guard-screen`
+Artifact ID: `10865546301`
+Artifact digest: `sha256:b6b6c707b8034a1f5be1044705284971cef196183472329bd96a8f3d88ed1e33`
 
-Explicitly unchanged:
+All setup/focused/runtime/direct/public/aggregate steps completed successfully.
 
-- `budget_guard=False`
-- `clamp_sells=False`
-- `dead_stock=False`
-- `terminal_liquidation=False`
-- `front_run=False`
-- V92 / KIL behavior unchanged
-- farm policy unchanged
-- route tapes unchanged
+### Focused synthetic
 
-## Hypothesis
+Passed:
 
-When v115 reaches day close with projected occupancy above shed capacity, units can be discarded and therefore contribute zero final cash. A bounded pre-close SELL of only the excess can convert otherwise-destroyed inventory into cash. Because the guard only fires on hour 23 and only under projected overflow, its regression surface should be substantially smaller than broad market/farm changes.
+- day-close projected overflow adds only the required SELL;
+- no-overflow case remains unchanged;
+- non-day-close case remains unchanged.
 
-Potential failure mode: if the guard must sell an item that has a later planned sale, it may realize that item at a worse current price. This must be checked in telemetry rather than assumed safe.
+### Runtime smoke — seed 693, both seats
 
-## Evaluation plan
+- direct candidate-v115 pair margin: **+479**
+- candidate exceptions: 0
+- champion exceptions: 0
+- candidate median callback: ~2.71 ms
+- candidate max callback: ~56.6 ms
+- champion median callback: ~2.65 ms
+- champion max callback: ~65.9 ms
+- final shed: 0 for both
 
-1. Reconstruct exact v115 and verify SHA256.
-2. Build v144; `py_compile`; assert candidate text equals exact v115 except the one room_guard toggle.
-3. Focused synthetic checks:
-   - day-close projected overflow adds exactly the needed SELL;
-   - no overflow leaves action unchanged;
-   - non-day-close leaves action unchanged.
-4. Runtime smoke on official 1.32.7, single worker.
-5. Direct v144 vs exact v115: seeds 681..692, both seats, 12 pairs / 24 games.
-6. Public matched panel: seeds 681..684, both seats, starter + beat_v48 + bl_v20 + bl_v21 + farming_v2 + frontier_prvsiyan.
-7. If any seed separates, inspect replay/telemetry around every hour-23 activation:
-   - projected overflow units,
-   - added SELL item/qty,
-   - visible price,
-   - actual shed loss avoided,
-   - downstream planned sale displaced,
-   - final cash delta.
-8. If zero activations or exact ties with activations, classify no-separation/dormant; do not threshold-tune.
-9. If positive with acceptable worst regression, move to a new unused stress set, then only after that allocate sealed seeds.
+Runtime is acceptable on this smoke; no timeout/exception evidence.
 
-Seeds 681..692 are development seeds once run and must never be used for final sealed promotion evidence.
+### Direct candidate vs exact v115 — seeds 681..692, seat swap
 
-## Promotion rule
+12 matched pairs / 24 games:
 
-No automatic promotion from this screen. PROMOTE requires fresh matched seeds, seat-swap persistence, acceptable worst regression, public-opponent regression check, stress, completely unused sealed seeds, runtime acceptance, zero exceptions/timeouts, and a telemetry explanation for the gain.
+- W/L/T: **9 / 1 / 2**
+- mean candidate-minus-champion: **+49.6667**
+- SE: **41.9652**
+- worst: **-84** (seed689)
+- best: **+492** (seed683)
+- candidate exceptions: 0
+- champion exceptions: 0
+
+Pair rows:
+
+- 681 +13
+- 682 +1
+- 683 **+492**
+- 684 +5
+- 685 +94
+- 686 +4
+- 687 0
+- 688 +2
+- 689 **-84**
+- 690 +7
+- 691 +62 (seat deltas +8/+116)
+- 692 0
+
+All other non-zero seeds except691 are identical across the two seats, so the primary direct gain is not explained by a simple seat asymmetry.
+
+### Old easy public panel — seeds 681..684
+
+24 opponent/seed matched rows across starter, beat_v48, bl_v20, bl_v21, farming_v2 and frontier_prvsiyan:
+
+- candidate-money delta W/L/T: **9 / 12 / 3**
+- mean candidate-money delta: **+40.8333**
+- worst candidate-money delta: **-4**
+- best candidate-money delta: **+315**
+- exceptions: 0
+
+However, these six opponents are too easy for rating-oriented selection: candidate and Champion have **zero absolute win/loss outcome conversions across all 48 seat-games** in this panel. The positive/negative rows only change cash/margin inside outcomes the Champion already wins.
+
+Therefore this panel is a regression/cash sanity check, not evidence of improved ladder win probability.
+
+## Interpretation
+
+The mechanism is active and direct separation is real. Unlike v143, it shows a broad direct direction: 9 positive pairs, one negative pair and two ties. The effect is concentrated enough that the large +492 seed683 and -84 seed689 must be explained before promotion.
+
+The old public panel does not validate rating gain because it contains no hard cells. Do not infer rating improvement from its positive mean cash delta.
+
+## Telemetry follow-up
+
+Added:
+
+- `ci/diagnose_public_room_guard.py`
+- `.github/workflows/public-room-guard-telemetry.yml`
+
+Use only already-consumed seeds:
+
+- 683 both seats — largest direct gain
+- 689 both seats — only direct regression
+- 693 both seats — runtime/direct +479 control
+
+Counterfactual protocol:
+
+- baseline focal: exact v115 vs exact v115
+- candidate focal: room_guard vs exact v115
+- same seed and focal seat
+- record first action divergence, same-observation check, added/removed market order, day/hour, shed, carried inventory, current prices and final focal/margin delta
+
+No unused/sealed seed is consumed by telemetry.
+
+## Hard-opponent gate
+
+A separate Champion-only selection workflow now screens stored strong public agents on development seeds 520001..520004, both seats. Future room_guard evaluation should use only opponents where exact v115 actually loses/ties or has a narrow worst margin.
+
+Do not allocate sealed seeds until:
+
+1. seed683/689 telemetry explains the gain/regression;
+2. a fresh direct set preserves positive matched direction with acceptable worst regression;
+3. at least one hard-opponent cell shows a useful loss/tie conversion or robust margin improvement without important outcome regression.
+
+## Decision
+
+**KEEP TESTING.**
+
+This is currently more promising than v143, but the evidence is not sufficient for PROMOTE. Champion remains exact v115.
