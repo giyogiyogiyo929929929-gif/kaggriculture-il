@@ -1,0 +1,96 @@
+name: uploaded 127ed3 safe wrapper v2 hosted
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v2-hosted.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact raw and safety-v2 candidate
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python - <<'PY'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          Path('tmp/raw.py').write_bytes(raw)
+          suffix=b'''\n\n# Safety-only wrapper v2: rebind the actual Kaggle-preferred ig_agent name.\n_SAFE_V2_PARENT = ig_agent\ndef ig_agent(observation, configuration=None):\n    try:\n        return _SAFE_V2_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nig_agent.telemetry = _SAFE_V2_PARENT.telemetry\nagent = ig_agent\nkaggle_agent = ig_agent\n'''
+          safe=raw+suffix
+          Path('tmp/safe_v2.py').write_bytes(safe)
+          got=hashlib.sha256(safe).hexdigest(); print('safe_v2_sha',got)
+          assert got=='1a8f362e255e2cfda3e131c986c710ac36cbbb0b0eee5a023220f4f53454db52'
+          PY
+          python -m py_compile tmp/raw.py tmp/safe_v2.py
+      - name: Malformed probes and valid-game equivalence
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle,BROKEN_OBSERVATIONS,turn_time_stats
+          R=Path('tmp/raw.py'); S=Path('tmp/safe_v2.py')
+          static={}
+          for name,p in [('raw',R),('safe_v2',S)]:
+              a=load_like_kaggle(p); probes=[]
+              for obs in BROKEN_OBSERVATIONS:
+                  try:
+                      x=call_like_kaggle(a,obs,None)
+                      ok=isinstance(x,dict) and set(x)=={'farmer','hands','market'} and all(isinstance(x[k],list) for k in x)
+                      probes.append({'ok':ok,'error':None,'action':x if ok else None})
+                  except Exception as e:
+                      probes.append({'ok':False,'error':f'{type(e).__name__}: {e}'})
+              static[name]={'callable':getattr(a,'__name__',None),'broken':probes,'all_pass':all(q['ok'] for q in probes)}
+          rows=[]
+          def money(env,s):
+              for src in (env.state[s].get('observation'),env.steps[-1][s].get('observation')):
+                  if isinstance(src,dict):
+                      f=src.get('farms')
+                      if isinstance(f,list) and len(f)>s and isinstance(f[s],dict) and 'money' in f[s]: return float(f[s]['money'])
+              return float(env.state[s]['reward'])
+          for seed in [641,350003,733,911]:
+              for ss in (0,1):
+                  paths=[S,R] if ss==0 else [R,S]; tt=[[],[]]; errors=[[],[]]; agents=[]
+                  for seat,p in enumerate(paths):
+                      a=load_like_kaggle(p)
+                      def w(obs,cfg=None,_a=a,_s=seat):
+                          t=time.perf_counter()
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                          finally:tt[_s].append(time.perf_counter()-t)
+                      agents.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents); m=[money(env,0),money(env,1)]; rs=1-ss
+                  rows.append({'seed':seed,'safe_seat':ss,'safe_minus_raw':m[ss]-m[rs],'money':m,'statuses':[x.get('status') for x in env.state],'errors':errors,'safe_runtime':turn_time_stats(tt[ss])})
+          out={'raw_sha256':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652','safe_v2_sha256':'1a8f362e255e2cfda3e131c986c710ac36cbbb0b0eee5a023220f4f53454db52','engine':'1.32.7','engine_source_sha256':'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e','static':static,'rows':rows,'all_valid_game_ties':all(r['safe_minus_raw']==0 for r in rows),'exceptions':sum(len(e) for r in rows for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in rows),'max_safe_p99_ms':max(r['safe_runtime']['p99']*1000 for r in rows),'max_safe_worst_ms':max(r['safe_runtime']['worst']*1000 for r in rows)}
+          print(json.dumps(out,indent=2)); Path('results/safe_v2.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert static['safe_v2']['all_pass']
+          assert out['all_valid_game_ties'] and out['exceptions']==0 and out['non_done']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v2-hosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
