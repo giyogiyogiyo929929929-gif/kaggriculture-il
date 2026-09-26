@@ -1,0 +1,194 @@
+name: v150 pair-gate hosted evaluation
+
+on:
+  push:
+    branches: [eval-v150-pair-gate-hosted-20260926]
+    paths:
+      - ".github/workflows/v150-pair-gate-hosted.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned engine and reconstruct exact agents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == '1.32.7'
+          PY
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v150_pre_duplicate_sell_guard.py tmp/v115.py tmp/v150.py
+          python -m py_compile tmp/v115.py tmp/v147.py tmp/v150.py ci/build_v150_pre_duplicate_sell_guard.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in expected.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          print('tmp/v150.py', hashlib.sha256(Path('tmp/v150.py').read_bytes()).hexdigest())
+          PY
+
+      - name: Focused synthetic guard tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import runpy
+          ns=runpy.run_path('tmp/v150.py')
+          f=ns['_v150_has_duplicate_sell_items']
+          assert f({'market':[['SELL','CARROT',4],['SELL','CARROT',2],['SELL','WHEAT',2]]}) is True
+          assert f({'market':[['SELL','CARROT',4],['SELL','WHEAT',2],['HIRE']]}) is False
+          assert f({'market':[[],['HIRE']]}) is False
+          print('synthetic: PASS')
+          PY
+
+      - name: Runtime and target seed 691
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python scripts/eval.py tmp/v150.py tmp/v115.py -n 1 -j 1 --seed-start 681 --json results/runtime_681.json
+          python scripts/eval.py tmp/v150.py tmp/v115.py -n 1 -j 1 --seed-start 691 --json results/target_691_v150_vs_v115.json
+          python scripts/eval.py tmp/v150.py tmp/v147.py -n 1 -j 1 --seed-start 691 --json results/target_691_v150_vs_v147.json
+
+      - name: Burned matched direct
+        shell: bash
+        run: python scripts/eval.py tmp/v150.py tmp/v115.py -n 12 -j 4 --seed-start 681 --json results/burned_v150_vs_v115.json
+
+      - name: Burned pair-level gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/burned_v150_vs_v115.json').read_text())
+          by={}
+          for g in d.get('matches_detail',[]): by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'pair_delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]
+          vals=[r['pair_delta'] for r in rows]; exc=d.get('exceptions') or {}
+          out={'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals),'worst_pair':min(vals),'best_pair':max(vals),'min_single_seat':min(min(r['seat_diffs']) for r in rows),'rows':rows,'exceptions':exc}
+          out['gate_pass']=(out['losses']==0 and out['worst_pair']>=0 and out['mean']>0 and not any(exc.values()))
+          Path('results/burned_pair_gate.json').write_text(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          if not out['gate_pass']: raise SystemExit('burned pair-level gate failed')
+          PY
+
+      - name: Known public regression panel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v150.py --champion tmp/v115.py --opponent starter --seed-start 661 --seed-count 4 --jobs 2 --out results/public_starter.json
+          for name in beat_v48 bl_v20 bl_v21 farming_v2 frontier_prvsiyan; do
+            python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v150.py --champion tmp/v115.py --opponent opponents/$name/main.py --seed-start 661 --seed-count 4 --jobs 2 --out results/public_$name.json
+          done
+
+      - name: Known public gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob,json,statistics
+          from pathlib import Path
+          vals=[]; panels=[]; exceptions=0
+          for p in sorted(glob.glob('results/public_*.json')):
+              d=json.load(open(p)); x=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]; vals.extend(x)
+              ce=d.get('candidate_exceptions') or 0
+              exceptions += sum(int(v) for v in ce.values()) if isinstance(ce,dict) else int(ce)
+              panels.append({'name':Path(p).stem,'wins':sum(v>0 for v in x),'losses':sum(v<0 for v in x),'ties':sum(v==0 for v in x),'mean':statistics.fmean(x) if x else None,'worst':min(x) if x else None})
+          out={'pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'candidate_exceptions':exceptions,'panels':panels}
+          out['gate_pass']=(out['losses']==0 and exceptions==0)
+          Path('results/public_gate.json').write_text(json.dumps(out,indent=2)); print(json.dumps(out,indent=2))
+          if not out['gate_pass']: raise SystemExit('known-public gate failed')
+          PY
+
+      - name: Sealed direct
+        shell: bash
+        run: python scripts/eval.py tmp/v150.py tmp/v115.py -n 12 -j 4 --seed-start 991001 --json results/sealed_direct.json
+
+      - name: Sealed pair-level gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/sealed_direct.json').read_text()); by={}
+          for g in d.get('matches_detail',[]): by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'pair_delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]; vals=[r['pair_delta'] for r in rows]; exc=d.get('exceptions') or {}
+          out={'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals),'worst_pair':min(vals),'best_pair':max(vals),'min_single_seat':min(min(r['seat_diffs']) for r in rows),'rows':rows,'exceptions':exc}
+          out['gate_pass']=(out['losses']==0 and out['wins']>0 and out['mean']>0 and not any(exc.values()))
+          Path('results/sealed_pair_gate.json').write_text(json.dumps(out,indent=2)); print(json.dumps(out,indent=2))
+          if not out['gate_pass']: raise SystemExit('sealed pair-level gate failed')
+          PY
+
+      - name: Fresh public screen
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v150.py --champion tmp/v115.py --opponent starter --seed-start 991101 --seed-count 3 --jobs 2 --out results/fresh_public_starter.json
+          for name in beat_v48 bl_v20 bl_v21 farming_v2 frontier_prvsiyan; do
+            python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v150.py --champion tmp/v115.py --opponent opponents/$name/main.py --seed-start 991101 --seed-count 3 --jobs 2 --out results/fresh_public_$name.json
+          done
+
+      - name: Stress direct
+        shell: bash
+        run: python scripts/eval.py tmp/v150.py tmp/v115.py -n 20 -j 4 --seed-start 991013 --json results/stress_direct.json
+
+      - name: Aggregate decision evidence
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,glob,statistics,hashlib
+          from pathlib import Path
+          def direct(path):
+              p=Path(path)
+              if not p.exists(): return None
+              d=json.loads(p.read_text()); by={}
+              for g in d.get('matches_detail',[]): by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':s,'pair_delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]; vals=[r['pair_delta'] for r in rows]
+              return {'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst_pair':min(vals) if vals else None,'best_pair':max(vals) if vals else None,'min_single_seat':min((min(r['seat_diffs']) for r in rows),default=None),'rows':rows,'exceptions':d.get('exceptions')}
+          def panel(pattern):
+              vals=[]; panels=[]
+              for p in sorted(glob.glob(pattern)):
+                  d=json.load(open(p)); x=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]; vals.extend(x)
+                  panels.append({'name':Path(p).stem,'wins':sum(v>0 for v in x),'losses':sum(v<0 for v in x),'ties':sum(v==0 for v in x),'mean':statistics.fmean(x) if x else None,'worst':min(x) if x else None,'best':max(x) if x else None,'candidate_exceptions':d.get('candidate_exceptions')})
+              return {'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'panels':panels}
+          out={'candidate':'v150_pre_duplicate_sell_guard','formal_champion':'v115_champion_same_turn_open_squeeze','candidate_sha256':hashlib.sha256(Path('tmp/v150.py').read_bytes()).hexdigest() if Path('tmp/v150.py').exists() else None,'champion_sha256':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2','engine':'kaggle_environments==1.32.7','runner':'ubuntu-latest','metric':'candidate_minus_champion = candidate - champion; direct decisions use seat-swapped pair_delta','burned':direct('results/burned_v150_vs_v115.json'),'target_691_vs_v115':direct('results/target_691_v150_vs_v115.json'),'target_691_vs_v147':direct('results/target_691_v150_vs_v147.json'),'known_public':panel('results/public_*.json'),'sealed':direct('results/sealed_direct.json'),'fresh_public':panel('results/fresh_public_*.json'),'stress':direct('results/stress_direct.json')}
+          Path('results/v150_pair_gate_summary.json').write_text(json.dumps(out,indent=2)); print(json.dumps(out,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v150-pair-gate-hosted-results
+          path: results/
+          if-no-files-found: warn
