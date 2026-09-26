@@ -1,0 +1,102 @@
+name: v148 focused telemetry
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v148-focused-telemetry.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact agents
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v148_v147_unique_sell_guard.py tmp/v115.py tmp/v148.py
+          python -m py_compile tmp/v115.py tmp/v147.py tmp/v148.py
+      - name: Focused telemetry
+        run: |
+          python - <<'PY'
+          import copy, importlib.util, json, sys
+          from collections import Counter
+          from pathlib import Path
+          from kaggle_environments import make
+          SEEDS=[682,689,691]; uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); spec=importlib.util.spec_from_file_location(f'_v148h_{uid}',p)
+              m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              fn=None
+              for v in vars(m).values():
+                  if callable(v): fn=v
+              return fn
+          def obs(o):
+              return {'step':int(o.get('step',-1)),'player':int(o.get('player',-1)),
+                      'money':[int(f.get('money',0)) for f in (o.get('farms') or [])],
+                      'market':copy.deepcopy(o.get('market') or {})}
+          class R:
+              def __init__(self,fn): self.fn=fn; self.n=getattr(fn,'__code__',None).co_argcount; self.t=[]
+              def __call__(self,o,c=None):
+                  a=self.fn(*[o,c][:self.n]); self.t.append({'obs':obs(o),'action':copy.deepcopy(a),'telemetry':copy.deepcopy(getattr(self.fn,'telemetry',None))}); return a
+          def run(seed,a,b):
+              x=R(load(a)); y=R(load(b)); e=make('kaggriculture',configuration={'seed':seed},debug=True); e.run([x,y])
+              return {'a':x.t,'b':y.t,'r':[s.get('reward') for s in e.state]}
+          def mk(t): return {x['obs']['step']:x for x in t}
+          def orders(x): return [list(v) for v in ((x.get('action') or {}).get('market') or [])]
+          def duplicate(x):
+              seen=set()
+              for o in orders(x):
+                  if len(o)>=3 and o[0]=='SELL':
+                      if o[1] in seen:return True
+                      seen.add(o[1])
+              return False
+          def first(c,t):
+              c=mk(c);t=mk(t); s=next((k for k in sorted(set(c)&set(t)) if c[k]['action']!=t[k]['action']),None)
+              if s is None:return {'step':None}
+              a,b=c[s],t[s]; ca=[tuple(v) for v in orders(a)]; cb=[tuple(v) for v in orders(b)]
+              return {'step':s,'obs_equal':a['obs']==b['obs'],'control_action':a['action'],'candidate_action':b['action'],
+                      'control_duplicate':duplicate(a),'candidate_duplicate':duplicate(b),
+                      'control_only':[list(v) for v in (Counter(ca)-Counter(cb)).elements()],
+                      'candidate_only':[list(v) for v in (Counter(cb)-Counter(ca)).elements()],
+                      'telemetry':b.get('telemetry')}
+          out=[]
+          for seed in SEEDS:
+              ctl=run(seed,'tmp/v115.py','tmp/v115.py'); s0=run(seed,'tmp/v148.py','tmp/v115.py'); s1=run(seed,'tmp/v115.py','tmp/v148.py')
+              row={'seed':seed,'delta0':s0['r'][0]-s0['r'][1],'delta1':s1['r'][1]-s1['r'][0],
+                   'first0':first(ctl['a'],s0['a']),'first1':first(ctl['b'],s1['b']),
+                   'final_tel0':s0['a'][-1]['telemetry'],'final_tel1':s1['b'][-1]['telemetry']}
+              out.append(row); print(json.dumps(row))
+          Path('results/v148_focused_telemetry.json').write_text(json.dumps({'rows':out},indent=2),encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-focused-telemetry
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
