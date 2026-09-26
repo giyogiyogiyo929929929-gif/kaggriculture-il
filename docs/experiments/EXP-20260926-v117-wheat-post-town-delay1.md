@@ -95,6 +95,17 @@ Result: `v117 synthetic checks: PASS`, with zero synthetic errors and no repayme
 
 During builder editing, a manual transcription error in the v112 SHA assertion was detected by review and corrected before any successful canonical run. It was a builder-check typo, not a candidate-code result. The exact v112 SHA assertion has been restored.
 
+## Evaluator compatibility correction
+
+Before any v117 result is accepted, both `run_v117_eval.py` and `run_v117_external_eval.py` were corrected to follow the project/Kaggle loader contract rather than assuming a symbol literally named `agent`:
+
+- put the candidate/opponent file directory on `sys.path` while loading so sibling imports work;
+- select the last callable value in the executed module namespace;
+- retain Kaggle-compatible argument-count handling for timed calls;
+- read telemetry from the resolved candidate callable.
+
+The external runner also preflights all 10 opponent entrypoints with this loader before starting games. These are evaluator-infrastructure corrections only; v117 tactical logic is unchanged.
+
 ## Planned exact evaluation
 
 `run_v117_eval.py` uses same-seed + seat-swap matched pairs and the project sign convention.
@@ -144,7 +155,9 @@ A separate Windows hosted-runner diagnostic was created to distinguish Linux-ima
 
 A current-lineage self-hosted workflow, `.github/workflows/v112-v117-selfhosted.yml`, was then added using only the runner/environment pattern from the separate self-hosted experiment lineage; no v130+/v147 agent code or results are mixed into this lineage. It uses `[self-hosted, Windows, X64]`, Python 3.11 and verifies `kaggle_environments==1.32.7`. Its sequence is focused test → source reconstruction / py_compile → exact v117-v112 H2H → activation/safety gate → bronze external panel → artifact summary.
 
-Self-hosted run `36244974129` is currently queued with no executed steps. This is not evaluation evidence and does not change the champion.
+The workflow now has a dedicated concurrency group with `cancel-in-progress: true` so future pushes do not accumulate stale v117 evaluations after the runner resumes. Earlier queued runs created before that concurrency rule may still remain in the repository queue.
+
+Latest self-hosted run for the concurrency-enabled workflow: `36245417246`, currently queued with no executed evaluation steps. This is not evaluation evidence and does not change the champion.
 
 The local sandbox still does not contain `kaggle_environments`, and external package resolution is unavailable, so no canonical engine H2H numbers are fabricated or inferred.
 
@@ -152,4 +165,4 @@ The local sandbox still does not contain `kaggle_environments`, and external pac
 
 **KEEP TESTING. Formal champion remains v112.**
 
-v117 is implementation-ready, focused-test clean, schema-checked, and has a fixed exact + bronze external evaluation path. It cannot be promoted without real engine activation and matched-pair evidence. If it survives v112 H2H, external outcome stability is the next priority because the project is explicitly optimizing for robust bronze-medal performance rather than small self-play money gains.
+v117 is implementation-ready, focused-test clean, schema-checked, evaluator-compatible, and has a fixed exact + bronze external evaluation path. It cannot be promoted without real engine activation and matched-pair evidence. If it survives v112 H2H, external outcome stability is the next priority because the project is explicitly optimizing for robust bronze-medal performance rather than small self-play money gains.
