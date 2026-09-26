@@ -57,6 +57,22 @@ Target evaluation environment: `kaggle_environments==1.32.7`, Python 3.11, exact
 
 Do not promote on the focused win alone. Require no W→L regression in matched hard/burned evaluation, zero exceptions/timeouts, seat-robust benefit, and fresh sealed reproduction. Formal champion remains v147 until those conditions and the project-wide PROMOTE criteria are met.
 
+## Orchestration update — 2026-09-27
+
+The focused self-hosted run `36254145184` is queued. A GitHub-hosted fallback failed before any job step and is infrastructure-only evidence, not an agent regression.
+
+The self-hosted runner is currently occupied by older Safety-v3 public-outcome run `36252342056`, which is still in step 5. A later outcome-centric Safety-v3 run `36250594997` already completed successfully and established zero W→L transitions on the burned/formal-known blocks, so the older in-progress run is operationally redundant, but the available GitHub connector does not expose workflow cancellation.
+
+To avoid manual sequencing after the runner becomes free, workflow `v153-v147-burned-hard-gate.yml` was added and queued as run `36254664268` (commit `1c80a5b43ed2e3dc12d7a42aaf45a35ddf349a2f`). It is deliberately gated in this order:
+
+1. reconstruct exact v115/v147 and v153; static + SHA checks;
+2. repeat score_2820/520104 both-seat focused test and require L→W in both seats, candidate/champion match exceptions 0, and v153 telemetry `errors=0`, `eligible=3`, `changed=1`;
+3. only after focused success, evaluate burned seeds 681..692 for direct v153-v147 and lineage v153-v115 vs v147-v115; stop expansion if any matched pair or lineage-incremental pair is negative;
+4. only after burned success, evaluate eight hard opponents (`peak_2950`, `salem_2900`, `score_2820`, `jaxa_2802`, `thomas_router_95`, `tetsutani_ms`, `melon_squeeze`, `shop_router_v7`) on seeds 520101..520104 with both seats;
+5. hard-panel primary gate is outcome-centric: zero W→D, W→L, or D→L regressions, zero exceptions, and at least one improving transition.
+
+No fresh sealed seeds are used by this queued gate.
+
 ## Initial decision
 
 KEEP TESTING.
