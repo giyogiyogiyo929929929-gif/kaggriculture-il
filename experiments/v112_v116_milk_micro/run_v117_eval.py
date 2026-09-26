@@ -21,11 +21,12 @@ def load(path, tag):
             sys.path.remove(parent)
         except ValueError:
             pass
-    fn = None
-    for value in vars(mod).values():
-        if callable(value):
-            fn = value
-    if fn is None:
+    fn = getattr(mod, 'agent', None)
+    if not callable(fn):
+        for value in vars(mod).values():
+            if callable(value):
+                fn = value
+    if not callable(fn):
         raise RuntimeError(f'no callable entrypoint in {path}')
     return mod, fn
 
@@ -58,7 +59,11 @@ def game(a, b, seed, swap=False, timed=False):
     bb = fb
     env = make('kaggriculture', configuration={'seed': int(seed)}, debug=False)
     env.run([bb, aa] if swap else [aa, bb])
-    rewards = [float(x.reward) for x in env.state]
+    raw_rewards = [x.reward for x in env.state]
+    if any(x is None for x in raw_rewards):
+        statuses = [getattr(x, 'status', None) for x in env.state]
+        raise RuntimeError(f'game ended without rewards seed={seed} swap={swap} status={statuses} rewards={raw_rewards}')
+    rewards = [float(x) for x in raw_rewards]
     ar, br = (rewards[1], rewards[0]) if swap else (rewards[0], rewards[1])
     return {
         'a': ar,
@@ -126,7 +131,7 @@ def main():
     v117 = ROOT / 'v117_wheat_post_town_delay1.py'
     rep = {
         'engine': '1.32.7',
-        'loader': 'Kaggle-compatible last-callable with sibling import path',
+        'loader': 'explicit module.agent with callable fallback and terminal-state diagnostics',
         'sign': 'candidate_minus_champion = candidate - champion',
         'champion': 'v112_wheat_lead3_lowdemand',
         'candidate': 'v117_wheat_post_town_delay1',
