@@ -1,0 +1,31 @@
+name: Export Kaggriculture Wheel 1.32.7
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - '.github/workflows/export-kaggriculture-wheel-1327.yml'
+jobs:
+  export:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download exact wheel
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          python -m pip download --no-deps "kaggle-environments==1.32.7" -d results
+          @'
+          import hashlib, pathlib
+          wheels=list(pathlib.Path('results').glob('*.whl'))
+          assert len(wheels)==1,wheels
+          p=wheels[0]
+          print(p.name, p.stat().st_size, hashlib.sha256(p.read_bytes()).hexdigest())
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-environments-1.32.7-wheel
+          path: results/*.whl
+          retention-days: 7
