@@ -3,7 +3,9 @@ name: v147 v111 counterfactual score2820
 on:
   push:
     branches: [eval-v150-v147-singleton-hardcell-20260926]
-    paths: [".github/workflows/v147-v111-counterfactual-score2820.yml"]
+    paths:
+      - ".github/workflows/v147-v111-counterfactual-score2820.yml"
+      - "ci/build_v147_v111_counterfactual_diag.py"
   workflow_dispatch:
 
 permissions:
