@@ -1,0 +1,126 @@
+name: v147 hard-opponent regression stress
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-hard-opponent-stress-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results,results\hard | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          exp={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Hard-opponent regression panel 520101-520104
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $specs = @(
+            @('peak_2950','opponents\peak_2950\main.py'),
+            @('salem_2900','opponents\salem_2900\main.py'),
+            @('score_2820','opponents\score_2820\main.py'),
+            @('jaxa_2802','opponents\jaxa_2802\main.py'),
+            @('thomas_router_95','opponents\thomas_router_95\main.py'),
+            @('tetsutani_ms','opponents\tetsutani_ms\main.py'),
+            @('melon_squeeze','opponents\melon_squeeze\main.py'),
+            @('shop_router_v7','opponents\shop_router_v7\main.py')
+          )
+          foreach ($s in $specs) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v147.py --champion tmp\v115.py --opponent $s[1] --seed-start 520101 --seed-count 4 --jobs 2 --out ("results\hard\"+$s[0]+".json")
+            if ($LASTEXITCODE -ne 0) { throw "hard panel failed: $($s[0])" }
+          }
+      - name: Aggregate hard-opponent regression
+        if: always()
+        run: |
+          $code = @'
+          import glob,json,statistics,math
+          from pathlib import Path
+          panels=[]; vals=[]; cand_exc=0; champ_exc=0
+          for p in sorted(glob.glob('results/hard/*.json')):
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              x=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]
+              vals.extend(x)
+              ce=int(d.get('candidate_exceptions',0)); he=int(d.get('champion_exceptions',0))
+              cand_exc += ce; champ_exc += he
+              panels.append({
+                'opponent':Path(p).stem,'pairs':len(x),
+                'wins':sum(v>0 for v in x),'losses':sum(v<0 for v in x),'ties':sum(v==0 for v in x),
+                'mean':statistics.fmean(x) if x else None,'worst':min(x) if x else None,'best':max(x) if x else None,
+                'candidate_exceptions':ce,'champion_exceptions':he,
+                'rows':[{'seed':r.get('seed'),'candidate_minus_champion':r.get('candidate_minus_champion_money')} for r in d.get('rows',[])],
+              })
+          se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={
+            'candidate':'v147_confirmed_v111_clone','champion':'v115_champion_same_turn_open_squeeze',
+            'engine':'kaggle_environments==1.32.7','metric':'candidate_minus_champion = candidate - champion',
+            'seeds':[520101,520102,520103,520104],
+            'opponent_universe_source':'v115 hard-opponent selection universe; all 8 retained to avoid selection-artifact uncertainty',
+            'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+            'mean':statistics.fmean(vals) if vals else None,'se':se,
+            'worst':min(vals) if vals else None,'best':max(vals) if vals else None,
+            'candidate_exceptions':cand_exc,'champion_exceptions':champ_exc,'panels':panels,
+          }
+          out['regression_free']=(out['losses']==0 and cand_exc==0 and champ_exc==0)
+          Path('results/v147_hard_stress_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert cand_exc==0 and champ_exc==0, out
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-hard-opponent-stress-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
