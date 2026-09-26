@@ -1,0 +1,127 @@
+name: v148 vs v115 duplicate-sell guard screen
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v148-v115-guard-screen.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build and static check exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v148_v147_unique_sell_guard.py tmp\v115.py tmp\v148.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v148.py
+          $hash = @'
+          import hashlib
+          from pathlib import Path
+          for p in ['tmp/v115.py','tmp/v147.py','tmp/v148.py']:
+              print(p, hashlib.sha256(Path(p).read_bytes()).hexdigest(), Path(p).stat().st_size)
+          assert hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest() == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest() == '8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          '@
+          $hash | python -
+      - name: Runtime preflight
+        run: |
+          python scripts\eval.py tmp\v148.py tmp\v115.py -n 1 -j 1 --seed-start 681 --json results\runtime_681.json
+      - name: Burned matched direct v148 vs formal v115
+        run: |
+          python scripts\eval.py tmp\v148.py tmp\v115.py -n 12 -j 4 --seed-start 681 --json results\burned_v148_vs_v115.json
+      - name: Focus seed691 v148 vs v147
+        run: |
+          python scripts\eval.py tmp\v148.py tmp\v147.py -n 1 -j 1 --seed-start 691 --json results\seed691_v148_vs_v147.json
+      - name: Public known-opponent regression panel
+        run: |
+          $specs = @(
+            @('starter','starter'),
+            @('beat_v48','opponents\beat_v48\main.py'),
+            @('bl_v20','opponents\bl_v20\main.py'),
+            @('bl_v21','opponents\bl_v21\main.py'),
+            @('farming_v2','opponents\farming_v2\main.py'),
+            @('frontier_prvsiyan','opponents\frontier_prvsiyan\main.py')
+          )
+          foreach ($s in $specs) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v148.py --champion tmp\v115.py --opponent $s[1] --seed-start 661 --seed-count 4 --jobs 2 --out ("results\public_"+$s[0]+".json")
+            if ($LASTEXITCODE -ne 0) { throw "public panel failed: $($s[0])" }
+          }
+      - name: Aggregate screen
+        if: always()
+        run: |
+          $code = @'
+          import json, glob, hashlib, statistics
+          from pathlib import Path
+          def direct(path):
+              d=json.loads(Path(path).read_text(encoding='utf-8')); by={}
+              for g in d.get('matches_detail',[]):
+                  by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':s,'delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]
+              vals=[r['delta'] for r in rows]
+              return {'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'rows':rows,'exceptions':d.get('exceptions')}
+          pubs=[]; pvals=[]
+          for p in sorted(glob.glob('results/public_*.json')):
+              d=json.load(open(p,encoding='utf-8')); vals=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]
+              pvals += vals
+              pubs.append({'panel':Path(p).stem,'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None})
+          out={
+              'candidate':'v148_v147_unique_sell_guard',
+              'parent_behavior':'v147_confirmed_v111_clone',
+              'champion':'v115_champion_same_turn_open_squeeze',
+              'engine':'kaggle_environments==1.32.7',
+              'metric':'candidate_minus_champion = candidate - champion',
+              'sha256':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ['tmp/v115.py','tmp/v147.py','tmp/v148.py']},
+              'burned':direct('results/burned_v148_vs_v115.json'),
+              'seed691_vs_v147':direct('results/seed691_v148_vs_v147.json'),
+              'public':{'pairs':len(pvals),'wins':sum(x>0 for x in pvals),'losses':sum(x<0 for x in pvals),'ties':sum(x==0 for x in pvals),'mean':statistics.fmean(pvals) if pvals else None,'worst':min(pvals) if pvals else None,'panels':pubs},
+          }
+          Path('results/v148_screen_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-v115-guard-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
