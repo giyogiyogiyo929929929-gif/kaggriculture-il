@@ -1,0 +1,103 @@
+name: uploaded 127ed3 CARROT2 trace
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-carrot2-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build behavior-identical instrumented safety-v3 and exact v147
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib
+          from pathlib import Path
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          src=raw.decode('utf-8')
+          old='''                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n                    units[i] = ["PLANT", "CARROT"]\n'''
+          new='''                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n                    _CA_DETAIL_TRACE.append({\n                        "step": step, "day": day, "seat": seat, "pos": list(pos),\n                        "p_c": p_c, "p_w": p_w, "wheat_total": _ca_wheat_total(observation),\n                        "feed1": _ca_feed_need(seat, step, 1), "feed2": _ca_feed_need(seat, step, 2),\n                        "feed3": _ca_feed_need(seat, step, 3), "wu": wu, "cu": cu,\n                        "edge": cu * (p_c - _CA_DROP) - 20 - (wu * p_w - 10),\n                        "spare_wheat": st["spare_wheat"], "spare_carrot": st["spare_carrot"]})\n                    units[i] = ["PLANT", "CARROT"]\n'''
+          assert src.count(old)==1,src.count(old)
+          marker='_CA_STATE = {}\n'
+          assert src.count(marker)==1
+          src=src.replace(marker,marker+'_CA_DETAIL_TRACE = []\n',1).replace(old,new,1)
+          suffix='''\n\n# Safety-only wrapper v3 for trace build.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          Path('tmp/trace.py').write_text(src+suffix,encoding='utf-8')
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\trace.py tmp\v147.py
+      - name: Trace accepted CARROT2 swaps on loss/win contrasts
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          C=Path('tmp/trace.py'); H=Path('tmp/v147.py')
+          seeds=[641,350003,733,911]; rows=[]
+          def money(env,s):
+              obs=env.steps[-1][s].get('observation')
+              return float(obs['farms'][s]['money'])
+          for seed in seeds:
+              for cs in (0,1):
+                  paths=[C,H] if cs==0 else [H,C]; loaded=[]; errors=[[],[]]
+                  agents=[]
+                  for seat,p in enumerate(paths):
+                      a=load_like_kaggle(p); loaded.append(a)
+                      def w(obs,cfg=None,_a=a,_s=seat):
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                      agents.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                  ca=loaded[cs].__globals__.get('_CA_DETAIL_TRACE',[])
+                  m=[money(env,0),money(env,1)]
+                  row={'seed':seed,'candidate_seat':cs,'delta':m[cs]-m[1-cs],'candidate_money':m[cs],
+                       'champion_money':m[1-cs],'trace':ca,'swap_count':len(ca),'errors':errors}
+                  rows.append(row); print('TRACE',json.dumps(row))
+          out={'candidate':'instrumentation-only safety-v3','seeds':seeds,'rows':rows,
+               'exceptions':sum(len(e) for r in rows for e in r['errors'])}
+          Path('results/carrot2_trace.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert out['exceptions']==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-carrot2-trace
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
