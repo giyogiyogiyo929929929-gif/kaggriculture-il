@@ -32,7 +32,7 @@ OPPONENTS = {
 
 
 def load(path: Path, tag: str):
-    """Load like Kaggle/project eval: sibling imports enabled; last callable wins."""
+    """Load sibling imports and prefer the explicit module.agent entrypoint."""
     spec = importlib.util.spec_from_file_location(tag, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {path}")
@@ -47,11 +47,12 @@ def load(path: Path, tag: str):
             sys.path.remove(parent)
         except ValueError:
             pass
-    fn = None
-    for value in vars(mod).values():
-        if callable(value):
-            fn = value
-    if fn is None:
+    fn = getattr(mod, "agent", None)
+    if not callable(fn):
+        for value in vars(mod).values():
+            if callable(value):
+                fn = value
+    if not callable(fn):
         raise RuntimeError(f"{path} contains no callable entrypoint")
     return mod, fn
 
@@ -62,7 +63,14 @@ def game(agent_path: Path, opp_path: Path, seed: int, swap: bool):
     _, fb = load(opp_path, tag + "_b")
     env = make("kaggriculture", configuration={"seed": int(seed)}, debug=False)
     env.run([fb, fa] if swap else [fa, fb])
-    rewards = [float(x.reward) for x in env.state]
+    raw_rewards = [x.reward for x in env.state]
+    if any(x is None for x in raw_rewards):
+        statuses = [getattr(x, "status", None) for x in env.state]
+        raise RuntimeError(
+            f"game ended without rewards seed={seed} swap={swap} "
+            f"status={statuses} rewards={raw_rewards}"
+        )
+    rewards = [float(x) for x in raw_rewards]
     ar, br = (rewards[1], rewards[0]) if swap else (rewards[0], rewards[1])
     return {
         "agent_reward": ar,
@@ -173,8 +181,6 @@ def main():
     if missing:
         raise FileNotFoundError("missing evaluation files: " + ", ".join(missing))
 
-    # Fail early if any regression opponent cannot be resolved with the same
-    # entrypoint rule as Kaggle/project eval.
     for i, (name, path) in enumerate(OPPONENTS.items()):
         _, fn = load(path, f"preflight_{i}_{name}_{time.time_ns()}")
         print("preflight", name, getattr(fn, "__name__", type(fn).__name__), flush=True)
@@ -186,7 +192,7 @@ def main():
     report = {
         "engine": "kaggle_environments==1.32.7",
         "policy": "bronze-medal external regression panel",
-        "loader": "Kaggle-compatible last-callable with sibling import path",
+        "loader": "explicit module.agent with callable fallback and terminal-state diagnostics",
         "sign": "candidate_minus_champion = candidate external pair diff - champion external pair diff",
         "champion": "v112_wheat_lead3_lowdemand",
         "candidate": "v117_wheat_post_town_delay1",
