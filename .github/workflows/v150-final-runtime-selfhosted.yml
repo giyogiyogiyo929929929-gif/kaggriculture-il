@@ -1,0 +1,140 @@
+name: v150 final runtime qualification
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v150-final-runtime-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v150.py
+          @'
+          import hashlib, json
+          from pathlib import Path
+          out={}
+          for p in ('tmp/v115.py','tmp/v147.py','tmp/v150.py'):
+              out[p]=hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          assert out['tmp/v115.py']=='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert out['tmp/v147.py']=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          Path('results/build_sha.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@ | python -
+      - name: Sequential GC-on paired runtime qualification
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS=[681,682,689,691,692]
+          PATHS={'v115':'tmp/v115.py','v147':'tmp/v147.py','v150':'tmp/v150.py'}
+          uid=0
+          gc_events=[]
+          gc_active=False
+          def gc_cb(phase, info):
+              global gc_active
+              if phase=='start': gc_active=True
+              elif phase=='stop': gc_active=False
+          gc.callbacks.append(gc_cb)
+
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v150rt_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          def q(vals,p):
+              s=sorted(vals); return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+          def last_callable(m):
+              fn=None
+              for v in vars(m).values():
+                  if callable(v): fn=v
+              return fn
+          class Timed:
+              def __init__(self,fn,label,seed,seat): self.fn=fn; self.label=label; self.seed=seed; self.seat=seat; self.rows=[]
+              def __call__(self,obs,cfg=None):
+                  step=int(obs.get('step',0)); before_gc=gc.get_count(); w0=time.perf_counter_ns(); c0=time.process_time_ns()
+                  out=self.fn(obs,cfg)
+                  wall=(time.perf_counter_ns()-w0)/1e6; cpu=(time.process_time_ns()-c0)/1e6
+                  after_gc=gc.get_count()
+                  self.rows.append({'label':self.label,'seed':self.seed,'seat':self.seat,'step':step,'wall_ms':wall,'cpu_ms':cpu,
+                                    'gc_count_before':before_gc,'gc_count_after':after_gc})
+                  return out
+          def run(label,path,seed,seat):
+              m=load(path); fn=last_callable(m); champ=last_callable(load('tmp/v115.py'))
+              t=Timed(fn,label,seed,seat)
+              agents=[t,champ] if seat==0 else [champ,t]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              statuses=[x.get('status') for x in env.state]
+              if statuses!=['DONE','DONE']: raise RuntimeError((label,seed,seat,statuses))
+              return t.rows
+
+          allrows=[]; errors=[]
+          assert gc.isenabled()
+          for seed in SEEDS:
+              for seat in (0,1):
+                  for label,path in PATHS.items():
+                      try: allrows.extend(run(label,path,seed,seat))
+                      except Exception as e: errors.append({'label':label,'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          gc.callbacks.remove(gc_cb)
+
+          def stats(rows):
+              w=[r['wall_ms'] for r in rows]; c=[r['cpu_ms'] for r in rows]
+              return {'calls':len(w),'median_ms':statistics.median(w),'p95_ms':q(w,.95),'p99_ms':q(w,.99),'max_ms':max(w),
+                      'cpu_p99_ms':q(c,.99),'cpu_max_ms':max(c),'over_50':sum(x>50 for x in w),'over_200':sum(x>200 for x in w),
+                      'top10':sorted(rows,key=lambda r:r['wall_ms'],reverse=True)[:10]}
+          summary={k:stats([r for r in allrows if r['label']==k]) for k in PATHS}
+          formal={'p99_ms_lt':50.0,'max_ms_lt':200.0}
+          summary['v150']['formal_pass']=summary['v150']['p99_ms']<50 and summary['v150']['max_ms']<200 and not errors
+          out={'engine':'kaggle_environments==1.32.7','mode':'sequential single-process; GC enabled; perf_counter_ns + process_time_ns',
+               'seeds':SEEDS,'seat_swap':True,'gc_enabled':gc.isenabled(),'thresholds':formal,'errors':errors,'summary':summary}
+          Path('results/v150_final_runtime.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert not errors, errors
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v150-final-runtime-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
