@@ -1,0 +1,48 @@
+name: export-exact-v115-source
+on:
+  push:
+    branches: [eval-v148-duplicate-sell-guard-20260926]
+    paths: [".github/workflows/export-v115-source.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct exact formal v115
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp out
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py out/v115_champion_same_turn_open_squeeze.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          p=Path('out/v115_champion_same_turn_open_squeeze.py')
+          got=hashlib.sha256(p.read_bytes()).hexdigest()
+          exp='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          print('sha256',got,'bytes',p.stat().st_size)
+          assert got==exp,(got,exp)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exact-v115-source
+          path: out/v115_champion_same_turn_open_squeeze.py
+          if-no-files-found: error
+          retention-days: 7
