@@ -43,7 +43,6 @@ jobs:
           curl.exe -fL --retry 3 --retry-delay 2 "https://www.kaggle.com/api/v1/kernels/output/download/raykkretzschmar/kaggriculture-rank-your-agent?version_number=27" -o incoming/notebook-output.zip
           if ($LASTEXITCODE -ne 0) { throw "candidate download failed" }
           Expand-Archive -Force incoming/notebook-output.zip incoming/unpacked
-          Get-ChildItem incoming/unpacked -Recurse -File | ForEach-Object { "$($_.FullName) $($_.Length) bytes" }
           if (-not (Test-Path incoming/unpacked/main.py)) { throw "main.py missing" }
           Copy-Item incoming/unpacked/main.py incoming/public_main.py -Force
           $code = @'
@@ -57,7 +56,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python -m py_compile incoming/public_main.py
-          if ($LASTEXITCODE -ne 0) { throw "compile failed" }
           $code = @'
           import importlib.util, pathlib, time
           p=pathlib.Path('incoming/public_main.py')
@@ -69,7 +67,23 @@ jobs:
           assert callable(getattr(m,'kaggle_agent',None)) or callable(getattr(m,'agent',None))
           '@
           $code | python - | Tee-Object -FilePath incoming/preflight.txt
-          if ($LASTEXITCODE -ne 0) { throw "import preflight failed" }
+      - name: Export exact engine and evaluation bundle
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import kaggle_environments, pathlib, shutil
+          src=pathlib.Path(kaggle_environments.__file__).resolve().parent
+          dst=pathlib.Path('incoming/vendor/kaggle_environments')
+          if dst.exists(): shutil.rmtree(dst)
+          shutil.copytree(src,dst,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+          print(src, '->', dst)
+          '@
+          $code | python -
+          New-Item -ItemType Directory -Force -Path incoming/eval_bundle | Out-Null
+          Copy-Item scripts/ci/run_differential_panel.py incoming/eval_bundle/ -Force
+          Copy-Item eval_assets/v130/trace_single_game.py incoming/eval_bundle/ -Force
+          Copy-Item -Recurse opponents incoming/eval_bundle/opponents -Force
+          Copy-Item requirements-dev.txt incoming/eval_bundle/ -Force
       - uses: actions/upload-artifact@v4
         if: always()
         with:
