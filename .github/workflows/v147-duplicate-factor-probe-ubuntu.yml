@@ -1,0 +1,96 @@
+name: v147 duplicate factor probe hosted
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-duplicate-factor-probe-ubuntu.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+      - name: Probe duplicate candidates and dump source
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util, inspect, json, sys
+          from pathlib import Path
+          from kaggle_environments import make
+          CASES=[(682,0),(689,0)]
+          uid=0; rows=[]
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_duphost_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          def last_callable(m):
+              fn=None
+              for v in vars(m).values():
+                  if callable(v): fn=v
+              return fn
+          def key(candidate):
+              return tuple(tuple(o) if isinstance(o,(list,tuple)) else ('__scalar__',repr(o)) for o in candidate)
+          src=load('tmp/v147.py')
+          for name in ('_v27_candidates','_v44y_factor_margin','_v111_reorder'):
+              Path(f'results/{name}_source.txt').write_text(inspect.getsource(getattr(src,name)),encoding='utf-8')
+          Path('results/constants.json').write_text(json.dumps({'V27_BUDGET':getattr(src,'_V27_BUDGET',None)},indent=2),encoding='utf-8')
+          for seed,seat in CASES:
+              m=load('tmp/v147.py'); champ=last_callable(load('tmp/v115.py'))
+              orig=m._v27_candidates; current={'step':0}
+              def wrapped(orders,slots,sells,fixed,_orig=orig,_seed=seed,_seat=seat):
+                  seen=set(); gen=dup=0
+                  for cand in _orig(orders,slots,sells,fixed):
+                      gen+=1; k=key(cand)
+                      if k in seen: dup+=1
+                      else: seen.add(k)
+                      yield cand
+                  rows.append({'seed':_seed,'seat':_seat,'step':current['step'],'generated':gen,'unique':len(seen),'duplicates':dup})
+              m._v27_candidates=wrapped
+              orig_agent=m.agent
+              def agent(obs,cfg=None,_orig=orig_agent): current['step']=int(obs.get('step',0)); return _orig(obs,cfg)
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run([agent,champ])
+              assert [x.get('status') for x in env.state]==['DONE','DONE']
+          total=sum(r['generated'] for r in rows); dup=sum(r['duplicates'] for r in rows)
+          out={'calls':len(rows),'generated':total,'duplicates':dup,'duplicate_ratio':dup/max(1,total),'hot':sorted(rows,key=lambda r:(r['duplicates'],r['generated']),reverse=True)[:40]}
+          Path('results/duplicate_probe.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v147-duplicate-factor-probe-hosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
