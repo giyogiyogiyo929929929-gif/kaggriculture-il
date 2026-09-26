@@ -1,7 +1,7 @@
 # EXP-20260926-v150-runtime-noop-second-pass
 
 ## Status
-KEEP TESTING — focused equivalence/runtime run queued.
+KEEP TESTING — focused equivalence passed; full burned equivalence queued.
 
 ## Parent / champion
 - parent candidate: `v147_confirmed_v111_clone`
@@ -11,7 +11,7 @@ KEEP TESTING — focused equivalence/runtime run queued.
 ## Motivation
 v147 has strong strategic evidence (burned matched seeds, sealed holdout, hard-opponent stress, public diversity) but its final runtime qualification exceeded the absolute `<200 ms` max threshold. Follow-up paired runtime diagnostics showed that extreme tails are strongly GC-dependent, while targeted cProfile identified `_v111_reorder` as a real hot path on some late turns.
 
-The v147 wrapper calls the parent v115 agent, detects whether the parent's v111 pass changed the action via `_V111_REPORT['changed_turns']`, and then may call `_v111_reorder` again after clone confirmation. When the parent v111 pass made no change, repeating the same final reorder is expected to be a redundant no-op. Avoiding that call should reduce candidate enumeration, margin evaluation, temporary allocations, and GC pressure without changing strategic actions.
+The v147 wrapper calls the parent v115 agent, detects whether the parent's v111 pass changed the action via `_V111_REPORT['changed_turns']`, and then may call `_v111_reorder` again after clone confirmation. When the parent v111 pass made no change, repeating the final reorder is expected to be a redundant no-op. Avoiding that call should reduce candidate enumeration, margin evaluation, temporary allocations, and GC pressure without changing strategic actions.
 
 ## Candidate
 `v150_skip_noop_second_pass`
@@ -27,22 +27,66 @@ One guard only:
 No farm policy, market scoring, SELL quantity, order priority, prediction, race detection, or endgame parameter is changed.
 
 ## Hypothesis
-If the parent v111 pass did not change the final market action, a second deterministic v111 pass on the same final action cannot change the returned action. Skipping such calls should therefore preserve v147 action traces while lowering runtime and allocation pressure.
+If the parent v111 pass did not change the final market action, a second deterministic v111 pass on the same final action should be a no-op. Skipping such calls should therefore preserve v147 action traces while lowering runtime and allocation pressure.
+
+## Duplicate-candidate probe
+Run `36245268147` completed successfully.
+
+- evaluated candidates: 436,786
+- duplicate evaluated candidates: 72
+- duplicate fraction: ~0.0165%
+- known heavy 20,160-candidate late steps had no useful duplicate concentration
+
+Decision on the alternative factor-cache idea: REJECT. Duplicate reuse is too rare to explain or materially reduce the hot path.
+
+## Focused equivalence/runtime result
+Run `36245566714` completed successfully.
+
+Seeds: `681,682,689,691,692`, both seats, 2 repetitions.
+
+Correctness:
+- candidate calls compared: 14,380 per version
+- complete v147/v150 action traces: identical in every tested game
+- final rewards: identical in every tested game
+- mismatches: 0
+- exceptions: 0
+- v147 and v150 `second_pass_changed` counts: identical for every row
+
+Work reduction:
+- total `_V111_REPORT.evaluations`, v147: 26,724
+- total `_V111_REPORT.evaluations`, v150: 22,052
+- reduction: 4,672 evaluations = ~17.48%
+
+GC-on wall-clock summary:
+
+| metric | v147 | v150 |
+|---|---:|---:|
+| median | 4.379 ms | 4.297 ms |
+| p95 | 9.881 ms | 10.478 ms |
+| p99 | 18.821 ms | 18.378 ms |
+| >50 ms | 51 | 42 |
+| >200 ms | 2 | 3 |
+| max | 798.094 ms | 1620.081 ms |
+
+Interpretation:
+- The focused panel supports semantic equivalence and confirms a real reduction in v111 search work.
+- Median and p99 improve slightly; >50 ms calls also fall.
+- Absolute max remains dominated by rare GC/tail events and is not improved in this one run; v150 recorded a 1.62 s spike on seed 691 seat 0 despite an otherwise identical action trace. This prevents treating the focused timing sample as a formal runtime PASS.
+- Because paired tail diagnostics already showed large GC spikes in both v115 and v147, max must be reassessed with the established GC-aware paired protocol rather than inferred from one raw maximum.
 
 ## Validation plan
-1. Build exact v115 and v147 and verify their known SHA256 values.
-2. Build v150 and `py_compile` all three agents.
-3. Focused action-equivalence test on seeds `681,682,689,691,692`, both seats, two repetitions:
-   - compare every candidate action returned by v147 and v150 against the same v115 opponent,
-   - require identical complete action traces and identical final rewards,
-   - require no exceptions.
-4. Compare per-call runtime distribution for v147 and v150 with GC enabled.
-5. If action-equivalent and materially faster, broaden equivalence to the full burned panel and then rerun formal runtime qualification.
-6. Only after runtime passes, retain v147's strategic evidence for promotion; do not change the formal champion before all gates pass.
+1. Build exact v115 and v147 and verify their known SHA256 values. PASS.
+2. Build v150 and `py_compile` all three agents. PASS.
+3. Focused complete action-equivalence test. PASS.
+4. Focused runtime/work reduction. PASS for work reduction; formal runtime still unresolved due GC tail.
+5. Expand complete action equivalence to all burned seeds `681..692`, both seats. QUEUED.
+6. If complete equivalence holds, treat v150 as a runtime-only implementation of v147 for strategic results and run a fresh GC-on paired runtime qualification against v147/v115.
+7. Only after runtime qualification is satisfactory, consider replacing v147 with v150 as the promotion candidate. Formal champion remains v115 until all gates pass.
 
 ## Runs
-- duplicate-candidate diagnostic: `36245268147` (queued; supplementary, not required for v150 correctness)
-- focused v150 equivalence/runtime: `36245566714` (queued)
+- duplicate-candidate diagnostic: `36245268147` — success
+- focused v150 equivalence/runtime: `36245566714` — success
+- full burned action equivalence: `36249173738` — queued
 
 ## Decision
-PENDING.
+KEEP TESTING.
