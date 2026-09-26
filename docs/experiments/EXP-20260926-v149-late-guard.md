@@ -2,7 +2,7 @@
 
 ## Status
 
-**Decision: KEEP TESTING — evaluation queued, not eligible for promotion.**
+**Decision: REJECT. Do not promote.**
 
 Formal champion remains exact `v115_champion_same_turn_open_squeeze`.
 
@@ -17,46 +17,68 @@ Formal champion remains exact `v115_champion_same_turn_open_squeeze`.
 
 ## Hypothesis
 
-v148 demonstrated that duplicate-same-item SELL is not sufficient to explain v147's seat risk. The known adverse single-seat case first diverges very late (seed 691, step 673), while representative clean positive divergences occur earlier (seed 681 step 552, seed 682 step 481, seed 689 step 409).
-
-Preserve v147's confirmed second-pass reorder before step 648, but disable that second pass for the final 72 turns. The aim is to retain the earlier order gains while preventing late market-order perturbations that have little time to mean-revert and can become seat-sensitive.
+Disable v147's confirmed second `_v111_reorder` pass during the final 72 turns (`step >= 648`) to reduce the previously suspected late-game seat-sensitive downside while preserving earlier order gains.
 
 ## Change
 
 One tactical change only:
 
 - if `step >= 648`, skip the confirmed second `_v111_reorder` pass;
-- all parent farm strategy, sale quantities, clone confirmation, and earlier second-pass behavior remain unchanged.
+- farm strategy, sale quantities, clone confirmation, and earlier second-pass behavior remain unchanged.
 
 ## Focused synthetic test
 
-A minimal deterministic wrapper test was run outside the Kaggle engine to validate the new guard logic in isolation:
+Deterministic wrapper test: PASS. The second pass remains active before step 648 and is suppressed from step 648 onward; wrapper errors 0.
 
-- first-pass change creates a probe;
-- equal own/rival realized cash deltas confirm clone state on the following observation;
-- confirmed second-pass reorder remains active before step 648;
-- at step 648 the parent market action is returned unchanged and the `late_guard` counter fires;
-- wrapper errors: 0.
+## Environment
 
-Result: **PASS**. This only validates the guard/control-flow logic; exact generated-agent syntax/runtime and game behavior still require the queued workflow.
+- engine: `kaggle_environments==1.32.7`
+- runner: self-hosted Windows X64 (`CIYOI`)
+- formal workflow run: `36234914455`
+- GitHub-hosted run `36234808209` failed before any job step (`runner_id=0`) and is not model evidence.
 
-## Planned / queued evaluation
+## Results
 
-1. exact v115 SHA reconstruction and syntax check;
-2. seed 681 serial runtime preflight;
-3. burned seeds 681..692 with seat swap;
-4. focused seed 691 v149-vs-v147 comparison;
-5. six-opponent public regression panel, seeds 661..664;
-6. only if the focused/burned guard succeeds: unused sealed seeds, stress, final runtime and regression before any promotion decision.
+Trusted formal evidence is `v149_screen_summary.json` from the self-hosted artifact. A generic `summary.json` in the same artifact belongs to a different experiment (`v149_room_guard_buy_netting`) and is explicitly excluded.
 
-### Infrastructure state
+### Burned matched screen
 
-- GitHub-hosted workflow run `36234808209` failed before any job step started (`steps=[]`, `runner_id=0`), so it produced no candidate evidence and is not treated as a model/runtime failure.
-- self-hosted Windows workflow run `36234914455` is queued on `[self-hosted, Windows, X64]`.
-- separate v148 focused telemetry self-hosted run `36234672144` is also queued.
+Seeds `681..692`, seat swap, 12 matched pairs versus exact v115:
 
-No sealed seeds have been consumed by v149 yet.
+- wins: 7
+- losses: 0
+- ties: 5
+- mean candidate-minus-champion: **+39**
+- worst matched-pair regression: **0**
+- exceptions/timeouts: none in the completed screen
 
-## Decision rule
+This is weaker than parent v147's 9-0-3 and **+47.5** on the same burned panel.
 
-Do not promote unless v149 removes or materially reduces the seed-691 single-seat downside while retaining broad burned gains, then reproduces on unused sealed seeds without known-opponent/runtime regressions.
+### Focused seed 691
+
+Against parent v147 on the same focused comparison, v149 is **-2**. Thus the late guard removes the small +2 same-seat improvement retained by v147 rather than improving it.
+
+Follow-up baseline-seat analysis also invalidated the motivating premise: the raw `-52 / +56` v147 legs at seed 691 mainly reflect an intrinsic v115-v115 seat asymmetry (`-54 / +54`). Relative to the same-seat champion baseline, v147 is +2 in both seats. The supposed v147-specific late seat regression therefore was not established.
+
+### Known-opponent regression
+
+Six public opponents x seeds `661..664`: **24/24 ties**, no observed regression, but also no compensating gain.
+
+## Decision
+
+**REJECT v149.**
+
+Reasons:
+
+- motivating seat-risk premise was invalidated by same-seat baseline analysis;
+- burned mean drops from v147 +47.5 to v149 +39;
+- improved-pair count drops from 9/12 to 7/12;
+- focused seed 691 is -2 versus v147;
+- public regression is neutral rather than beneficial;
+- spending sealed seeds on a dominated guard is not justified.
+
+No sealed seeds were consumed by v149.
+
+## Next hypothesis
+
+Return to v147 as the leading candidate and test its confirmed second-pass reorder on genuinely unused sealed seeds with seat swap. If sealed gains reproduce, complete stress, sequential runtime/p99, and targeted telemetry before any promotion decision. Do not add another safety guard until a reproducible regression mechanism is demonstrated against the same-seat champion baseline.
