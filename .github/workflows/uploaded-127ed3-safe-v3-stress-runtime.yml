@@ -1,0 +1,169 @@
+name: uploaded 127ed3 safety-v3 stress + runtime
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v3-stress-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress-runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install official engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          engine=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          assert engine=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e',engine
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          got=hashlib.sha256(safe).hexdigest(); print('safe_v3_sha',got)
+          assert got=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          def h(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          print('v147_sha',h('tmp/v147.py'))
+          assert h('tmp/v147.py')=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\v147.py
+
+      - name: Burned development stress seeds 621-632 both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle,turn_time_stats
+          C=Path('tmp/safe_v3.py'); H=Path('tmp/v147.py'); seeds=list(range(621,633)); games=[]
+          def money(env,seat):
+              for obs in (env.state[seat].get('observation'),env.steps[-1][seat].get('observation')):
+                  if isinstance(obs,dict):
+                      farms=obs.get('farms')
+                      if isinstance(farms,list) and len(farms)>seat and isinstance(farms[seat],dict):
+                          for k in ('money','cash'):
+                              if k in farms[seat]: return float(farms[seat][k])
+              return float(env.state[seat]['reward'])
+          def one(seed,cs):
+              paths=[C,H] if cs==0 else [H,C]; agents=[]; timing=[[],[]]; errors=[[],[]]
+              for seat,p in enumerate(paths):
+                  a=load_like_kaggle(p)
+                  def w(obs,cfg=None,_a=a,_s=seat):
+                      t=time.perf_counter()
+                      try:return call_like_kaggle(_a,obs,cfg)
+                      except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                      finally:timing[_s].append(time.perf_counter()-t)
+                  agents.append(w)
+              env=make('kaggriculture',configuration={'seed':seed}); env.run(agents); m=[money(env,0),money(env,1)]; hs=1-cs
+              return {'seed':seed,'candidate_seat':cs,'candidate_money':m[cs],'champion_money':m[hs],
+                      'candidate_minus_champion':m[cs]-m[hs],'statuses':[x.get('status') for x in env.state],
+                      'errors':errors,'candidate_runtime':turn_time_stats(timing[cs])}
+          for s in seeds:
+              for cs in (0,1):
+                  r=one(s,cs); games.append(r); print(json.dumps(r))
+          pairs=[]
+          for s in seeds:
+              rs=[r for r in games if r['seed']==s]; ds=[r['candidate_minus_champion'] for r in rs]; v=statistics.mean(ds)
+              pairs.append({'seed':s,'seat0_delta':ds[0],'seat1_delta':ds[1],'pair_mean_delta':v,'outcome':'W' if v>0 else 'L' if v<0 else 'D'})
+          vals=[p['pair_mean_delta'] for p in pairs]; mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'label':'BURNED_DEV_STRESS_NOT_SEALED','candidate_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df',
+               'champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','seeds':seeds,
+               'pair_wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},'mean_pair_delta':mean,'median_pair_delta':statistics.median(vals),
+               'se':se,'mean_minus_2se':mean-2*se,'worst_pair_delta':min(vals),'best_pair_delta':max(vals),
+               'seat0_mean':statistics.mean(r['candidate_minus_champion'] for r in games if r['candidate_seat']==0),
+               'seat1_mean':statistics.mean(r['candidate_minus_champion'] for r in games if r['candidate_seat']==1),
+               'exceptions':sum(len(e) for r in games for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in games),
+               'max_game_p99_ms':max(r['candidate_runtime']['p99'] for r in games)*1000,'worst_turn_ms':max(r['candidate_runtime']['worst'] for r in games)*1000,
+               'pairs':pairs}
+          print('STRESS_SUMMARY',json.dumps({k:v for k,v in out.items() if k!='pairs'},indent=2))
+          Path('results/stress.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert out['exceptions']==0 and out['non_done']==0
+          '@ | python -
+
+      - name: Dedicated serial runtime gate matching v147 methodology
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,time,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          def measure(path,seed,swap):
+              agent=load_like_kaggle(Path(path)); ts=[]; errors=[]
+              def timed(obs,config=None):
+                  t=time.perf_counter()
+                  try:return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:errors.append(f'{type(exc).__name__}: {exc}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                  finally:ts.append(time.perf_counter()-t)
+              env=make('kaggriculture',configuration={'seed':seed}); env.run(['starter',timed] if swap else [timed,'starter'])
+              xs=sorted(ts); n=len(xs); seat=1 if swap else 0
+              return {'seed':seed,'swap':swap,'calls':n,'median_ms':statistics.median(xs)*1000,
+                      'p99_ms':xs[min(n-1,int(n*0.99))]*1000,'worst_ms':max(xs)*1000,'errors':errors,'status':env.state[seat].get('status')}
+          paths={'safe_v3':'tmp/safe_v3.py','v147':'tmp/v147.py'}
+          rows={n:[measure(p,s,w) for s in (641,642) for w in (False,True)] for n,p in paths.items()}
+          summary={}
+          for n,rs in rows.items():
+              summary[n]={'median_of_game_medians_ms':statistics.median(r['median_ms'] for r in rs),
+                          'max_game_p99_ms':max(r['p99_ms'] for r in rs),'worst_turn_ms':max(r['worst_ms'] for r in rs),
+                          'exceptions':sum(len(r['errors']) for r in rs),'non_done':sum(r['status']!='DONE' for r in rs)}
+              summary[n]['pass']=summary[n]['exceptions']==0 and summary[n]['non_done']==0 and summary[n]['max_game_p99_ms']<50.0 and summary[n]['worst_turn_ms']<200.0
+          payload={'engine':'kaggle_environments==1.32.7','method':'serial vs starter, seeds 641/642, both seats; matches v147 runtime preflight v3',
+                   'thresholds':{'max_game_p99_ms_lt':50.0,'worst_turn_ms_lt':200.0,'exceptions':0,'non_done':0},'rows':rows,'summary':summary}
+          print('RUNTIME_SUMMARY',json.dumps(summary,indent=2)); Path('results/runtime.json').write_text(json.dumps(payload,indent=2),encoding='utf-8')
+          assert summary['safe_v3']['pass'],summary['safe_v3']
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v3-stress-runtime
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
