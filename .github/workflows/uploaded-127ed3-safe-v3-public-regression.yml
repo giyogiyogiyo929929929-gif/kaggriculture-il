@@ -1,0 +1,109 @@
+name: uploaded 127ed3 safety-v3 public regression panel
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v3-public-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: starter
+            opponent: starter
+          - name: beat_v48
+            opponent: opponents/beat_v48/main.py
+          - name: bl_v20
+            opponent: opponents/bl_v20/main.py
+          - name: bl_v21
+            opponent: opponents/bl_v21/main.py
+          - name: farming_v2
+            opponent: opponents/farming_v2/main.py
+          - name: frontier_prvsiyan
+            opponent: opponents/frontier_prvsiyan/main.py
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and reconstruct exact agents
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python - <<'PY'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          assert hashlib.sha256(safe).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          PY
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          PY
+          python -m py_compile tmp/safe_v3.py tmp/v147.py
+      - name: Record opponent provenance
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          opp='${{ matrix.opponent }}'
+          out={'opponent':opp}
+          if opp!='starter':
+              p=Path(opp); out['opponent_sha256']=hashlib.sha256(p.read_bytes()).hexdigest(); out['opponent_size']=p.stat().st_size
+          else:
+              out['opponent_sha256']='builtin:starter'
+          Path('results/provenance.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+      - name: Matched candidate-minus-champion public regression seeds 621-624
+        run: |
+          set -euo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/safe_v3.py --champion tmp/v147.py --opponent '${{ matrix.opponent }}' --seed-start 621 --seed-count 4 --jobs 4 --out results/panel.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('results/panel.json').read_text())
+          assert p['candidate_exceptions']==0 and p['champion_exceptions']==0
+          print('REGRESSION_SUMMARY', json.dumps({k:v for k,v in p.items() if k!='rows'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v3-public-${{ matrix.name }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
