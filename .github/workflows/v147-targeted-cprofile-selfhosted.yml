@@ -1,0 +1,102 @@
+name: v147 targeted cProfile
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-targeted-cprofile-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+      - name: Profile known hot steps and dump reorder source
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import cProfile, importlib.util, inspect, io, json, pstats, sys, time
+          from pathlib import Path
+          from kaggle_environments import make
+
+          CASES=[(692,0,{629}),(689,0,{673}),(682,0,{524,529,600,673})]
+          uid=0; records=[]
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_cp_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          def last_callable(m):
+              fn=None
+              for v in vars(m).values():
+                  if callable(v): fn=v
+              return fn
+
+          # Source snapshot from reconstructed exact candidate.
+          srcmod=load('tmp/v147.py')
+          Path('results/v111_reorder_source.txt').write_text(inspect.getsource(srcmod._v111_reorder),encoding='utf-8')
+
+          for seed,seat,targets in CASES:
+              m=load('tmp/v147.py'); champ=last_callable(load('tmp/v115.py'))
+              orig=m._V147_PARENT
+              def profiled_parent(obs,cfg=None,_orig=orig,_seed=seed,_seat=seat,_targets=targets):
+                  step=int(obs.get('step',0))
+                  if step not in _targets:
+                      return _orig(obs,cfg)
+                  pr=cProfile.Profile(); w0=time.perf_counter_ns(); c0=time.process_time_ns()
+                  pr.enable()
+                  try: return _orig(obs,cfg)
+                  finally:
+                      pr.disable(); wall=(time.perf_counter_ns()-w0)/1e6; cpu=(time.process_time_ns()-c0)/1e6
+                      s=io.StringIO(); pstats.Stats(pr,stream=s).strip_dirs().sort_stats('cumulative').print_stats(60)
+                      rec={'seed':_seed,'seat':_seat,'step':step,'wall_ms':wall,'cpu_ms':cpu,'stats':s.getvalue()}
+                      records.append(rec)
+                      Path(f'results/cprofile_seed{_seed}_seat{_seat}_step{step}.txt').write_text(s.getvalue(),encoding='utf-8')
+              m._V147_PARENT=profiled_parent
+              cand=m.agent; agents=[cand,champ] if seat==0 else [champ,cand]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              assert [x.get('status') for x in env.state]==['DONE','DONE']
+          Path('results/summary.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
+          print(json.dumps([{k:v for k,v in r.items() if k!='stats'} for r in records],indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-targeted-cprofile-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
