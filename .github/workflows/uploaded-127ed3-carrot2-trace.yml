@@ -36,12 +36,12 @@ jobs:
           raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
           assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
           src=raw.decode('utf-8').replace('\r\n','\n')
-          old='''                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n                    units[i] = ["PLANT", "CARROT"]\n'''
-          new='''                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n                    _CA_DETAIL_TRACE.append({\n                        "step": step, "day": day, "seat": seat, "pos": list(pos),\n                        "p_c": p_c, "p_w": p_w, "wheat_total": _ca_wheat_total(observation),\n                        "feed1": _ca_feed_need(seat, step, 1), "feed2": _ca_feed_need(seat, step, 2),\n                        "feed3": _ca_feed_need(seat, step, 3), "wu": wu, "cu": cu,\n                        "edge": cu * (p_c - _CA_DROP) - 20 - (wu * p_w - 10),\n                        "spare_wheat": st["spare_wheat"], "spare_carrot": st["spare_carrot"]})\n                    units[i] = ["PLANT", "CARROT"]\n'''
-          assert src.count(old)==1,src.count(old)
+          cond='                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n'
+          assert src.count(cond)==1,src.count(cond)
+          inject=cond+'''                    _CA_DETAIL_TRACE.append({\n                        "step": step, "day": day, "seat": seat, "pos": list(pos),\n                        "p_c": p_c, "p_w": p_w, "wheat_total": _ca_wheat_total(observation),\n                        "feed1": _ca_feed_need(seat, step, 1), "feed2": _ca_feed_need(seat, step, 2),\n                        "feed3": _ca_feed_need(seat, step, 3), "wu": wu, "cu": cu,\n                        "edge": cu * (p_c - _CA_DROP) - 20 - (wu * p_w - 10),\n                        "spare_wheat": st["spare_wheat"], "spare_carrot": st["spare_carrot"]})\n'''
           marker='_CA_STATE = {}\n'
-          assert src.count(marker)==1
-          src=src.replace(marker,marker+'_CA_DETAIL_TRACE = []\n',1).replace(old,new,1)
+          assert src.count(marker)==1,src.count(marker)
+          src=src.replace(marker,marker+'_CA_DETAIL_TRACE = []\n',1).replace(cond,inject,1)
           suffix='''\n\n# Safety-only wrapper v3 for trace build.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
           Path('tmp/trace.py').write_text(src+suffix,encoding='utf-8')
           '@ | python -
@@ -75,8 +75,7 @@ jobs:
               return float(obs['farms'][s]['money'])
           for seed in seeds:
               for cs in (0,1):
-                  paths=[C,H] if cs==0 else [H,C]; loaded=[]; errors=[[],[]]
-                  agents=[]
+                  paths=[C,H] if cs==0 else [H,C]; loaded=[]; errors=[[],[]]; agents=[]
                   for seat,p in enumerate(paths):
                       a=load_like_kaggle(p); loaded.append(a)
                       def w(obs,cfg=None,_a=a,_s=seat):
@@ -86,18 +85,16 @@ jobs:
                   env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
                   ca=loaded[cs].__globals__.get('_CA_DETAIL_TRACE',[])
                   m=[money(env,0),money(env,1)]
-                  row={'seed':seed,'candidate_seat':cs,'delta':m[cs]-m[1-cs],'candidate_money':m[cs],
-                       'champion_money':m[1-cs],'trace':ca,'swap_count':len(ca),'errors':errors}
+                  row={'seed':seed,'candidate_seat':cs,'delta':m[cs]-m[1-cs],'candidate_money':m[cs],'champion_money':m[1-cs],'trace':ca,'swap_count':len(ca),'errors':errors}
                   rows.append(row); print('TRACE',json.dumps(row))
-          out={'candidate':'instrumentation-only safety-v3','seeds':seeds,'rows':rows,
-               'exceptions':sum(len(e) for r in rows for e in r['errors'])}
+          out={'candidate':'instrumentation-only safety-v3','seeds':seeds,'rows':rows,'exceptions':sum(len(e) for r in rows for e in r['errors'])}
           Path('results/carrot2_trace.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
           assert out['exceptions']==0
           '@ | python -
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: uploaded-127ed3-carrot2-trace
+          name: uploaded-127ed3-carrot2-trace-v2
           path: results/
           if-no-files-found: error
           retention-days: 30
