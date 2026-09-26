@@ -1,0 +1,128 @@
+name: v148 duplicate SELL guard Ubuntu evaluation
+
+on:
+  push:
+    branches: [eval-v148-duplicate-sell-guard-20260926]
+    paths: [".github/workflows/v148-duplicate-sell-guard-ubuntu.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact champion and candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v148_duplicate_sell_guard.py tmp/v115.py tmp/v148.py
+          python -m py_compile tmp/v115.py tmp/v147.py tmp/v148.py ci/build_v148_duplicate_sell_guard.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected={'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2','tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'}
+          for p,w in expected.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          print('tmp/v148.py',hashlib.sha256(Path('tmp/v148.py').read_bytes()).hexdigest())
+          PY
+      - name: Synthetic guard test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import runpy
+          ns=runpy.run_path('tmp/v148.py'); f=ns['_v148_has_duplicate_sell_items']
+          assert f({'market':[['SELL','CARROT',4],['SELL','CARROT',2],['SELL','WHEAT',2]]})
+          assert not f({'market':[['SELL','CARROT',4],['SELL','WHEAT',2],['HIRE']]})
+          assert not f({'market':[[],['HIRE']]})
+          print('synthetic guard PASS')
+          PY
+      - name: Runtime preflight
+        run: python scripts/eval.py tmp/v148.py tmp/v115.py -n 1 -j 1 --seed-start 681 --json results/runtime_681.json
+      - name: Burned matched direct
+        run: python scripts/eval.py tmp/v148.py tmp/v115.py -n 12 -j 4 --seed-start 681 --json results/burned_v148_vs_v115.json
+      - name: Burned safety gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/burned_v148_vs_v115.json').read_text()); by={}
+          for g in d.get('matches_detail',[]): by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]; vals=[r['delta'] for r in rows]
+          r691=next(r for r in rows if r['seed']==691)
+          exc=d.get('exceptions') or {}
+          def exc_count(x):
+              if isinstance(x,dict): return sum(exc_count(v) for v in x.values())
+              if isinstance(x,list): return sum(exc_count(v) for v in x)
+              if isinstance(x,(int,float)): return int(x)
+              return 0
+          out={'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals),'worst':min(vals),'best':max(vals),'rows':rows,'seed691_min_leg':min(r691['seat_diffs']),'exceptions':exc_count(exc)}
+          out['gate_pass']=out['losses']==0 and out['mean']>=45.0 and out['worst']>=0 and out['seed691_min_leg']>=0 and out['exceptions']==0
+          Path('results/burned_gate.json').write_text(json.dumps(out,indent=2)); print(json.dumps(out,indent=2))
+          if not out['gate_pass']: raise SystemExit('burned gate failed; sealed seeds remain unused')
+          PY
+      - name: Known public regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v148.py --champion tmp/v115.py --opponent starter --seed-start 661 --seed-count 4 --jobs 2 --out results/public_starter.json
+          for spec in beat_v48 bl_v20 bl_v21 farming_v2 frontier_prvsiyan; do
+            python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v148.py --champion tmp/v115.py --opponent opponents/$spec/main.py --seed-start 661 --seed-count 4 --jobs 2 --out results/public_$spec.json
+          done
+      - name: Unused sealed direct 701-712
+        run: python scripts/eval.py tmp/v148.py tmp/v115.py -n 12 -j 4 --seed-start 701 --json results/sealed_701_712.json
+      - name: Stress direct 713-732
+        run: python scripts/eval.py tmp/v148.py tmp/v115.py -n 20 -j 4 --seed-start 713 --json results/stress_713_732.json
+      - name: Aggregate
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,glob,statistics,hashlib
+          from pathlib import Path
+          def direct(path):
+              p=Path(path)
+              if not p.exists(): return None
+              d=json.loads(p.read_text()); by={}
+              for g in d.get('matches_detail',[]): by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':s,'delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]; vals=[r['delta'] for r in rows]
+              return {'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'min_single_seat':min((min(r['seat_diffs']) for r in rows),default=None),'rows':rows,'exceptions':d.get('exceptions')}
+          pubs=[]; vals=[]
+          for p in sorted(glob.glob('results/public_*.json')):
+              d=json.load(open(p)); x=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]; vals.extend(x)
+              pubs.append({'name':Path(p).stem,'wins':sum(v>0 for v in x),'losses':sum(v<0 for v in x),'ties':sum(v==0 for v in x),'mean':statistics.fmean(x) if x else None,'worst':min(x) if x else None,'best':max(x) if x else None,'candidate_exceptions':d.get('candidate_exceptions')})
+          out={'candidate':'v148_duplicate_sell_guard','parent':'v147_confirmed_v111_clone','formal_champion':'v115_champion_same_turn_open_squeeze','candidate_sha256':hashlib.sha256(Path('tmp/v148.py').read_bytes()).hexdigest() if Path('tmp/v148.py').exists() else None,'champion_sha256':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2','engine':'kaggle_environments==1.32.7','metric':'candidate_minus_champion = candidate - champion','burned':direct('results/burned_v148_vs_v115.json'),'public':{'pairs':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'panels':pubs},'sealed':direct('results/sealed_701_712.json'),'stress':direct('results/stress_713_732.json')}
+          Path('results/v148_summary.json').write_text(json.dumps(out,indent=2)); print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-duplicate-sell-guard-ubuntu-results
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
