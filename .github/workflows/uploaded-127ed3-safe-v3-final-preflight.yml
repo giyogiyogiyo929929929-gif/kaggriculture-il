@@ -1,0 +1,177 @@
+name: uploaded 127ed3 safety-v3 final submission preflight
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v3-final-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install and verify official Kaggriculture 1.32.7
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'; if ($LASTEXITCODE -ne 0) { throw 'engine install failed' }
+          python -m pip install jsonschema requests; if ($LASTEXITCODE -ne 0) { throw 'dependency install failed' }
+          @'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          version=importlib.metadata.version('kaggle-environments')
+          got=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          want='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          print('engine='+version)
+          print('kaggriculture_sha256='+got)
+          assert version=='1.32.7',version
+          assert got==want,(got,want)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'engine identity check failed' }
+
+      - name: Reconstruct exact raw parent and safety-v3
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results,results\package | Out-Null
+          @'
+          import base64,gzip,hashlib
+          from pathlib import Path
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert len(raw)==501543,len(raw)
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix
+          Path('tmp/raw.py').write_bytes(raw)
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          assert hashlib.sha256(safe).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          compile(raw.decode('utf-8'),'tmp/raw.py','exec')
+          compile(safe.decode('utf-8'),'tmp/safe_v3.py','exec')
+          print('raw_sha256',hashlib.sha256(raw).hexdigest())
+          print('safe_v3_sha256',hashlib.sha256(safe).hexdigest())
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'candidate reconstruction/hash/syntax failed' }
+          python -m py_compile tmp\raw.py tmp\safe_v3.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+
+      - name: Static audit and Kaggle loader safety
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          from scripts.preflight import check_imports,load_like_kaggle,call_like_kaggle,BROKEN_OBSERVATIONS
+          from scripts.analysis.audit_agent import audit_file
+
+          for name in ('raw','safe_v3'):
+              chk=check_imports([Path('tmp')/f'{name}.py'])
+              print(name,chk.line())
+              assert chk.ok,chk.detail
+
+          base=Counter((depth,what) for _,depth,_,what in audit_file('tmp/raw.py'))
+          cand=Counter((depth,what) for _,depth,_,what in audit_file('tmp/safe_v3.py'))
+          new=cand-base
+          print('new_wrapper_risky_signatures',dict(new))
+          assert not new,new
+
+          agent=load_like_kaggle(Path('tmp/safe_v3.py'))
+          assert getattr(agent,'__name__',None)=='agent',getattr(agent,'__name__',None)
+          rows=[]
+          for obs in BROKEN_OBSERVATIONS:
+              try:
+                  action=call_like_kaggle(agent,obs,None)
+                  ok=isinstance(action,dict) and set(action)=={'farmer','hands','market'} and all(isinstance(action[k],list) for k in action)
+                  rows.append({'ok':ok,'error':None,'action':action})
+              except Exception as exc:
+                  rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+          print(json.dumps(rows,indent=2))
+          assert all(r['ok'] for r in rows),rows
+          Path('results/final_loader_audit.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'static/loader audit failed' }
+
+      - name: Official-engine full 720-turn smoke both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          agent=load_like_kaggle(Path('tmp/safe_v3.py'))
+          rows=[]
+          for swap in (False,True):
+              errors=[]
+              def wrapped(obs,config=None):
+                  try:
+                      return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:
+                      errors.append(f'{type(exc).__name__}: {exc}')
+                      return {'farmer':['PASS'],'hands':[],'market':[]}
+              env=make('kaggriculture',configuration={'seed':641})
+              env.run(['starter',wrapped] if swap else [wrapped,'starter'])
+              seat=1 if swap else 0
+              row={'seed':641,'swap':swap,'seat':seat,'status':env.state[seat].get('status'),'errors':errors}
+              print(row)
+              assert row['status']=='DONE',row
+              assert not errors,row
+              rows.append(row)
+          Path('results/final_smoke.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'official-engine smoke failed' }
+
+      - name: Build and verify exact submission archive
+        run: |
+          $ErrorActionPreference='Stop'
+          Copy-Item tmp\safe_v3.py results\package\main.py
+          @'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          main=Path('results/package/main.py')
+          archive=Path('results/uploaded_127ed3_safety_v3_submission.tar.gz')
+          expected_main='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          got=hashlib.sha256(main.read_bytes()).hexdigest()
+          assert got==expected_main,(got,expected_main)
+          with tarfile.open(archive,'w:gz') as t:
+              t.add(main,arcname='main.py')
+          with tarfile.open(archive,'r:gz') as t:
+              names=t.getnames(); extracted=t.extractfile('main.py').read()
+          assert names==['main.py'],names
+          assert hashlib.sha256(extracted).hexdigest()==expected_main
+          assert archive.stat().st_size < 100*1024*1024,archive.stat().st_size
+          meta={
+            'candidate':'uploaded_127ed3_safety_v3',
+            'raw_parent_sha256':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652',
+            'main_sha256':expected_main,
+            'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),
+            'archive_bytes':archive.stat().st_size,
+            'members':names,
+            'engine':'kaggle_environments==1.32.7',
+            'engine_kaggriculture_sha256':'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          }
+          Path('results/final_package_meta.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          print(json.dumps(meta,indent=2))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'package verification failed' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safety-v3-final-preflight
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
