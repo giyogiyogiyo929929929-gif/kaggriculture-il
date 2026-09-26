@@ -1,0 +1,164 @@
+name: uploaded 127ed3 vs v147 dev eval
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-v147-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install official engine
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git patch.exe missing' }
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          @'
+          import hashlib, importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          got=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          want='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          print('engine_sha',got); assert got==want,(got,want)
+          '@ | python -
+
+      - name: Reconstruct exact uploaded candidate and v147 champion
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib
+          from pathlib import Path
+          root=Path('ci/uploaded_127ed3')
+          names=[root/f'part{i:02d}.b64' for i in range(12)]
+          for p in names: assert p.exists(),p
+          b64=''.join(p.read_text(encoding='ascii') for p in names)
+          raw=gzip.decompress(base64.b64decode(b64))
+          Path('tmp/uploaded.py').write_bytes(raw)
+          got=hashlib.sha256(raw).hexdigest(); want='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          print('candidate_bytes',len(raw)); print('candidate_sha',got); assert got==want,(got,want)
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest(); want='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          print('v147_sha',got); assert got==want,(got,want)
+          '@ | python -
+          python -m py_compile tmp\uploaded.py tmp\v147.py
+
+      - name: Static loader audit
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import ast,json
+          from pathlib import Path
+          from scripts.preflight import check_imports,load_like_kaggle,call_like_kaggle,BROKEN_OBSERVATIONS
+          out={}
+          for name in ('uploaded','v147'):
+              p=Path('tmp')/f'{name}.py'; ast.parse(p.read_text(encoding='utf-8'))
+              chk=check_imports([p]); print(name,chk.line()); assert chk.ok,chk.detail
+              agent=load_like_kaggle(p); out[name]={'callable':getattr(agent,'__name__',None),'broken':[]}
+              for obs in BROKEN_OBSERVATIONS:
+                  try:
+                      a=call_like_kaggle(agent,obs,None); ok=isinstance(a,dict) and set(a)=={'farmer','hands','market'} and all(isinstance(a[k],list) for k in a)
+                      out[name]['broken'].append({'ok':ok,'error':None})
+                  except Exception as e: out[name]['broken'].append({'ok':False,'error':f'{type(e).__name__}: {e}'})
+              print(name,'last_callable',out[name]['callable'],'broken',out[name]['broken'])
+          assert all(x['ok'] for x in out['uploaded']['broken'][:-1]),out['uploaded']
+          Path('results/static.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          '@ | python -
+
+      - name: Matched development H2H with seat swap
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,time,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle,turn_time_stats
+          C=Path('tmp/uploaded.py'); H=Path('tmp/v147.py'); seeds=[641,350003,101,211,347,509,733,911,1201,1601]; games=[]
+          def money(env,seat):
+              candidates=[]
+              try: candidates.append(env.state[seat].get('observation'))
+              except Exception: pass
+              try: candidates.append(env.steps[-1][seat].get('observation'))
+              except Exception: pass
+              for obs in candidates:
+                  if isinstance(obs,dict):
+                      farms=obs.get('farms')
+                      if isinstance(farms,list) and len(farms)>seat and isinstance(farms[seat],dict):
+                          for key in ('money','cash'):
+                              if key in farms[seat]: return float(farms[seat][key])
+              r=env.state[seat].get('reward')
+              if isinstance(r,(int,float)): return float(r)
+              raise RuntimeError(f'cannot extract money seat={seat}')
+          def one(seed,cand_seat):
+              agents=[None,None]; timing=[[],[]]; errors=[[],[]]; paths=[C,H] if cand_seat==0 else [H,C]
+              for seat,p in enumerate(paths):
+                  a=load_like_kaggle(p)
+                  def wrap(obs,config=None,_a=a,_s=seat):
+                      t=time.perf_counter()
+                      try: return call_like_kaggle(_a,obs,config)
+                      except Exception as e:
+                          errors[_s].append(f'{type(e).__name__}: {e}'); return {'farmer':['PASS'],'hands':[],'market':[]}
+                      finally: timing[_s].append(time.perf_counter()-t)
+                  agents[seat]=wrap
+              env=make('kaggriculture',configuration={'seed':seed}); env.run(agents); m=[money(env,0),money(env,1)]; cs=cand_seat; hs=1-cs
+              row={'seed':seed,'candidate_seat':cs,'candidate_money':m[cs],'champion_money':m[hs],'candidate_minus_champion':m[cs]-m[hs],'statuses':[s.get('status') for s in env.state],'errors':errors,'timing_candidate':turn_time_stats(timing[cs]),'timing_champion':turn_time_stats(timing[hs])}
+              print(json.dumps(row)); return row
+          for seed in seeds:
+              games.append(one(seed,0)); games.append(one(seed,1))
+          pairs=[]
+          for seed in seeds:
+              rs=[r for r in games if r['seed']==seed]; ds=[r['candidate_minus_champion'] for r in rs]; total=sum(ds); outcome='W' if total>0 else 'L' if total<0 else 'D'
+              pairs.append({'seed':seed,'seat0_delta':rs[0]['candidate_minus_champion'],'seat1_delta':rs[1]['candidate_minus_champion'],'pair_total_delta':total,'pair_mean_delta':total/2,'outcome':outcome})
+          vals=[p['pair_mean_delta'] for p in pairs]
+          summary={'seeds':seeds,'pairs':pairs,'pair_wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},'mean_pair_delta':statistics.mean(vals),'median_pair_delta':statistics.median(vals),'total_game_delta':sum(r['candidate_minus_champion'] for r in games),'worst_pair_delta':min(vals),'best_pair_delta':max(vals),'seat0_mean':statistics.mean(r['candidate_minus_champion'] for r in games if r['candidate_seat']==0),'seat1_mean':statistics.mean(r['candidate_minus_champion'] for r in games if r['candidate_seat']==1),'exceptions':sum(len(e) for r in games for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in games),'candidate_runtime_worst_ms':max(r['timing_candidate']['worst'] for r in games)*1000,'candidate_runtime_p99_worst_ms':max(r['timing_candidate']['p99'] for r in games)*1000}
+          print('SUMMARY',json.dumps(summary,indent=2)); Path('results/dev_games.json').write_text(json.dumps(games,indent=2),encoding='utf-8'); Path('results/dev_summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-v147-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
