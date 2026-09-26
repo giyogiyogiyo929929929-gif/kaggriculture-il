@@ -1,0 +1,102 @@
+name: acquire public Kaggriculture notebook outputs
+
+on:
+  push:
+    branches: [acquire-public-notebooks-20260926]
+    paths: [".github/workflows/acquire-public-notebook-outputs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install acquisition dependencies
+        run: python -m pip install requests
+      - name: Download public outputs anonymously and audit without execution
+        run: |
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          $code = @'
+          import ast, hashlib, io, json, os, re, zipfile
+          from pathlib import Path
+          import requests
+
+          targets = [
+              ('rayk_rank_agent','raykkretzschmar','kaggriculture-rank-your-agent','best_score_seen_on_public_page=2990.4'),
+              ('kaito_sparse_v43','kaitofukami','103-128-fresh-public-v43-sparse-shop-hybrid','public_score=2882.0'),
+              ('igor_multi_route','flexonafft','kaggriculture-adaptive-replay-agent','best_score_seen_on_public_page=2767.3'),
+              ('tetsutani_adaptive','tetsutani','adaptive-farming-strategy-for-kaggriculture','best_score_seen_on_public_page=2879.7'),
+          ]
+          root=Path('results')
+          report=[]
+          s=requests.Session()
+          s.headers['User-Agent']='kaggriculture-public-audit/2026-09-26'
+          for label,owner,slug,note in targets:
+              url=f'https://www.kaggle.com/api/v1/kernels/output/{owner}/{slug}'
+              row={'label':label,'owner':owner,'slug':slug,'url':url,'note':note}
+              try:
+                  r=s.get(url,timeout=45,allow_redirects=True)
+                  row.update({'status':r.status_code,'content_type':r.headers.get('content-type'),'final_url':r.url,'bytes':len(r.content)})
+                  blob=r.content
+                  if r.status_code==200 and (blob[:2]==b'PK' or 'zip' in (r.headers.get('content-type') or '').lower()):
+                      z=zipfile.ZipFile(io.BytesIO(blob))
+                      names=z.namelist()
+                      row['archive_sha256']=hashlib.sha256(blob).hexdigest()
+                      row['files']=names
+                      outdir=root/label
+                      outdir.mkdir(parents=True,exist_ok=True)
+                      candidates=[]
+                      for name in names:
+                          if name.endswith('/'):
+                              continue
+                          data=z.read(name)
+                          if name.lower().endswith('.py'):
+                              dest=outdir/Path(name).name
+                              if dest.exists():
+                                  dest=outdir/(hashlib.sha256(name.encode()).hexdigest()[:8]+'_'+Path(name).name)
+                              dest.write_bytes(data)
+                              info={'archive_path':name,'saved_as':str(dest),'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)}
+                              try:
+                                  text=data.decode('utf-8')
+                                  tree=ast.parse(text)
+                                  imports=set(); dangerous=[]
+                                  for n in ast.walk(tree):
+                                      if isinstance(n,ast.Import): imports.update(a.name.split('.')[0] for a in n.names)
+                                      elif isinstance(n,ast.ImportFrom) and n.module: imports.add(n.module.split('.')[0])
+                                      elif isinstance(n,ast.Call):
+                                          fn=n.func.id if isinstance(n.func,ast.Name) else None
+                                          if fn in {'eval','exec','compile','__import__','open'}: dangerous.append(fn)
+                                  info.update({'parse':'ok','imports':sorted(imports),'dangerous_name_calls':sorted(set(dangerous))})
+                              except Exception as e:
+                                  info.update({'parse':'failed','parse_error':repr(e)})
+                              candidates.append(info)
+                      row['python_candidates']=candidates
+                      preferred=[x for x in candidates if Path(x['archive_path']).name.lower()=='main.py']
+                      row['main_py_candidates']=preferred
+                  else:
+                      try: row['response_preview']=blob[:500].decode('utf-8','replace')
+                      except Exception: pass
+              except Exception as e:
+                  row['error']=repr(e)
+              report.append(row)
+          (root/'acquisition_report.json').write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding='utf-8')
+          print(json.dumps(report,indent=2,ensure_ascii=False))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-notebook-output-audit
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
