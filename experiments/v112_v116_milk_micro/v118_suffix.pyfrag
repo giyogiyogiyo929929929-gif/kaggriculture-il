@@ -1,0 +1,135 @@
+# v118_premium_scarce_sell_front: move exactly one scarce premium SELL
+# to the front of an all-SELL market action when it is currently behind only
+# low-risk non-scarce SELLs. Sibling of v116/v117; parent=v112.
+_V118_PARENT = agent
+_V118_PREMIUM_BASE = {
+    "STRAWBERRY": 120.0,
+    "MELON": 250.0,
+    "MILK": 160.0,
+    "WOOL": 200.0,
+}
+_V118_LOW_RISK_PREFIX = {"WHEAT", "EGG", "FERTILIZER"}
+_V118_BASE = {
+    "WHEAT": 25.0,
+    "EGG": 50.0,
+    "FERTILIZER": 100.0,
+}
+_V118_REPORT = {
+    "reorders": 0,
+    "units": 0,
+    "moved_positions": 0,
+    "strawberry": 0,
+    "melon": 0,
+    "milk": 0,
+    "wool": 0,
+    "non_sell_blocks": 0,
+    "multi_premium_blocks": 0,
+    "already_front_blocks": 0,
+    "scarcity_blocks": 0,
+    "unsafe_prefix_blocks": 0,
+    "front_race_blocks": 0,
+    "errors": 0,
+    "steps": [],
+}
+
+def _v118_parent(obs, config=None):
+    n = getattr(getattr(_V118_PARENT, "__code__", None), "co_argcount", 1)
+    return _V118_PARENT(*[obs, config][:n])
+
+def _v118_copy_action(action):
+    if not isinstance(action, dict):
+        return action
+    out = dict(action)
+    out["market"] = [
+        list(o) if isinstance(o, (list, tuple)) else o
+        for o in (action.get("market") or [])
+    ]
+    return out
+
+def _v118_market_maps(obs):
+    market = _get(obs, "market", {}) or {}
+    inv = _get(market, "inventory", {}) or {}
+    prices = _get(market, "prices", {}) or {}
+    return inv, prices
+
+def _v118_num(mapping, key, default=0.0):
+    try:
+        return float(_get(mapping, key, default) or default)
+    except Exception:
+        return float(default)
+
+def _v118_is_scarce(obs, item, base, premium_ratio=1.10):
+    inv, prices = _v118_market_maps(obs)
+    qty = _v118_num(inv, item, 10000.0)
+    price = _v118_num(prices, item, base)
+    return qty < 10000.0 and price >= base * premium_ratio
+
+def agent(obs, config=None):
+    action = None
+    try:
+        step = int(_get(obs, "step", 0) or 0)
+        action = _v118_parent(obs, config)
+        if step < 239 or not isinstance(action, dict):
+            return action
+        market = list(action.get("market") or [])
+        if len(market) < 2:
+            return action
+        if any(
+            not (isinstance(o, (list, tuple)) and len(o) >= 3 and o[0] == "SELL")
+            for o in market
+        ):
+            _V118_REPORT["non_sell_blocks"] += 1
+            return action
+
+        premium = [
+            (i, o)
+            for i, o in enumerate(market)
+            if o[1] in _V118_PREMIUM_BASE and max(0, int(o[2])) > 0
+        ]
+        if len(premium) != 1:
+            if len(premium) > 1:
+                _V118_REPORT["multi_premium_blocks"] += 1
+            return action
+
+        idx, order = premium[0]
+        if idx == 0:
+            _V118_REPORT["already_front_blocks"] += 1
+            return action
+        item = order[1]
+        base = _V118_PREMIUM_BASE[item]
+        if not _v118_is_scarce(obs, item, base, 1.10):
+            _V118_REPORT["scarcity_blocks"] += 1
+            return action
+
+        for prior in market[:idx]:
+            pitem = prior[1]
+            if pitem not in _V118_LOW_RISK_PREFIX:
+                _V118_REPORT["unsafe_prefix_blocks"] += 1
+                return action
+            pbase = _V118_BASE[pitem]
+            if _v118_is_scarce(obs, pitem, pbase, 1.05):
+                _V118_REPORT["front_race_blocks"] += 1
+                return action
+
+        out = _v118_copy_action(action)
+        moved = out["market"].pop(idx)
+        out["market"].insert(0, moved)
+        q = max(0, int(moved[2]))
+        _V118_REPORT["reorders"] += 1
+        _V118_REPORT["units"] += q
+        _V118_REPORT["moved_positions"] += idx
+        key = item.lower()
+        if key in _V118_REPORT:
+            _V118_REPORT[key] += 1
+        if len(_V118_REPORT["steps"]) < 64:
+            _V118_REPORT["steps"].append(step)
+        return out
+    except Exception:
+        _V118_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        raise
+
+agent.telemetry = dict(getattr(_V118_PARENT, "telemetry", {}) or {})
+agent.telemetry["premium_scarce_sell_front"] = _V118_REPORT
+agent.__version__ = "v118_premium_scarce_sell_front"

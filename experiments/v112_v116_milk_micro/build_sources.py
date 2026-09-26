@@ -12,11 +12,13 @@ b=b.replace('_V110_REPORT["lead2_shifts" if lead==2 else "lead1_shifts"]+=1; _V1
 b=b.replace('agent.__version__="v110b_wheat_late_batch_lead2"','agent.__version__="v112_wheat_lead3_lowdemand"',1)
 c=b+zlib.decompress(base64.b85decode(parts('suffix'))).decode()
 d=b+'\n'+(root/'v117_suffix.pyfrag').read_text()
+e=b+'\n'+(root/'v118_suffix.pyfrag').read_text()
 entries=[
  ('v110b_wheat_late_batch_lead2.py',a,'c783859b141886ea5bd78e728ea907407d12ac4d8ded08e604c28d97f46a7d0b'),
  ('v112_wheat_lead3_lowdemand.py',b,'1c6e00ff0bd46b16189b1f6a93ce5e498ff8ffb5b0acb33591cdd247cd8b4771'),
  ('v116_milk_micro_lead1.py',c,'7a040533a8086b19435a9a0df592d5189d301c3fb457410adf7291314577fc1c'),
  ('v117_wheat_post_town_delay1.py',d,None),
+ ('v118_premium_scarce_sell_front.py',e,None),
 ]
 for name,text,sha in entries:
  p=root/name
