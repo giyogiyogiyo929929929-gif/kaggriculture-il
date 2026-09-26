@@ -1,0 +1,95 @@
+name: V135 Runtime Final
+
+on:
+  push:
+    branches: [eval-v135-milk-quote-boundary-20260925]
+    paths:
+      - ".github/workflows/v135-runtime-final.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    env:
+      KAGGRICULTURE_SINGLE_GAME_TIMEOUT_SECONDS: "180"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print('engine='+kaggle_environments.__version__)"
+
+      - name: Rebuild exact v121 and v135
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          if (-not (Get-Command patch.exe -ErrorAction SilentlyContinue)) { throw "Git patch.exe not found" }
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "v121/v130 rebuild failed" }
+          python eval_assets/v130/build_v135.py --v130 eval_agents/v130/v130_candidate_late_town_draw_gate24.py --out eval_agents/v130/v135_candidate_milk_quote_boundary.py
+          if ($LASTEXITCODE -ne 0) { throw "v135 build failed" }
+
+      - name: Serial same-seed runtime preflight
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path runtime | Out-Null
+          python scripts/ci/run_exact_pair_guarded.py --candidate eval_agents/v130/v135_candidate_milk_quote_boundary.py --baseline eval_agents/v130/v121_champion_same_turn_unwind.py --seed-start 391001 --seed-count 6 --out runtime/v135.json
+          if ($LASTEXITCODE -ne 0) { throw "v135 runtime panel failed" }
+          python scripts/ci/run_exact_pair_guarded.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline eval_agents/v130/v135_candidate_milk_quote_boundary.py --seed-start 391001 --seed-count 6 --out runtime/v121.json
+          if ($LASTEXITCODE -ne 0) { throw "v121 runtime panel failed" }
+
+      - name: Aggregate runtime
+        run: |
+          $code = @'
+          import json, math, statistics
+          from pathlib import Path
+
+          def pct(xs, q):
+              xs=sorted(float(x) for x in xs)
+              if not xs: return None
+              pos=(len(xs)-1)*q
+              lo=int(math.floor(pos)); hi=int(math.ceil(pos))
+              if lo==hi: return xs[lo]
+              return xs[lo]+(xs[hi]-xs[lo])*(pos-lo)
+
+          def load(path):
+              rows=json.load(open(path,encoding='utf-8'))
+              xs=[x for r in rows for x in r.get('candidate_runtime_ms',[])]
+              exc=sum(int(r.get('candidate_exceptions',0)) for r in rows)
+              ok=all(bool(r.get('ok')) for r in rows)
+              return {
+                  'turns':len(xs), 'median_ms':statistics.median(xs) if xs else None,
+                  'p95_ms':pct(xs,0.95), 'p99_ms':pct(xs,0.99),
+                  'max_ms':max(xs) if xs else None, 'exceptions':exc, 'technical_ok':ok,
+              }
+
+          v135=load('runtime/v135.json'); v121=load('runtime/v121.json')
+          out={'engine':'kaggle_environments==1.32.7','mode':'serial exact-pair preflight','seeds':'391001-391006','v135':v135,'v121':v121}
+          out['nfr_ok']=bool(v135['technical_ok'] and v135['exceptions']==0 and v135['p99_ms'] is not None and v135['p99_ms']<50.0 and v135['max_ms']<200.0)
+          Path('runtime/v135_runtime_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          if not out['nfr_ok']: raise SystemExit('v135 runtime NFR failed')
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v135-runtime-final
+          path: runtime/
+          retention-days: 30
