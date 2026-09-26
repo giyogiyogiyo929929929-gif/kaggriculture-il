@@ -31,7 +31,8 @@ jobs:
           from pathlib import Path
           import base64,lzma,hashlib
           ns=['eval_payload/candidate_127ed.part0','eval_payload/candidate_127ed.part1','eval_payload/candidate_127ed.part2a','eval_payload/candidate_127ed.part2b','eval_payload/candidate_127ed.part3a','eval_payload/candidate_127ed.part3b']
-          raw=lzma.decompress(base64.b85decode(''.join(Path(n).read_text(encoding='ascii') for n in ns).encode()))
+          packed=''.join(''.join(Path(n).read_text(encoding='ascii').split()) for n in ns)
+          raw=lzma.decompress(base64.b85decode(packed.encode()))
           Path('incoming/main.py').write_bytes(raw)
           h=hashlib.sha256(raw).hexdigest()
           print('candidate_bytes',len(raw)); print('candidate_sha256',h)
@@ -67,7 +68,7 @@ jobs:
           from pathlib import Path
           from kaggle_environments.agent import get_last_callable
           from scripts.preflight import check_imports
-          import hashlib,time
+          import time
           for p in [Path('incoming/main.py'),Path('incoming/v147.py')]:
             chk=check_imports([p]); print(p.name,chk.line()); assert chk.ok,chk.detail
             raw=p.read_text(encoding='utf-8')
