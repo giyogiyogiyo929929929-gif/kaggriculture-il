@@ -1,0 +1,200 @@
+name: uploaded 127ed3 vs v147 ledger telemetry diagnostic
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-v147-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify official engine and reconstruct exact agents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git patch.exe missing' }
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          got=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          want='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          print('engine_sha',got); assert got==want,(got,want)
+          root=Path('ci/uploaded_127ed3')
+          b64=''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))
+          raw=gzip.decompress(base64.b64decode(b64))
+          Path('tmp/uploaded.py').write_bytes(raw)
+          got=hashlib.sha256(raw).hexdigest(); want='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          print('candidate_sha',got); assert got==want,(got,want)
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          want='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          print('v147_sha',got); assert got==want,(got,want)
+          '@ | python -
+          python -m py_compile tmp\uploaded.py tmp\v147.py
+
+      - name: Run contrast ledgers and telemetry
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import collections,json,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          from scripts.analysis._common import Ledger, ITEMS
+
+          C=Path('tmp/uploaded.py'); H=Path('tmp/v147.py')
+          seeds=[641,350003,733,911]
+          out=[]
+
+          def jsonable(x,depth=0):
+              if depth>8: return repr(x)
+              if x is None or isinstance(x,(str,int,float,bool)): return x
+              if isinstance(x,dict): return {str(k):jsonable(v,depth+1) for k,v in x.items()}
+              if isinstance(x,(list,tuple)): return [jsonable(v,depth+1) for v in x]
+              try:
+                  return {str(k):jsonable(v,depth+1) for k,v in dict(x).items()}
+              except Exception:
+                  return repr(x)
+
+          def reports(agent):
+              g=getattr(agent,'__globals__',{})
+              result={}
+              for k,v in g.items():
+                  if k.endswith('_REPORT') and isinstance(v,dict):
+                      result[k]=jsonable(v)
+              tele=getattr(agent,'telemetry',None)
+              if tele is not None:
+                  result['__telemetry__']=jsonable(tele)
+              return result
+
+          def money(env,seat):
+              for source in (env.state[seat].get('observation'), env.steps[-1][seat].get('observation')):
+                  if isinstance(source,dict):
+                      farms=source.get('farms')
+                      if isinstance(farms,list) and len(farms)>seat and isinstance(farms[seat],dict):
+                          if 'money' in farms[seat]: return float(farms[seat]['money'])
+              r=env.state[seat].get('reward')
+              if isinstance(r,(int,float)): return float(r)
+              raise RuntimeError('money unavailable')
+
+          def ledger_agg(rows):
+              per={0:{},1:{}}
+              for step,seat,op,item,price in rows:
+                  d=per[seat].setdefault(item,{'sell_qty':0,'sell_revenue':0,'buy_qty':0,'buy_cost':0,'ops':{}})
+                  d['ops'][op]=d['ops'].get(op,0)+1
+                  if op=='SELL': d['sell_qty']+=1; d['sell_revenue']+=price
+                  else: d['buy_qty']+=1; d['buy_cost']+=price
+              for seat in (0,1):
+                  for d in per[seat].values(): d['net_market']=d['sell_revenue']-d['buy_cost']
+              return per
+
+          def compact_steps(env):
+              rows=[]
+              for t,st in enumerate(env.steps):
+                  ents=[]
+                  for seat in (0,1):
+                      ent=st[seat]
+                      obs=ent.get('observation') if isinstance(ent,dict) else None
+                      rec={'action':jsonable(ent.get('action')) if isinstance(ent,dict) else None,
+                           'reward':jsonable(ent.get('reward')) if isinstance(ent,dict) else None,
+                           'status':ent.get('status') if isinstance(ent,dict) else None}
+                      if isinstance(obs,dict):
+                          rec['player']=obs.get('player'); rec['step']=obs.get('step'); rec['day']=obs.get('day'); rec['hour']=obs.get('hour')
+                          farms=obs.get('farms')
+                          if isinstance(farms,list):
+                              rec['farms']=[{k:jsonable(f.get(k)) for k in ('money','shed','seeds','inventory','inventories','hands','farmer','unlocked','hires_today') if isinstance(f,dict) and k in f} for f in farms]
+                          rec['market']=jsonable(obs.get('market'))
+                          rec['town']=jsonable(obs.get('town'))
+                          for k in ('private','shed','seeds','inventory','inventories'):
+                              if k in obs: rec[k]=jsonable(obs.get(k))
+                      ents.append(rec)
+                  rows.append(ents)
+              return rows
+
+          for seed in seeds:
+              for cand_seat in (0,1):
+                  ca=load_like_kaggle(C); ha=load_like_kaggle(H)
+                  paths=[ca,ha] if cand_seat==0 else [ha,ca]
+                  errors=[[],[]]; timings=[[],[]]
+                  agents=[]
+                  for seat,a in enumerate(paths):
+                      def wrap(obs,config=None,_a=a,_s=seat):
+                          t=time.perf_counter()
+                          try: return call_like_kaggle(_a,obs,config)
+                          except Exception as exc:
+                              errors[_s].append(f'{type(exc).__name__}: {exc}')
+                              return {'farmer':['PASS'],'hands':[],'market':[]}
+                          finally: timings[_s].append(time.perf_counter()-t)
+                      agents.append(wrap)
+                  ledger=Ledger()
+                  try:
+                      env=make('kaggriculture',configuration={'seed':seed})
+                      env.run(agents)
+                  finally:
+                      ledger.close()
+                  m=[money(env,0),money(env,1)]; hs=1-cand_seat
+                  row={'seed':seed,'candidate_seat':cand_seat,'money':m,
+                       'candidate_minus_champion':m[cand_seat]-m[hs],
+                       'statuses':[x.get('status') for x in env.state], 'errors':errors,
+                       'candidate_reports':reports(ca),'champion_reports':reports(ha),
+                       'ledger':ledger.rows,'ledger_agg':ledger_agg(ledger.rows),
+                       'candidate_worst_ms':max(timings[cand_seat])*1000,
+                       'champion_worst_ms':max(timings[hs])*1000}
+                  tag=f'seed{seed}_cseat{cand_seat}'
+                  Path(f'results/{tag}_compact_steps.json').write_text(json.dumps(compact_steps(env),ensure_ascii=False),encoding='utf-8')
+                  Path(f'results/{tag}_ledger.json').write_text(json.dumps({'ledger':ledger.rows,'ledger_agg':row['ledger_agg']},ensure_ascii=False,indent=2),encoding='utf-8')
+                  Path(f'results/{tag}_reports.json').write_text(json.dumps({'candidate':row['candidate_reports'],'champion':row['champion_reports']},ensure_ascii=False,indent=2),encoding='utf-8')
+                  out.append({k:v for k,v in row.items() if k not in ('ledger','candidate_reports','champion_reports')})
+                  print(tag,'delta',row['candidate_minus_champion'],'ledger_units',len(ledger.rows),'cand_worst_ms',row['candidate_worst_ms'])
+          Path('results/diagnostic_summary.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-v147-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
