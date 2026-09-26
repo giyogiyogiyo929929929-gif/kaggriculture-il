@@ -68,7 +68,7 @@ def agent(observation, configuration=None):
         _V148_REPORT['errors'] += 1
 
     before_changes = int(_V111_REPORT.get('changed_turns', 0))
-    action = _V147_PARENT(observation, configuration)
+    action = _V148_PARENT(observation, configuration)
     parent_changed = int(_V111_REPORT.get('changed_turns', 0)) > before_changes
 
     try:
