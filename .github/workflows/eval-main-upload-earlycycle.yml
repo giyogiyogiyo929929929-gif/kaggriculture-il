@@ -1,0 +1,132 @@
+name: Eval Uploaded Main EarlyCycle
+
+on:
+  push:
+    branches: [eval-main-upload-earlycycle-20260926]
+    paths:
+      - ".github/workflows/eval-main-upload-earlycycle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "kaggle-environments==1.32.7"
+          python - <<'PY'
+          import kaggle_environments
+          assert kaggle_environments.__version__ == "1.32.7"
+          print("kaggle_environments", kaggle_environments.__version__)
+          PY
+      - name: Rebuild formal champion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          sha256sum eval_agents/v130/v121_champion_same_turn_unwind.py
+      - name: Build isolated EarlyCycle candidate
+        run: |
+          cp eval_agents/v130/v121_champion_same_turn_unwind.py eval_agents/v130/v120_earlycycle_on_v121.py
+          cat >> eval_agents/v130/v120_earlycycle_on_v121.py <<'PY'
+
+          # === isolated EarlyCycle opening port from uploaded main.py ===
+          import copy as _ec_copy
+          _EC_MODE = 'EarlyCycle'
+          _EC_RAW = _ec_copy.deepcopy(_IMPL.chassis.routes[0][:96])
+          _EC_CT = dict(globals().get('CT_TABLE', {}))
+          _EC_STATE = {}
+          _EC_REPORT = dict(selected_opening='EarlyCycle', temporary_crop_seen=0,
+                            temporary_crop_harvested=0, restored_pasture_seen=0,
+                            delivered_extra_wheat=0, extension_errors=0)
+
+          def _ec_install():
+              global CT_TABLE
+              tape = _IMPL.chassis.routes[0]
+              tape[:96] = _ec_copy.deepcopy(_EC_RAW)
+              CT_TABLE = {}
+              tape[0]['market'] = [['BUY_PRODUCT','WHEAT',5],['BUY_SEED','WHEAT',1]]
+              tape[1]['market'] = [o for o in tape[1]['market'] if not (len(o)>=3 and o[0] in ('BUY_PRODUCT','SELL') and o[1]=='WHEAT')]
+              for step,command in {2:['WEST'],3:['WEST'],4:['WEST'],5:['PLANT','WHEAT'],6:['WATER']}.items():
+                  assert tape[step]['hands'][1] == ['PASS']
+                  tape[step]['hands'][1] = command
+              assert tape[29]['hands'][2] == ['BUILD_PASTURE']
+              tape[29]['hands'][2] = ['WATER']
+              for step in range(53,58):
+                  tape[step]['hands'][0] = ['PASS']
+              omw=[['EAST'],['EAST'],['WATER'],['HARVEST'],['BUILD_PASTURE'],['EAST'],['EAST'],['DROP']]
+              for step,command in zip(range(84,92),omw):
+                  assert tape[step]['hands'][0] == ['PASS'], ('OMW tape mismatch', step)
+                  tape[step]['hands'][0] = command
+              assert max(len(a.get('market',[])) for a in tape[:96]) <= 10
+
+          def _ec_sell_extra(action,item,n):
+              if n <= 0: return action
+              orders=[list(o) for o in action.get('market',[])]
+              sell=next((o for o in orders if len(o)>=3 and o[:2]==['SELL',item]),None)
+              if sell is not None: sell[2] += n
+              elif len(orders)<10: orders.append(['SELL',item,n])
+              else: return action
+              return dict(action,market=orders)
+
+          _EC_PARENT = agent
+          def _ec_agent(observation, configuration=None):
+              seat, step = int(observation['player']), int(observation['step'])
+              state = _EC_STATE.get(seat)
+              if state is None or step <= state['step']:
+                  _ec_install()
+                  state = _EC_STATE[seat] = {'step': -1}
+                  _EC_REPORT.update(temporary_crop_seen=0, temporary_crop_harvested=0,
+                                    restored_pasture_seen=0, delivered_extra_wheat=0,
+                                    extension_errors=0)
+              action = _EC_PARENT(observation, configuration)
+              try:
+                  farm=observation['farms'][seat]; private=observation['private']; site=farm['tiles'][4][2]
+                  if step == 6:
+                      _EC_REPORT['temporary_crop_seen'] = int(isinstance(site,dict) and site.get('crop')=='WHEAT')
+                  if step == 91 and len(farm['hands']) >= 1:
+                      if tuple(farm['hands'][0]) == (4,4) and action.get('hands',[[]])[0] == ['DROP']:
+                          n=int(private['inventories'][1].get('WHEAT',0))
+                          action=_ec_sell_extra(action,'WHEAT',n)
+                          _EC_REPORT['delivered_extra_wheat']=n
+              except Exception:
+                  _EC_REPORT['extension_errors'] += 1
+              state['step'] = step
+              return action
+          _ec_agent.telemetry = _EC_REPORT
+          agent = _ec_agent
+          kaggle_agent = _ec_agent
+          PY
+          python -m py_compile eval_agents/v130/v120_earlycycle_on_v121.py
+          sha256sum eval_agents/v130/v120_earlycycle_on_v121.py
+      - name: Exact matched-pair gate
+        run: |
+          mkdir -p results
+          python scripts/ci/run_exact_pair.py \
+            --candidate eval_agents/v130/v120_earlycycle_on_v121.py \
+            --baseline eval_agents/v130/v121_champion_same_turn_unwind.py \
+            --seed-start 360001 \
+            --seed-count 20 \
+            --shard-index 0 \
+            --shard-count 1 \
+            --out results/exact_360001_360020.json
+          cat results/exact_360001_360020.json
+      - name: Upload exact artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: earlycycle-v121-exact
+          path: |
+            eval_agents/v130/v121_champion_same_turn_unwind.py
+            eval_agents/v130/v120_earlycycle_on_v121.py
+            results/
+          retention-days: 30
