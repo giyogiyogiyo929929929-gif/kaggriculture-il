@@ -1,0 +1,192 @@
+name: v147 self-hosted final submission preflight
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v147-selfhosted-final-preflight.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install and verify official Kaggriculture 1.32.7
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          @'
+          import hashlib, importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          version=importlib.metadata.version('kaggle-environments')
+          got=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          want='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          print('engine='+version)
+          print('kaggriculture_sha256='+got)
+          assert version=='1.32.7',version
+          assert got==want,(got,want)
+          '@ | python -
+
+      - name: Reconstruct exact v115 and exact v147
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results,results\package | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          expected={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,want in expected.items():
+              got=hashlib.sha256(Path(p).read_bytes()).hexdigest()
+              print(p,got)
+              assert got==want,(p,got,want)
+          '@ | python -
+
+      - name: Static audit and Kaggle loader parity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          from scripts.preflight import check_imports, load_like_kaggle, call_like_kaggle, BROKEN_OBSERVATIONS
+          from scripts.analysis.audit_agent import audit_file
+
+          for name in ('v115','v147'):
+              chk=check_imports([Path('tmp')/f'{name}.py'])
+              print(name,chk.line())
+              assert chk.ok,chk.detail
+
+          base=Counter((depth,what) for _,depth,_,what in audit_file('tmp/v115.py'))
+          cand=Counter((depth,what) for _,depth,_,what in audit_file('tmp/v147.py'))
+          new=cand-base
+          print('new_candidate_risky_signatures',dict(new))
+          assert not new,new
+
+          out={}
+          for name in ('v115','v147'):
+              agent=load_like_kaggle(Path('tmp')/f'{name}.py')
+              assert getattr(agent,'__name__',None)=='agent',getattr(agent,'__name__',None)
+              rows=[]
+              for obs in BROKEN_OBSERVATIONS:
+                  try:
+                      action=call_like_kaggle(agent,obs,None)
+                      ok=isinstance(action,dict) and set(action)=={'farmer','hands','market'} and all(isinstance(action[k],list) for k in action)
+                      rows.append({'ok':ok,'error':None})
+                  except Exception as exc:
+                      rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+              out[name]=rows
+              assert all(r['ok'] for r in rows[:-1]),(name,rows)
+          assert out['v115'][-1]==out['v147'][-1],(out['v115'][-1],out['v147'][-1])
+          Path('results/final_loader_audit.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          '@ | python -
+
+      - name: Official-engine final smoke both seats
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle, call_like_kaggle
+          agent=load_like_kaggle(Path('tmp/v147.py'))
+          rows=[]
+          for swap in (False,True):
+              errors=[]
+              def wrapped(obs,config=None):
+                  try:
+                      return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:
+                      errors.append(f'{type(exc).__name__}: {exc}')
+                      return {'farmer':['PASS'],'hands':[],'market':[]}
+              env=make('kaggriculture',configuration={'seed':641})
+              env.run(['starter',wrapped] if swap else [wrapped,'starter'])
+              seat=1 if swap else 0
+              row={'seed':641,'swap':swap,'seat':seat,'status':env.state[seat].get('status'),'errors':errors}
+              print(row)
+              assert row['status']=='DONE',row
+              assert not errors,row
+              rows.append(row)
+          Path('results/final_smoke.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+
+      - name: Build and verify exact submission archive
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item tmp\v147.py results\package\main.py
+          @'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          main=Path('results/package/main.py')
+          archive=Path('results/v147_submission.tar.gz')
+          expected_main='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          assert hashlib.sha256(main.read_bytes()).hexdigest()==expected_main
+          with tarfile.open(archive,'w:gz') as t:
+              t.add(main,arcname='main.py')
+          with tarfile.open(archive,'r:gz') as t:
+              names=t.getnames()
+              extracted=t.extractfile('main.py').read()
+          assert names==['main.py'],names
+          assert hashlib.sha256(extracted).hexdigest()==expected_main
+          assert archive.stat().st_size < 100*1024*1024,archive.stat().st_size
+          meta={
+            'candidate':'v147',
+            'main_sha256':expected_main,
+            'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),
+            'archive_bytes':archive.stat().st_size,
+            'members':names,
+            'engine':'kaggle_environments==1.32.7',
+            'engine_kaggriculture_sha256':'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          }
+          Path('results/final_package_meta.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          print(json.dumps(meta,indent=2))
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-final-submission-preflight
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
