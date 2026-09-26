@@ -1,0 +1,27 @@
+name: Export Kaggle Environment Wheel
+on:
+  push:
+    branches: [eval-upload-main-20260926-b]
+    paths: [.github/workflows/export-kaggle-env-wheel.yml]
+  workflow_dispatch:
+
+jobs:
+  export-wheel:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download exact wheel
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path wheelhouse | Out-Null
+          python -m pip download --no-deps --only-binary=:all: --dest wheelhouse kaggle-environments==1.32.7
+          Get-FileHash wheelhouse\* -Algorithm SHA256 | Format-List
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-env-1.32.7-wheel
+          path: wheelhouse/
+          retention-days: 7
