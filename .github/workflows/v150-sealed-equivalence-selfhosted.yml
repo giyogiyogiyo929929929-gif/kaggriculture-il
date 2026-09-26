@@ -1,0 +1,101 @@
+name: v150 sealed action equivalence
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v150-sealed-equivalence-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct v115 v147 v150
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v150.py
+      - name: Sealed-panel action equivalence
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import importlib.util, json, sys, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+          SEEDS=list(range(1701,1713)); uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v150sealed_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          class Cap:
+              def __init__(self,fn): self.fn=fn; self.actions=[]
+              def __call__(self,obs,cfg=None):
+                  out=self.fn(obs,cfg); self.actions.append(out); return out
+          def run(path,seed,seat):
+              m=load(path); champ=load('tmp/v115.py').agent; cap=Cap(m.agent)
+              agents=[cap,champ] if seat==0 else [champ,cap]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              st=[x.get('status') for x in env.state]; rw=[x.get('reward') for x in env.state]
+              if st!=['DONE','DONE']: raise RuntimeError((path,seed,seat,st))
+              return cap.actions,rw,dict(getattr(m,'_V111_REPORT',{}))
+          rows=[]; mismatches=[]; errors=[]; e147=e150=0
+          for seed in SEEDS:
+              for seat in (0,1):
+                  try:
+                      a,ra,ta=run('tmp/v147.py',seed,seat); b,rb,tb=run('tmp/v150.py',seed,seat)
+                      same_a=a==b; same_r=ra==rb
+                      if not same_a:
+                          first=next((i for i,(x,y) in enumerate(zip(a,b)) if x!=y),None)
+                          mismatches.append({'seed':seed,'seat':seat,'first_action_mismatch':first})
+                      if not same_r: mismatches.append({'seed':seed,'seat':seat,'reward147':ra,'reward150':rb})
+                      ea=int(ta.get('evaluations',0)); eb=int(tb.get('evaluations',0)); e147+=ea; e150+=eb
+                      rows.append({'seed':seed,'seat':seat,'same_actions':same_a,'same_rewards':same_r,'eval147':ea,'eval150':eb})
+                  except Exception as e:
+                      errors.append({'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          out={'seeds':SEEDS,'games':len(rows),'action_equivalent':not mismatches and not errors,'mismatches':mismatches,'errors':errors,
+               'v147_evaluations':e147,'v150_evaluations':e150,'evaluation_reduction_fraction':((e147-e150)/e147 if e147 else 0),'rows':rows}
+          Path('results/v150_sealed_equivalence.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert not errors, errors
+          assert not mismatches, mismatches
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v150-sealed-equivalence-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
