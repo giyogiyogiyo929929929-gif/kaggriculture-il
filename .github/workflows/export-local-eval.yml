@@ -7,33 +7,41 @@ permissions:
   contents: read
 jobs:
   export:
-    runs-on: windows-latest
-    timeout-minutes: 20
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - shell: bash
-        run: python -m pip install --upgrade pip && python -m pip install kaggle-environments==1.32.7
-      - name: Rebuild formal champion v121
-        shell: bash
-        run: python scripts/ci/rebuild_eval_agents.py --out-dir eval_agents/v130
-      - name: Assemble local evaluation bundle
-        shell: bash
+      - name: Verify exact engine
         run: |
-          mkdir -p local_eval_bundle/vendor
-          cp eval_agents/v130/v121_champion_same_turn_unwind.py local_eval_bundle/v121_champion.py
-          cp -R scripts local_eval_bundle/scripts
-          python - <<'PY'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+      - name: Rebuild formal champion v121
+        run: |
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "v121 rebuild failed" }
+      - name: Assemble local evaluation bundle
+        run: |
+          New-Item -ItemType Directory -Force -Path local_eval_bundle/vendor | Out-Null
+          Copy-Item eval_agents/v130/v121_champion_same_turn_unwind.py local_eval_bundle/v121_champion.py
+          Copy-Item -Recurse scripts local_eval_bundle/scripts
+          $code = @'
           import pathlib, shutil, kaggle_environments, sys, subprocess
           pkg = pathlib.Path(kaggle_environments.__file__).resolve().parent
-          shutil.copytree(pkg, pathlib.Path('local_eval_bundle/vendor/kaggle_environments'))
+          shutil.copytree(pkg, pathlib.Path('local_eval_bundle/vendor/kaggle_environments'), dirs_exist_ok=True)
           pathlib.Path('local_eval_bundle/python.txt').write_text(sys.version)
           pathlib.Path('local_eval_bundle/pip_freeze.txt').write_text(subprocess.check_output([sys.executable,'-m','pip','freeze'], text=True))
           print('package', pkg)
-          PY
-          sha256sum local_eval_bundle/v121_champion.py > local_eval_bundle/v121_sha256.txt
+          '@
+          $code | python -
+          Get-FileHash local_eval_bundle/v121_champion.py -Algorithm SHA256 | Format-List | Out-File local_eval_bundle/v121_sha256.txt
       - uses: actions/upload-artifact@v4
         with:
           name: local-eval-bundle
