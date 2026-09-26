@@ -48,7 +48,7 @@ The valid evaluation target therefore starts at branch HEAD `5ac0866c1b5ac2772f0
 - pre-fix queued run: `36230251225` — invalid for candidate judgment
 - GitHub-hosted Ubuntu fallback run: `36230319599` — failed before executing workflow steps; infrastructure failure, not candidate failure
 
-At the time of this record, the self-hosted runner is occupied by `export-local-eval` run `36229648381`, whose engine verification and reconstruction steps completed and whose bundle assembly step is still running. Consequently valid v148 run `36230507162` is queued.
+`export-local-eval` run `36229648381`, which had occupied the same self-hosted runner, subsequently completed successfully. After that completion, valid v148 run `36230507162` still remained queued with no job steps started. This is currently an evaluation-infrastructure blocker rather than performance evidence for or against v148. Do not classify the candidate from queue state.
 
 ## Static / syntax / focused test plan
 
@@ -98,7 +98,7 @@ These seeds must not be interpreted before confirming they were actually reached
 
 ## Results
 
-Pending valid run `36230507162`.
+Pending valid run `36230507162`; no valid v148 performance result exists yet.
 
 ## candidate_minus_champion
 
