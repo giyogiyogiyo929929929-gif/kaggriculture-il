@@ -1,0 +1,192 @@
+# v117_wheat_post_town_delay1: delay a native late-batch WHEAT sale by one
+# turn only in high-WHEAT-demand worlds when a deterministic Town-consumption
+# tick can consume existing market inventory first. Sibling of v116; parent=v112.
+_V117_PARENT = agent
+_V117_STATE = {
+    0: {"due_step": -1, "due": 0, "last_step": -1},
+    1: {"due_step": -1, "due": 0, "last_step": -1},
+}
+_V117_REPORT = {
+    "shifts": 0,
+    "units": 0,
+    "market_empty_blocks": 0,
+    "low_demand_blocks": 0,
+    "cash_blocks": 0,
+    "next_slot_blocks": 0,
+    "repay_merges": 0,
+    "repay_inserts": 0,
+    "repay_shortfalls": 0,
+    "errors": 0,
+    "steps": [],
+}
+
+def _v117_parent(obs, config=None):
+    n = getattr(getattr(_V117_PARENT, "__code__", None), "co_argcount", 1)
+    return _V117_PARENT(*[obs, config][:n])
+
+def _v117_planned_wheat(step):
+    if step < 0 or step >= len(_ACTIONS):
+        return 0
+    return sum(
+        max(0, int(o[2]))
+        for o in (_ACTIONS[step].get("market") or [])
+        if len(o) >= 3 and o[0] == "SELL" and o[1] == "WHEAT"
+    )
+
+def _v117_market_inventory(obs):
+    try:
+        market = _get(obs, "market", {}) or {}
+        inv = _get(market, "inventory", {}) or {}
+        return float(_get(inv, "WHEAT", 0) or 0)
+    except Exception:
+        return 0.0
+
+def _v117_copy_action(action):
+    if not isinstance(action, dict):
+        return action
+    out = dict(action)
+    out["market"] = [
+        list(o) if isinstance(o, (list, tuple)) else o
+        for o in (action.get("market") or [])
+    ]
+    return out
+
+def _v117_actual_wheat_sell(action):
+    if not isinstance(action, dict):
+        return 0
+    total = 0
+    for o in (action.get("market") or []):
+        try:
+            if len(o) >= 3 and o[0] == "SELL" and o[1] == "WHEAT":
+                total += max(0, int(o[2]))
+        except Exception:
+            pass
+    return total
+
+def _v117_remove_wheat(action, quantity):
+    out = _v117_copy_action(action)
+    if not isinstance(out, dict):
+        return action, 0
+    rem = max(0, int(quantity))
+    removed = 0
+    new_market = []
+    for o in (out.get("market") or []):
+        if rem > 0 and isinstance(o, (list, tuple)) and len(o) >= 3 and o[0] == "SELL" and o[1] == "WHEAT":
+            z = list(o)
+            oq = max(0, int(z[2]))
+            cut = min(rem, oq)
+            left = oq - cut
+            removed += cut
+            rem -= cut
+            if left > 0:
+                z[2] = left
+                new_market.append(z)
+        else:
+            new_market.append(o)
+    out["market"] = new_market
+    return out, removed
+
+def _v117_add_wheat(action, quantity):
+    out = _v117_copy_action(action)
+    if not isinstance(out, dict):
+        return action, 0, "shortfall"
+    q = max(0, int(quantity))
+    if q <= 0:
+        return out, 0, "none"
+    market = list(out.get("market") or [])
+    for i, o in enumerate(market):
+        if isinstance(o, (list, tuple)) and len(o) >= 3 and o[0] == "SELL" and o[1] == "WHEAT":
+            z = list(o)
+            z[2] = max(0, int(z[2])) + q
+            market[i] = z
+            out["market"] = market
+            return out, q, "merge"
+    if len(market) >= 10:
+        return action, 0, "shortfall"
+    idx = len(market)
+    for i, o in enumerate(market):
+        try:
+            if not (len(o) >= 1 and o[0] == "SELL"):
+                idx = i
+                break
+        except Exception:
+            idx = i
+            break
+    market.insert(idx, ["SELL", "WHEAT", q])
+    out["market"] = market
+    return out, q, "insert"
+
+def agent(obs, config=None):
+    action = None
+    try:
+        seat = int(_seat(obs))
+    except Exception:
+        seat = 0
+    st = _V117_STATE.setdefault(seat, {"due_step": -1, "due": 0, "last_step": -1})
+    try:
+        step = int(_get(obs, "step", 0) or 0)
+        if step <= st["last_step"]:
+            st.update({"due_step": -1, "due": 0, "last_step": -1})
+        st["last_step"] = step
+
+        action = _v117_parent(obs, config)
+
+        if st["due_step"] == step and st["due"] > 0:
+            due = int(st["due"])
+            out, added, mode = _v117_add_wheat(action, due)
+            st["due_step"] = -1
+            st["due"] = 0
+            if added != due:
+                _V117_REPORT["repay_shortfalls"] += due - added
+                return action
+            if mode == "merge":
+                _V117_REPORT["repay_merges"] += 1
+            elif mode == "insert":
+                _V117_REPORT["repay_inserts"] += 1
+            return out
+
+        if step < 300 or step + 1 >= len(_ACTIONS):
+            return action
+        if _v110_wheat_demand_shop_count(obs) < 4:
+            _V117_REPORT["low_demand_blocks"] += 1
+            return action
+        if not _v110_wheat_demand_now(obs, step):
+            return action
+        if _v117_market_inventory(obs) <= 0:
+            _V117_REPORT["market_empty_blocks"] += 1
+            return action
+
+        market = list(action.get("market") or []) if isinstance(action, dict) else []
+        if any(not (isinstance(o, (list, tuple)) and len(o) >= 1 and o[0] == "SELL") for o in market):
+            _V117_REPORT["cash_blocks"] += 1
+            return action
+        next_market = list((_ACTIONS[step + 1].get("market") or []))
+        if len(next_market) > 7:
+            _V117_REPORT["next_slot_blocks"] += 1
+            return action
+
+        native_q = _v117_planned_wheat(step)
+        actual_q = _v117_actual_wheat_sell(action)
+        q = min(native_q, actual_q)
+        if q <= 0:
+            return action
+
+        out, removed = _v117_remove_wheat(action, q)
+        if removed != q:
+            return action
+        st["due_step"] = step + 1
+        st["due"] = q
+        _V117_REPORT["shifts"] += 1
+        _V117_REPORT["units"] += q
+        if len(_V117_REPORT["steps"]) < 64:
+            _V117_REPORT["steps"].append(step)
+        return out
+    except Exception:
+        _V117_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        raise
+
+agent.telemetry = dict(getattr(_V117_PARENT, "telemetry", {}) or {})
+agent.telemetry["wheat_post_town_delay1"] = _V117_REPORT
+agent.__version__ = "v117_wheat_post_town_delay1"
