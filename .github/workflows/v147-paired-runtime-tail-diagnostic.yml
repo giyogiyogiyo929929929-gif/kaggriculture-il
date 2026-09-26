@@ -1,0 +1,178 @@
+name: v147 paired runtime tail diagnostic
+
+on:
+  push:
+    branches: [diag-v147-runtime-tail-20260926]
+    paths: [".github/workflows/v147-paired-runtime-tail-diagnostic.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-tail:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $code = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $code | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $code = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $code | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+          $code = @'
+          import hashlib
+          from pathlib import Path
+          expected={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in expected.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $code | python -
+      - name: Paired tail diagnostic with GC attribution
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS=[681,682,689,691,692]
+          REPS=2
+          uid=0
+          gc_counts={'v147':[0,0,0],'v115':[0,0,0],'other':[0,0,0]}
+          active='other'
+
+          def gc_cb(phase, info):
+              if phase=='stop':
+                  gen=int(info.get('generation',0))
+                  if 0 <= gen <= 2:
+                      gc_counts.get(active,gc_counts['other'])[gen]+=1
+          gc.callbacks.append(gc_cb)
+
+          def load_agent(path):
+              global uid
+              uid+=1
+              p=Path(path).resolve(); name=f'_rt_diag_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              mod=importlib.util.module_from_spec(spec); sys.modules[name]=mod
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              fn=None
+              for value in vars(mod).values():
+                  if callable(value): fn=value
+              if fn is None: raise RuntimeError(f'no callable in {path}')
+              return fn
+
+          class Timed:
+              def __init__(self,label,fn):
+                  self.label=label; self.fn=fn
+                  code=getattr(fn,'__code__',None); self.argcount=code.co_argcount if code else 2
+                  self.calls=[]
+              def __call__(self,obs,config=None):
+                  global active
+                  before=tuple(gc_counts[self.label])
+                  active=self.label
+                  t0=time.perf_counter_ns()
+                  try:
+                      out=self.fn(*[obs,config][:self.argcount])
+                  finally:
+                      dt=(time.perf_counter_ns()-t0)/1_000_000.0
+                      active='other'
+                  after=tuple(gc_counts[self.label])
+                  self.calls.append({'ms':dt,'gc':[after[i]-before[i] for i in range(3)]})
+                  return out
+
+          def q(vals,p):
+              s=sorted(vals)
+              return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))] if s else None
+
+          def stats(records):
+              vals=[x['ms'] for x in records]
+              gc_calls=[x for x in records if any(x['gc'])]
+              long200=[x for x in records if x['ms']>=200.0]
+              long100=[x for x in records if x['ms']>=100.0]
+              return {
+                'calls':len(vals),'median_ms':statistics.median(vals),'p95_ms':q(vals,.95),'p99_ms':q(vals,.99),'max_ms':max(vals),
+                'over_100ms':len(long100),'over_200ms':len(long200),'gc_calls':len(gc_calls),
+                'max_gc_call_ms':max((x['ms'] for x in gc_calls),default=None),
+                'max_non_gc_call_ms':max((x['ms'] for x in records if not any(x['gc'])),default=None),
+                'top10':sorted(records,key=lambda x:x['ms'],reverse=True)[:10],
+              }
+
+          all_rec={'v147':[],'v115':[]}; rows=[]; errors=[]
+          assert gc.isenabled()
+          for rep in range(REPS):
+              for seed in SEEDS:
+                  for seat in (0,1):
+                      try:
+                          c=Timed('v147',load_agent('tmp/v147.py'))
+                          h=Timed('v115',load_agent('tmp/v115.py'))
+                          agents=[c,h] if seat==0 else [h,c]
+                          env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                          env.run(agents)
+                          statuses=[x.get('status') for x in env.state]
+                          if statuses != ['DONE','DONE']:
+                              raise RuntimeError((seed,seat,statuses))
+                          all_rec['v147'].extend(c.calls); all_rec['v115'].extend(h.calls)
+                          rows.append({'rep':rep,'seed':seed,'candidate_seat':seat,'statuses':statuses,'v147':stats(c.calls),'v115':stats(h.calls)})
+                      except Exception as e:
+                          errors.append({'rep':rep,'seed':seed,'candidate_seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          out={
+            'engine':'kaggle_environments==1.32.7','mode':'same-episode paired timing; GC enabled',
+            'seeds':SEEDS,'reps':REPS,'seat_swap':True,'gc_enabled':gc.isenabled(),'errors':errors,
+            'v147':stats(all_rec['v147']),'v115':stats(all_rec['v115']),
+            'gc_collections_attributed':gc_counts,'rows':rows,
+          }
+          out['delta']={
+            'p99_ms':out['v147']['p99_ms']-out['v115']['p99_ms'],
+            'max_ms':out['v147']['max_ms']-out['v115']['max_ms'],
+            'over_200ms':out['v147']['over_200ms']-out['v115']['over_200ms'],
+          }
+          Path('results/v147_paired_runtime_tail.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert not errors, errors
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-paired-runtime-tail-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
