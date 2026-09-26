@@ -68,7 +68,9 @@ jobs:
           def block(a,b,label):
               rows=[]; exa=exb=0
               for seed in seeds:
-                  s=evaluate(a,b,pairs=1,jobs=2,seed_start=seed); exa+=s['exceptions']['a']; exb+=s['exceptions']['b']
+                  # Keep this serial: on Windows a ProcessPool spawned from `python -`
+                  # cannot reliably re-import the stdin __main__ module.
+                  s=evaluate(a,b,pairs=1,jobs=1,seed_start=seed); exa+=s['exceptions']['a']; exb+=s['exceptions']['b']
                   vals=[float(g['money'][0])-float(g['money'][1]) for g in s['matches_detail']]
                   v=statistics.mean(vals); rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':v,'outcome':'W' if v>0 else 'L' if v<0 else 'D'})
               vals=[r['pair_mean_delta'] for r in rows]; se=statistics.stdev(vals)/math.sqrt(len(vals))
