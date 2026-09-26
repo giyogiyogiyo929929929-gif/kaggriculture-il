@@ -1,0 +1,142 @@
+name: v148 focused telemetry self-hosted
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v148-focused-telemetry-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v148_v147_unique_sell_guard.py tmp\v115.py tmp\v148.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v148.py
+      - name: Focused first-divergence telemetry
+        run: |
+          $code = @'
+          import copy, importlib.util, json, sys
+          from collections import Counter
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS = [682, 689, 691]
+          uid = 0
+
+          def load_agent(path):
+              global uid
+              uid += 1
+              p=Path(path).resolve(); name=f'_v148_diag_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              mod=importlib.util.module_from_spec(spec); sys.modules[name]=mod
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              fn=None
+              for value in vars(mod).values():
+                  if callable(value): fn=value
+              if fn is None: raise RuntimeError(path)
+              return fn
+
+          def compact_obs(obs):
+              p=int(obs.get('player',0)); farms=obs.get('farms') or []
+              return {'step':int(obs.get('step',-1)),'player':p,'money':[int(f.get('money',0)) for f in farms],
+                      'market':copy.deepcopy(obs.get('market') or {}),'shed':copy.deepcopy((obs.get('private') or {}).get('shed') or {})}
+
+          class Recorder:
+              def __init__(self,fn):
+                  self.fn=fn; code=getattr(fn,'__code__',None); self.argcount=code.co_argcount if code else 2; self.trace=[]
+              def __call__(self,obs,config=None):
+                  a=self.fn(*[obs,config][:self.argcount])
+                  self.trace.append({'obs':compact_obs(obs),'action':copy.deepcopy(a),'telemetry':copy.deepcopy(getattr(self.fn,'telemetry',None))})
+                  return a
+
+          def run(seed,a_path,b_path):
+              a=Recorder(load_agent(a_path)); b=Recorder(load_agent(b_path))
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run([a,b])
+              return {'a':a.trace,'b':b.trace,'rewards':[s.get('reward') for s in env.state],'statuses':[s.get('status') for s in env.state]}
+
+          def by_step(t): return {int(x['obs']['step']):x for x in t}
+          def market(row): return [list(x) for x in ((row.get('action') or {}).get('market') or [])]
+          def sells(row): return [x for x in market(row) if len(x)>=3 and x[0]=='SELL']
+          def dup(row):
+              seen=set()
+              for o in sells(row):
+                  if o[1] in seen: return True
+                  seen.add(o[1])
+              return False
+
+          def first_div(c_trace,t_trace):
+              c=by_step(c_trace); t=by_step(t_trace)
+              first=next((s for s in sorted(set(c)&set(t)) if c[s]['action']!=t[s]['action']),None)
+              if first is None: return {'first_divergence':None}
+              cr,tr=c[first],t[first]; cm=[tuple(o) for o in market(cr)]; tm=[tuple(o) for o in market(tr)]
+              return {'first_divergence':first,'observation_equal':cr['obs']==tr['obs'],'control_action':cr['action'],'candidate_action':tr['action'],
+                      'control_duplicate_sell':dup(cr),'candidate_duplicate_sell':dup(tr),
+                      'control_only':[list(x) for x in (Counter(cm)-Counter(tm)).elements()],
+                      'candidate_only':[list(x) for x in (Counter(tm)-Counter(cm)).elements()],
+                      'control_obs':cr['obs'],'candidate_obs':tr['obs'],'candidate_telemetry':tr.get('telemetry')}
+
+          out={'candidate':'v148_v147_unique_sell_guard','champion':'v115_champion_same_turn_open_squeeze','seeds':[]}
+          for seed in SEEDS:
+              control=run(seed,'tmp/v115.py','tmp/v115.py')
+              t0=run(seed,'tmp/v148.py','tmp/v115.py')
+              t1=run(seed,'tmp/v115.py','tmp/v148.py')
+              d0=first_div(control['a'],t0['a']); d1=first_div(control['b'],t1['b'])
+              row={'seed':seed,'control_rewards':control['rewards'],'seat0_rewards':t0['rewards'],'seat1_rewards':t1['rewards'],
+                   'delta0':t0['rewards'][0]-t0['rewards'][1],'delta1':t1['rewards'][1]-t1['rewards'][0],
+                   'seat0_first':d0,'seat1_first':d1,
+                   'seat0_final_telemetry':t0['a'][-1].get('telemetry') if t0['a'] else None,
+                   'seat1_final_telemetry':t1['b'][-1].get('telemetry') if t1['b'] else None}
+              out['seeds'].append(row)
+              print(json.dumps({'seed':seed,'d0':d0.get('first_divergence'),'d1':d1.get('first_divergence'),'delta0':row['delta0'],'delta1':row['delta1'],'tel0':row['seat0_final_telemetry'],'tel1':row['seat1_final_telemetry']}))
+          Path('results/v148_focused_telemetry.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-focused-telemetry-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
