@@ -1,0 +1,32 @@
+name: v112-v117-current-lineage-eval
+on:
+  push:
+    branches: [eval/v112-v116-milk-micro-20260926]
+    paths:
+      - ".github/workflows/v112-v117-current.yml"
+      - "experiments/v112_v116_milk_micro/build_sources.py"
+      - "experiments/v112_v116_milk_micro/v117_suffix.pyfrag"
+      - "experiments/v112_v116_milk_micro/run_v117_eval.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: python -m pip install "kaggle-environments==1.32.7"
+      - run: |
+          cd experiments/v112_v116_milk_micro
+          python build_sources.py
+          python -m py_compile v112_wheat_lead3_lowdemand.py v117_wheat_post_town_delay1.py run_v117_eval.py
+          python run_v117_eval.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v112-v117-current-eval
+          path: experiments/v112_v116_milk_micro/v117_eval.json
+          if-no-files-found: error
