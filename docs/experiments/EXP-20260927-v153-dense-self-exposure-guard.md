@@ -69,9 +69,9 @@ Confirmed direct burned evidence on seeds 681..692:
 - best `+150`
 - exceptions `0`
 
-The corrected self-hosted gate is run `36256798350`; at the latest check it is queued because the self-hosted runner is occupied by the separate runtime-v150 hard-opponent regression run `36256381428`. A GitHub-hosted hard-gate attempt ended before meaningful match execution and is infrastructure-only evidence, not a v153 tactical regression.
+A GitHub-hosted hard-gate attempt ended before meaningful match execution and is infrastructure-only evidence, not a v153 tactical regression.
 
-## Static contingency analysis while runner is occupied
+## Static contingency analysis while runner was occupied
 
 No fresh seed was consumed. Existing diagnostic compact-step artifacts were scanned for the exact v153 eligibility shape: steps 288..693, action begins with a contiguous leading SELL block, at least five SELL orders, all distinct items.
 
@@ -86,8 +86,33 @@ Observed v147 eligible contexts:
 
 This does not prove that v153 would reorder every eligible block, because eligibility is broader than the final self-exposure sort actually changing the order. It does show that the structural trigger is concentrated in the two known loss contexts and nearly absent in the two win controls.
 
-The focused causal win occurs at step 649. Therefore, if the hard panel later exposes a regression associated with late activation, the first refinement to test should be a single-condition window tightening around the observed causal region (for example excluding the late step-674 class) rather than changing farm logic, quantities, or the exposure score itself. Do not create that successor unless hard-panel evidence identifies an actual regression.
+The focused causal win occurs at step 649. Therefore, if a later sealed or stress panel exposes a regression associated with late activation, the first refinement to test should be a single-condition window tightening around the observed causal region (for example excluding the late step-674 class) rather than changing farm logic, quantities, or the exposure score itself.
 
-## Initial decision
+## Corrected hard-opponent gate result
 
-KEEP TESTING.
+Self-hosted run `36256798350` completed successfully after the direct matched gate correction.
+
+Panel: eight hard opponents (`peak_2950`, `salem_2900`, `score_2820`, `jaxa_2802`, `thomas_router_95`, `tetsutani_ms`, `melon_squeeze`, `shop_router_v7`) × seeds 520101..520104 × both seats = 64 games.
+
+Outcome transitions:
+
+- `W→W`: 62
+- `L→W`: 2
+- regressions (`W→D`, `W→L`, `D→L`): 0
+- improvements: 2
+- exceptions: 0
+
+Both improvements are the intended causal cell, `score_2820` seed 520104, one in each seat:
+
+- champion margin: -9
+- candidate margin: +34
+- margin improvement: +43
+- candidate-minus-champion final money: +20 per seat
+
+All other 62 games preserved their outcome. Seven of the eight opponents had exactly zero candidate-minus-champion cash delta on all four seed pairs. `score_2820` had mean seed-level cash delta +54.5 with worst 0; aggregate hard-panel seed-level mean was +6.8125 and worst was 0.
+
+This gate therefore shows a narrowly localized benefit with no observed hard-opponent outcome or cash regression. It is materially stronger than the focused result alone, but fresh sealed evidence and runtime/stress remain required before promotion.
+
+## Current decision
+
+KEEP TESTING. Formal champion remains v147. Proceed to runtime/stress on already-consumed seeds; only after that passes may v153 spend a genuinely unused sealed block.
