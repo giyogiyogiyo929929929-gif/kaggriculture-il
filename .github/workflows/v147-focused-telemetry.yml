@@ -1,0 +1,154 @@
+name: v147 focused telemetry
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-focused-telemetry.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and build exact agents
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps kaggle-environments==1.32.7
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          PY
+          (cd tmp && patch --batch -p3 < ../ci/v76.patch)
+          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python -m py_compile tmp/v115.py tmp/v147.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          exp={'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2','tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'}
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          PY
+      - name: Focused first-divergence telemetry
+        run: |
+          python - <<'PY'
+          import copy, importlib.util, json, sys
+          from collections import Counter
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS = [681, 682, 683, 689, 691]
+          HORIZON = 36
+          uid = 0
+
+          def load_agent(path):
+              global uid
+              uid += 1
+              p = Path(path).resolve()
+              name = f'_v147_diag_{uid}'
+              spec = importlib.util.spec_from_file_location(name, p)
+              mod = importlib.util.module_from_spec(spec)
+              sys.modules[name] = mod
+              sys.path.insert(0, str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              agent = None
+              for value in vars(mod).values():
+                  if callable(value): agent = value
+              if agent is None: raise RuntimeError(f'no callable: {path}')
+              return agent
+
+          def compact_obs(obs):
+              market = obs.get('market') or {}; private = obs.get('private') or {}; town = obs.get('town') or {}
+              return {
+                  'step': int(obs.get('step', -1)), 'player': int(obs.get('player', -1)),
+                  'market': {'prices': copy.deepcopy(market.get('prices') or {}), 'inventory': copy.deepcopy(market.get('inventory') or {})},
+                  'private': {'money': private.get('money'), 'shed': copy.deepcopy(private.get('shed') or {})},
+                  'town': copy.deepcopy(town),
+              }
+
+          class Recorder:
+              def __init__(self, fn):
+                  self.fn=fn; code=getattr(fn,'__code__',None); self.argcount=code.co_argcount if code else 2; self.trace=[]
+              def __call__(self, obs, config=None):
+                  action=self.fn(*[obs,config][:self.argcount])
+                  self.trace.append({'obs':compact_obs(obs),'action':copy.deepcopy(action)})
+                  return action
+
+          def run(seed, a_path, b_path):
+              a=Recorder(load_agent(a_path)); b=Recorder(load_agent(b_path))
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run([a,b])
+              return {'a':a.trace,'b':b.trace,'rewards':[s.get('reward') for s in env.state], 'statuses':[s.get('status') for s in env.state]}
+
+          def by_step(trace): return {int(x['obs']['step']):x for x in trace}
+          def orders(row): return [list(x) for x in ((row.get('action') or {}).get('market') or [])]
+          def sells(row): return [o for o in orders(row) if len(o)>=3 and o[0]=='SELL']
+          def buys(row): return [o for o in orders(row) if len(o)>=3 and o[0]=='BUY']
+          def money(row): return (row.get('obs') or {}).get('private',{}).get('money')
+
+          def first_div(c_trace,t_trace,c_opp,t_opp):
+              c=by_step(c_trace); t=by_step(t_trace); co=by_step(c_opp); to=by_step(t_opp)
+              first=next((s for s in sorted(set(c)&set(t)) if c[s]['action']!=t[s]['action']),None)
+              if first is None: return {'first_divergence':None}
+              cr,tr=c[first],t[first]
+              cm=[tuple(o) for o in orders(cr)]; tm=[tuple(o) for o in orders(tr)]
+              removed=[list(x) for x in (Counter(cm)-Counter(tm)).elements()]
+              added=[list(x) for x in (Counter(tm)-Counter(cm)).elements()]
+              window=[]
+              for s in range(max(0,first-2), first+HORIZON+1):
+                  if s not in c or s not in t: continue
+                  window.append({
+                      'step':s,
+                      'control_money':money(c[s]),'treatment_money':money(t[s]),
+                      'control_sells':sells(c[s]),'treatment_sells':sells(t[s]),
+                      'control_buys':buys(c[s]),'treatment_buys':buys(t[s]),
+                      'control_opp_sells':sells(co[s]) if s in co else [],'treatment_opp_sells':sells(to[s]) if s in to else [],
+                  })
+              return {
+                  'first_divergence':first,
+                  'observation_equal_at_divergence':cr['obs']==tr['obs'],
+                  'control_action':cr['action'],'treatment_action':tr['action'],
+                  'control_only_market_orders':removed,'treatment_only_market_orders':added,
+                  'state':cr['obs'],'window':window,
+              }
+
+          out={'candidate':'v147_confirmed_v111_clone','champion':'v115_champion_same_turn_open_squeeze','metric':'candidate_minus_champion','seeds':[]}
+          for seed in SEEDS:
+              control=run(seed,'tmp/v115.py','tmp/v115.py')
+              t0=run(seed,'tmp/v147.py','tmp/v115.py')
+              t1=run(seed,'tmp/v115.py','tmp/v147.py')
+              d0=first_div(control['a'],t0['a'],control['b'],t0['b'])
+              d1=first_div(control['b'],t1['b'],control['a'],t1['a'])
+              row={
+                  'seed':seed,
+                  'control_rewards':control['rewards'],
+                  'seat0_rewards':t0['rewards'],'seat1_rewards':t1['rewards'],
+                  'candidate_minus_champion_seat0':t0['rewards'][0]-t0['rewards'][1],
+                  'candidate_minus_champion_seat1':t1['rewards'][1]-t1['rewards'][0],
+                  'seat0_first_divergence':d0,'seat1_first_divergence':d1,
+              }
+              out['seeds'].append(row)
+              print(json.dumps({'seed':seed,'d0':d0.get('first_divergence'),'d1':d1.get('first_divergence'),'delta0':row['candidate_minus_champion_seat0'],'delta1':row['candidate_minus_champion_seat1']}))
+          Path('results/v147_focused_telemetry.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-focused-telemetry
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
