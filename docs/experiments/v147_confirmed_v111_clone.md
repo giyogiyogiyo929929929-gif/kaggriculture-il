@@ -120,15 +120,49 @@ Every public/starter matched pair was exact equality. The public-opponent regres
 
 ## Runtime / preflight
 
-Previous local timing showed v147 median/p99 essentially equal to v115. Shared large outliers occurred in both agents in that local environment, so an official-engine final runtime check was requested.
+Previous local helper timing showed v147 median/p99 essentially equal to v115, but the formal gate remains serial timing on the intended 1.32.7 engine with `p99 < 50 ms`, `worst < 200 ms`, no candidate-specific exceptions/timeouts, and reproducible source identity.
 
-### Actions infrastructure status
+### Official 1.32.7 source / package identity
 
-- self-hosted runtime run `36163027401`: remains queued; no runner assigned / no candidate steps executed.
-- hosted fallback workflow added at commit `d0a1045f452797c28f485059804b10d509380b88`.
-- hosted fallback run `36169993623`: failed before step 1 with `steps=[]` and no job logs; this is runner-start infrastructure evidence, not a candidate runtime failure.
+Pinned identities for the formal runtime path:
 
-No additional sealed seeds were consumed for these attempts.
+- PyPI package: `kaggle-environments==1.32.7`
+- PyPI wheel: `kaggle_environments-1.32.7-py3-none-any.whl`
+- wheel SHA256: `2a1bb862ad2d6463080f80f6a766f46d94b53fd57168cfeddb9857fc3dbc4c8f`
+- Kaggle official repository commit identifying 1.32.7: `28b6d8af3ce73926b3d0fda1410c1ddd8384ab8c`
+- official `kaggle_environments/envs/kaggriculture/kaggriculture.py` SHA256: `bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e`
+
+An old engine or reconstructed lookalike is not accepted as formal runtime evidence.
+
+### Historical parity calibration identity
+
+The exact v140 historical calibration candidate is **not** a persisted path such as `submissions/v140_champion_aware_weak_lastresort/main.py`. It is generated from exact v115 by:
+
+- builder: `ci/build_v140_v92_k2_isolated.py`
+- builder git blob: `5d9bb6d934a0f0b34934e368eec8bf9878fdda6f`
+- exact generated v140 SHA256: `8d96c789bec1b708f38716c96828e366f58fb0cdcc151a1a38c2fc4763a71139`
+- original successful calibration run: `36119994714`
+- original run engine: `kaggle_environments==1.32.7`
+
+Required historical parity before a newly reconstructed local/runtime path can be trusted:
+
+- seed 641, both seats: v140/v115 = `83887 / 83887`
+- seed 642, both seats: v140/v115 = `62145 / 62183`, therefore `candidate_minus_champion = -38`
+- seed 643, both seats: v140/v115 = `89373 / 89373`
+
+If these exact cash values do not reproduce, timing from that path is not formal evidence.
+
+### Actions attempts
+
+1. self-hosted run `36163027401` did eventually start. It successfully installed `kaggle-environments==1.32.7`, verified exact v115/v147 construction, and passed loader smoke. It stopped only because the old workflow incorrectly required the `None` member of `BROKEN_OBSERVATIONS` to return a valid action. Since exact v115 and v147 fail `None` identically, this is not a v147 regression.
+
+2. improved self-hosted run `36175051021` also started. It passed official 1.32.7 engine/source identity and exact v115/v147 SHA checks. It then failed before timing because the workflow referenced a nonexistent guessed v140 path. This exposed a calibration-workflow bug, not an agent or engine failure.
+
+3. corrected self-hosted v2 workflow was created at commit `18c148b5fb4da1af039b4dffc8c4cbe8dba0e403`; run `36209345279`, job `108312461572`. It builds v140 through the pinned builder, requires the 641-643 historical parity above, audits broken-observation parity, then measures exact v115/v147 serial runtime on burned seeds 641/642 and both seats. At the latest check the job is still `queued`, `steps=null`, annotations 0: no runner has been assigned and no candidate code has executed.
+
+4. hosted v2 fallback was created at commit `bf5537582cfbb278600fddb2ffb9dc88b02401a2`; run `36209429287`, job `108312706754`. It ended in about two seconds with zero job steps. GitHub's check-run reports `annotations_count=2`, but no executable step or log blob exists. Therefore it is pre-run infrastructure/account evidence, not candidate runtime failure.
+
+No additional sealed seeds were consumed by any runtime attempt.
 
 ### Exact local identity reconstruction
 
@@ -138,7 +172,7 @@ On 2026-09-26, the saved `v115_exact.py` was materialized and hashed:
 - applying the repository's v147 append produced SHA256 `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923` — exact match.
 - both sources pass `py_compile`.
 
-The local container does not have `kaggle_environments`; direct pip installation of 1.32.7 is blocked by DNS/network isolation. Kaggle's official repository commit `28b6d8af3ce73926b3d0fda1410c1ddd8384ab8c` identifies itself as version 1.32.7, but the full dependency/runtime environment has not yet been reconstructed locally, so this does **not** replace the formal engine runtime gate.
+The current isolated local container does not have `kaggle_environments`; direct pip/wheel retrieval is blocked by its DNS/network boundary. Official GitHub source retrieval and PyPI release metadata have been independently pinned as above, but a full local `make('kaggriculture')` path has not yet passed the historical cash-parity calibration. Therefore local timing still does **not** replace the formal engine runtime gate.
 
 ### Broken-observation gate audit
 
@@ -152,7 +186,7 @@ Using its Kaggle-like loader/call semantics on the exact v115 and exact v147 sou
 - first four broken-observation cases: valid fallback action for both.
 - `None`: both exact v115 and exact v147 raise the same `AttributeError` before returning an action.
 
-Therefore the current workflow assertion that **all five** broken observations must return a valid action is stricter than the existing formal champion and would reject v115 and v147 equally. This must not be interpreted as a v147 regression. A corrected final preflight should treat this as champion-parity/invalid-input audit while retaining the actual runtime thresholds on valid official observations.
+Therefore a workflow assertion that **all five** broken observations must return a valid action is stricter than the existing formal champion and would reject v115 and v147 equally. `None` is treated as champion-parity/invalid-input audit; actual runtime thresholds remain enforced on valid official observations.
 
 ## Decision
 
@@ -169,6 +203,6 @@ Completed promotion gates:
 
 Remaining promotion gate:
 
-1. final runtime on the intended `kaggle_environments==1.32.7` execution environment, requiring no candidate-specific exceptions/timeouts and acceptable p99/worst turn time relative to the documented thresholds.
+1. final serial runtime on the intended `kaggle_environments==1.32.7` execution environment, requiring `p99 < 50 ms`, `worst < 200 ms`, no candidate-specific exceptions/timeouts, and no material runtime regression versus exact v115.
 
 Do not consume another sealed seed range merely because runtime infrastructure is unavailable. Do not change the formal champion until the runtime gate is complete.
