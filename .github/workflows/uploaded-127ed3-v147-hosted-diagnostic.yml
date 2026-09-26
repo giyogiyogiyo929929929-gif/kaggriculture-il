@@ -1,0 +1,155 @@
+name: uploaded 127ed3 vs v147 hosted ledger diagnostic
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-v147-hosted-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify engine and reconstruct exact agents
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python - <<'PY'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          got=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          want='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          print('engine_sha',got); assert got==want,(got,want)
+          root=Path('ci/uploaded_127ed3')
+          b64=''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))
+          raw=gzip.decompress(base64.b64decode(b64))
+          Path('tmp/uploaded.py').write_bytes(raw)
+          got=hashlib.sha256(raw).hexdigest(); want='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          print('candidate_sha',got); assert got==want,(got,want)
+          PY
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          want='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          print('v147_sha',got); assert got==want,(got,want)
+          PY
+          python -m py_compile tmp/uploaded.py tmp/v147.py
+
+      - name: Contrast ledgers telemetry and replay trace
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          from scripts.analysis._common import Ledger
+
+          C=Path('tmp/uploaded.py'); H=Path('tmp/v147.py'); seeds=[641,350003,733,911]
+          summary=[]
+          def j(x,d=0):
+              if d>8:return repr(x)
+              if x is None or isinstance(x,(str,int,float,bool)):return x
+              if isinstance(x,dict):return {str(k):j(v,d+1) for k,v in x.items()}
+              if isinstance(x,(list,tuple)):return [j(v,d+1) for v in x]
+              try:return {str(k):j(v,d+1) for k,v in dict(x).items()}
+              except Exception:return repr(x)
+          def reports(a):
+              g=getattr(a,'__globals__',{}); out={}
+              for k,v in g.items():
+                  if k.endswith('_REPORT') and isinstance(v,dict):out[k]=j(v)
+              if getattr(a,'telemetry',None) is not None:out['__telemetry__']=j(a.telemetry)
+              return out
+          def money(env,s):
+              for src in (env.state[s].get('observation'),env.steps[-1][s].get('observation')):
+                  if isinstance(src,dict):
+                      f=src.get('farms')
+                      if isinstance(f,list) and len(f)>s and isinstance(f[s],dict) and 'money' in f[s]:return float(f[s]['money'])
+              return float(env.state[s]['reward'])
+          def agg(rows):
+              per={0:{},1:{}}
+              for step,s,op,item,price in rows:
+                  z=per[s].setdefault(item,{'sell_qty':0,'sell_revenue':0,'buy_qty':0,'buy_cost':0,'ops':{}})
+                  z['ops'][op]=z['ops'].get(op,0)+1
+                  if op=='SELL':z['sell_qty']+=1;z['sell_revenue']+=price
+                  else:z['buy_qty']+=1;z['buy_cost']+=price
+              for s in (0,1):
+                  for z in per[s].values():z['net_market']=z['sell_revenue']-z['buy_cost']
+              return per
+          def compact(env):
+              rows=[]
+              for st in env.steps:
+                  pair=[]
+                  for s in (0,1):
+                      ent=st[s]; obs=ent.get('observation') or {}
+                      x={'action':j(ent.get('action')),'status':ent.get('status'),'reward':j(ent.get('reward'))}
+                      if isinstance(obs,dict):
+                          x.update(player=obs.get('player'),step=obs.get('step'),day=obs.get('day'),hour=obs.get('hour'),market=j(obs.get('market')),town=j(obs.get('town')))
+                          f=obs.get('farms')
+                          if isinstance(f,list):x['farms']=[{k:j(q.get(k)) for k in ('money','shed','seeds','inventory','inventories','hands','farmer','unlocked','hires_today') if isinstance(q,dict) and k in q} for q in f]
+                          for k in ('private','shed','seeds','inventory','inventories'):
+                              if k in obs:x[k]=j(obs.get(k))
+                      pair.append(x)
+                  rows.append(pair)
+              return rows
+          for seed in seeds:
+              for cs in (0,1):
+                  ca=load_like_kaggle(C);ha=load_like_kaggle(H); aa=[ca,ha] if cs==0 else [ha,ca]
+                  errors=[[],[]];tt=[[],[]];wr=[]
+                  for s,a in enumerate(aa):
+                      def w(obs,cfg=None,_a=a,_s=s):
+                          q=time.perf_counter()
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                          finally:tt[_s].append(time.perf_counter()-q)
+                      wr.append(w)
+                  L=Ledger()
+                  try:
+                      env=make('kaggriculture',configuration={'seed':seed});env.run(wr)
+                  finally:L.close()
+                  m=[money(env,0),money(env,1)];hs=1-cs; tag=f'seed{seed}_cseat{cs}'
+                  la=agg(L.rows); cr=reports(ca);hr=reports(ha)
+                  Path(f'results/{tag}_ledger.json').write_text(json.dumps({'ledger':L.rows,'agg':la},indent=2),encoding='utf-8')
+                  Path(f'results/{tag}_reports.json').write_text(json.dumps({'candidate':cr,'champion':hr},indent=2),encoding='utf-8')
+                  Path(f'results/{tag}_steps.json').write_text(json.dumps(compact(env),ensure_ascii=False),encoding='utf-8')
+                  r={'seed':seed,'candidate_seat':cs,'money':m,'delta':m[cs]-m[hs],'statuses':[x.get('status') for x in env.state],'errors':errors,'candidate_worst_ms':max(tt[cs])*1000,'champion_worst_ms':max(tt[hs])*1000,'ledger_units':len(L.rows)}
+                  summary.append(r); print(json.dumps(r))
+          Path('results/summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-v147-hosted-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
