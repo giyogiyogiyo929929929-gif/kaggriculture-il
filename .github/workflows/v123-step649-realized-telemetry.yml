@@ -5,6 +5,9 @@ on:
     branches: [eval-v123-step649-realized-telemetry-20260926]
     paths:
       - ".github/workflows/v123-step649-realized-telemetry.yml"
+      - "ci/reconstruct_exact_v104_from_v115.py"
+      - "ci/build_exact_v122_v123_from_v104.py"
+      - "ci/run_v123_step649_telemetry.py"
   workflow_dispatch:
 
 permissions:
@@ -23,7 +26,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Reconstruct exact v115 then exact v104/v122/v123
+      - name: Reconstruct exact v115 to exact v104 v122 v123
         run: |
           $ErrorActionPreference = 'Stop'
           $gitUsr = 'C:\Program Files\Git\usr\bin'
@@ -52,7 +55,8 @@ jobs:
           $append | python -
           Move-Item tmp\main.py tmp\v77.py
           python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
-          python ci\build_v123_from_v115_prefix.py tmp\v115.py tmp\v104.py tmp\v122.py tmp\v123.py
+          python ci\reconstruct_exact_v104_from_v115.py tmp\v115.py tmp\v104.py
+          python ci\build_exact_v122_v123_from_v104.py tmp\v104.py tmp\v122.py tmp\v123.py
           python -m py_compile tmp\v104.py tmp\v122.py tmp\v123.py ci\run_v123_step649_telemetry.py
 
       - name: Verify v123 wrapper is behavior preserving on synthetic step649 call
@@ -60,7 +64,7 @@ jobs:
           $code = @'
           import runpy
           ns=runpy.run_path('tmp/v123.py')
-          assert ns['_V123_PARENT'] is ns['_V122_PARENT'] or callable(ns['_V123_PARENT'])
+          assert callable(ns['_V123_PARENT'])
           assert ns['_V123_REPORT']['errors'] == 0
           print('v123 diagnostic wrapper static checks: PASS')
           '@
@@ -92,7 +96,7 @@ jobs:
       - name: Summarize structural separators
         run: |
           $code = @'
-          import json,statistics
+          import json
           from pathlib import Path
           files=['results/priority_401001_401003.json','results/validation_402001_402012.json']
           rows=[]
