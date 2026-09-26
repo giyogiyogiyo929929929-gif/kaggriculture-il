@@ -28,6 +28,18 @@ One tactical change only:
 - if `step >= 648`, skip the confirmed second `_v111_reorder` pass;
 - all parent farm strategy, sale quantities, clone confirmation, and earlier second-pass behavior remain unchanged.
 
+## Focused synthetic test
+
+A minimal deterministic wrapper test was run outside the Kaggle engine to validate the new guard logic in isolation:
+
+- first-pass change creates a probe;
+- equal own/rival realized cash deltas confirm clone state on the following observation;
+- confirmed second-pass reorder remains active before step 648;
+- at step 648 the parent market action is returned unchanged and the `late_guard` counter fires;
+- wrapper errors: 0.
+
+Result: **PASS**. This only validates the guard/control-flow logic; exact generated-agent syntax/runtime and game behavior still require the queued workflow.
+
 ## Planned / queued evaluation
 
 1. exact v115 SHA reconstruction and syntax check;
