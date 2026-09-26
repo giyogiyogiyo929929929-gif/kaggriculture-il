@@ -11,77 +11,68 @@ permissions:
 
 jobs:
   focused:
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 120
-    defaults:
-      run:
-        shell: powershell
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install pinned engine and reconstruct exact agents
+        shell: bash
         run: |
-          $ErrorActionPreference='Stop'
-          $gitUsr='C:\\Program Files\\Git\\usr\\bin'; $env:Path="$gitUsr;$env:Path"
+          set -euo pipefail
           python -m pip install --no-deps "kaggle-environments==1.32.7"
           python -m pip install jsonschema requests
           python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
-          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
-          Copy-Item submissions\\v27_orderbook_layer_d\\main.py tmp\\main.py
-          $normalize=@'
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
           from pathlib import Path
           for name in ('tmp/main.py','ci/v76.patch'):
               p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
-          '@
-          $normalize | python -
-          Push-Location tmp
-          patch --binary --batch -p3 -i ..\\ci\\v76.patch
-          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
-          Pop-Location
-          $append=@'
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
           from pathlib import Path
           p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
-          '@
-          $append | python -
-          Move-Item tmp\\main.py tmp\\v77.py
-          python ci\\reconstruct_exact_v115.py tmp\\v77.py tmp\\v115.py
-          python ci\\build_v147_confirmed_v111_clone.py tmp\\v115.py tmp\\v147.py
-          python ci\\build_v153_v147_dense_self_exposure_guard.py tmp\\v147.py tmp\\v153.py
-          python -m py_compile tmp\\v147.py tmp\\v153.py
-          $check=@'
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v153_v147_dense_self_exposure_guard.py tmp/v147.py tmp/v153.py
+          python -m py_compile tmp/v147.py tmp/v153.py
+          python - <<'PY'
           import hashlib
           from pathlib import Path
           got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
           assert got=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',got
           print('v147_sha256='+got)
           print('v153_sha256='+hashlib.sha256(Path('tmp/v153.py').read_bytes()).hexdigest())
-          '@
-          $check | python -
+          PY
       - name: Focused hard loss cell score2820 seed520104 both seats
+        shell: bash
         run: |
-          python ci\\eval_candidate_vs_champion_panel.py --candidate tmp\\v153.py --champion tmp\\v147.py --opponent opponents\\score_2820\\main.py --seed-start 520104 --seed-count 1 --jobs 1 --out results\\v153_vs_v147_score2820_520104.json
-          if ($LASTEXITCODE -ne 0) { throw 'focused eval failed' }
+          set -euo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/score_2820/main.py --seed-start 520104 --seed-count 1 --jobs 1 --out results/v153_vs_v147_score2820_520104.json
       - name: Candidate ledger and v153 telemetry
+        shell: bash
         run: |
-          python ci\\diagnose_score2820_520104.py tmp\\v153.py opponents\\score_2820\\main.py results\\v153_score2820_520104_ledger.json
-          if ($LASTEXITCODE -ne 0) { throw 'ledger failed' }
-          $code=@'
+          set -euo pipefail
+          python ci/diagnose_score2820_520104.py tmp/v153.py opponents/score_2820/main.py results/v153_score2820_520104_ledger.json
+          python - <<'PY'
           import json
           from pathlib import Path
-          p=Path('results/v153_score2820_520104_ledger.json')
-          d=json.loads(p.read_text(encoding='utf-8'))
+          d=json.loads(Path('results/v153_score2820_520104_ledger.json').read_text())
           out=[]
           for g in d['games']:
               out.append({'swap':g['swap'],'rewards':g['rewards'],'v153':g['telemetry'].get('_V153_REPORT',{})})
-          Path('results/v153_focused_telemetry.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          Path('results/v153_focused_telemetry.json').write_text(json.dumps(out,indent=2))
           print(json.dumps(out,indent=2))
-          assert all(int(x['v153'].get('errors',0))==0 for x in out),out
-          assert all(int(x['v153'].get('eligible',0))==3 for x in out),out
-          assert all(int(x['v153'].get('changed',0))==1 for x in out),out
-          '@
-          $code | python -
+          assert all(int(x['v153'].get('errors',0))==0 for x in out), out
+          assert all(int(x['v153'].get('eligible',0))==3 for x in out), out
+          assert all(int(x['v153'].get('changed',0))==1 for x in out), out
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
