@@ -1,0 +1,147 @@
+name: v124 step649 FERT-adjacent WHEAT gated evaluation
+
+on:
+  push:
+    branches: [eval-v124-step649-fert-adjacent-wheat-20260926]
+    paths:
+      - ".github/workflows/v124-step649-fert-adjacent-wheat.yml"
+      - "ci/build_v124_step649_fert_adjacent_wheat.py"
+      - "ci/run_v124_pair_eval.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v122 and build v124
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\reconstruct_exact_v104_from_v115.py tmp\v115.py tmp\v104.py
+          python ci\build_exact_v122_v123_from_v104.py tmp\v104.py tmp\v122.py tmp\v123_diag.py
+          python ci\build_v124_step649_fert_adjacent_wheat.py tmp\v122.py tmp\v124.py
+          python -m py_compile tmp\v122.py tmp\v124.py ci\run_v124_pair_eval.py
+
+      - name: Focused synthetic order test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import runpy
+          ns=runpy.run_path('tmp/v124.py')
+          f=ns['_v124_adjust_market']
+          a={'market':[['SELL','MILK',9],['SELL','FERTILIZER',18],['SELL','EGG',2],['SELL','WHEAT',6],['BUY_PRODUCT','FERTILIZER',2],['HIRE']]}
+          b,changed,bad=f(a)
+          assert changed and not bad
+          assert b['market']==[['SELL','MILK',9],['SELL','FERTILIZER',18],['SELL','WHEAT',6],['SELL','EGG',2],['BUY_PRODUCT','FERTILIZER',2],['HIRE']]
+          assert a['market'][3]==['SELL','WHEAT',6]
+          c={'market':[['SELL','MILK',9],['SELL','FERTILIZER',18],['SELL','WHEAT',6],['BUY_PRODUCT','FERTILIZER',2]]}
+          d,changed,bad=f(c)
+          assert not changed and not bad and d is c
+          print('v124 focused synthetic: PASS')
+          '@
+          $code | python -
+
+      - name: Burned mechanism screen 401xxx and 402xxx
+        run: |
+          python ci\run_v124_pair_eval.py --candidate tmp\v124.py --champion tmp\v122.py --seeds 401001-401003,402001-402012 --out results\diagnostic_401_402.json
+
+      - name: Diagnostic safety gate
+        id: diag
+        run: |
+          $code = @'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path('results/diagnostic_401_402.json').read_text(encoding='utf-8'))
+          gate=(d['mean']>0 and d['worst']>=0 and d['exceptions']==0 and d['non_done']==0)
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:f.write('gate='+str(gate).lower()+'\n')
+          print('diagnostic_gate',gate)
+          '@
+          $code | python -
+
+      - name: Fresh matched block 407001-407020
+        if: steps.diag.outputs.gate == 'true'
+        run: |
+          python ci\run_v124_pair_eval.py --candidate tmp\v124.py --champion tmp\v122.py --seeds 407001-407020 --out results\fresh_407001_407020.json
+
+      - name: Fresh adoption gate
+        if: steps.diag.outputs.gate == 'true'
+        id: fresh
+        run: |
+          $code = @'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path('results/fresh_407001_407020.json').read_text(encoding='utf-8'))
+          gate=(d['mean_minus_2stderr']>0 and d['worst']>=0 and d['exceptions']==0 and d['non_done']==0)
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:f.write('gate='+str(gate).lower()+'\n')
+          print('fresh_gate',gate)
+          '@
+          $code | python -
+
+      - name: Sealed matched block 408001-408020
+        if: steps.fresh.outputs.gate == 'true'
+        run: |
+          python ci\run_v124_pair_eval.py --candidate tmp\v124.py --champion tmp\v122.py --seeds 408001-408020 --out results\sealed_408001_408020.json
+
+      - name: Aggregate decision evidence
+        if: always()
+        run: |
+          $code = @'
+          import json
+          from pathlib import Path
+          out={'candidate':'v124_candidate_step649_fert_adjacent_wheat','champion':'v122_champion_step649_wheat_after_fert','candidate_sha256':'e5386b0708e7a5bde1b348a4942545a8e9ab453585fdd354ffaf9528c7cb9710','champion_sha256':'ae4c0f5a9afabf2e6d668cf0571b41bfe9a52a9179b499a71aeb6b7508ace8f1','diff_convention':'candidate_minus_champion = candidate - champion'}
+          for key,name in [('diagnostic','diagnostic_401_402.json'),('fresh','fresh_407001_407020.json'),('sealed','sealed_408001_408020.json')]:
+              p=Path('results')/name
+              if p.exists():
+                  d=json.loads(p.read_text(encoding='utf-8'))
+                  out[key]={k:d[k] for k in ['wld','mean','median','stderr','mean_minus_2stderr','worst','best','seat0_mean','seat1_mean','exceptions','non_done','max_p99_ms','max_worst_ms']}
+          Path('results/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v124-step649-fert-adjacent-wheat-results
+          path: |
+            results/
+            tmp/v124.py
+          if-no-files-found: error
+          retention-days: 90
