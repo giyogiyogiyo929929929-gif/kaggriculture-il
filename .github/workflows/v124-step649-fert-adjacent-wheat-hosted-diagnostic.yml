@@ -1,0 +1,79 @@
+name: v124 step649 FERT-adjacent hosted diagnostic
+
+on:
+  push:
+    branches: [eval-v124-step649-fert-adjacent-wheat-20260926]
+    paths:
+      - ".github/workflows/v124-step649-fert-adjacent-wheat-hosted-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine and build exact sources
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check "kaggle-environments==1.32.7"
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          $patch = (Get-Command patch.exe -ErrorAction SilentlyContinue)
+          if (-not $patch) {
+            $gitUsr = 'C:\Program Files\Git\usr\bin'
+            if (Test-Path (Join-Path $gitUsr 'patch.exe')) { $env:Path = "$gitUsr;$env:Path" } else { throw 'patch.exe not found' }
+          }
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\reconstruct_exact_v104_from_v115.py tmp\v115.py tmp\v104.py
+          python ci\build_exact_v122_v123_from_v104.py tmp\v104.py tmp\v122.py tmp\v123_diag.py
+          python ci\build_v124_step649_fert_adjacent_wheat.py tmp\v122.py tmp\v124.py
+          python -m py_compile tmp\v122.py tmp\v124.py ci\run_v124_pair_eval.py
+      - name: Burned mechanism screen 401xxx and 402xxx
+        run: |
+          python ci\run_v124_pair_eval.py --candidate tmp\v124.py --champion tmp\v122.py --seeds 401001-401003,402001-402012 --out results\diagnostic_401_402.json
+      - name: Summarize gate
+        run: |
+          $code = @'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('results/diagnostic_401_402.json').read_text(encoding='utf-8'))
+          s={k:d[k] for k in ['wld','mean','median','stderr','mean_minus_2stderr','worst','best','seat0_mean','seat1_mean','exceptions','non_done','max_p99_ms','max_worst_ms']}
+          s['gate']=bool(d['mean']>0 and d['worst']>=0 and d['exceptions']==0 and d['non_done']==0)
+          Path('results/hosted_summary.json').write_text(json.dumps(s,indent=2),encoding='utf-8')
+          print(json.dumps(s,indent=2))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v124-hosted-diagnostic-results
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
