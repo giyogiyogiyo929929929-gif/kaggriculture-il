@@ -1,0 +1,115 @@
+name: uploaded 127ed3 safety-v3 vs raw isolation
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths: [".github/workflows/uploaded-127ed3-safe-v3-vs-raw-isolation.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build exact raw and safety-v3
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results,results\panel | Out-Null
+          @'
+          import ast,base64,gzip,hashlib,json
+          from pathlib import Path
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          raw_sha=hashlib.sha256(raw).hexdigest()
+          assert raw_sha=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          Path('tmp/raw.py').write_bytes(raw)
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix
+          safe_sha=hashlib.sha256(safe).hexdigest()
+          assert safe_sha=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          # Static top-level function/order audit because loader selection is order-sensitive.
+          def audit(data):
+              tree=ast.parse(data.decode('utf-8'))
+              defs=[]; assigns=[]
+              for n in tree.body:
+                  if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                      defs.append(n.name)
+                  elif isinstance(n,(ast.Assign,ast.AnnAssign)):
+                      targets=n.targets if isinstance(n,ast.Assign) else [n.target]
+                      for t in targets:
+                          if isinstance(t,ast.Name): assigns.append(t.id)
+              return {'top_level_defs_tail':defs[-30:],'top_level_assigns_tail':assigns[-30:]}
+          out={'raw_sha256':raw_sha,'safe_sha256':safe_sha,'raw_static':audit(raw),'safe_static':audit(safe)}
+          Path('results/static_loader_audit.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@ | python -
+          python -m py_compile tmp\raw.py tmp\safe_v3.py
+      - name: Compare loader-selected callable names
+        run: |
+          @'
+          import importlib.util,json,sys
+          from pathlib import Path
+          uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_iso_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              calls=[]
+              for k,v in vars(m).items():
+                  if callable(v) and getattr(v,'__module__',None)==name:
+                      calls.append({'name':k,'func_name':getattr(v,'__name__',None),'firstlineno':getattr(getattr(v,'__code__',None),'co_firstlineno',None)})
+              return calls
+          out={'raw_module_callables':load('tmp/raw.py'),'safe_module_callables':load('tmp/safe_v3.py')}
+          Path('results/runtime_callable_audit.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@ | python -
+      - name: Burned public panel safety-v3 versus exact raw
+        run: |
+          $ErrorActionPreference='Stop'
+          function Run-Panel([string]$name,[string]$opp) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\safe_v3.py --champion tmp\raw.py --opponent $opp --seed-start 641 --seed-count 4 --jobs 2 --out "results\panel\$name.json"
+            if ($LASTEXITCODE -ne 0) { throw "panel failed: $name" }
+          }
+          Run-Panel 'starter' 'starter'
+          Run-Panel 'beat_v48' 'opponents\beat_v48\main.py'
+          Run-Panel 'bl_v20' 'opponents\bl_v20\main.py'
+          Run-Panel 'bl_v21' 'opponents\bl_v21\main.py'
+          Run-Panel 'farming_v2' 'opponents\farming_v2\main.py'
+          Run-Panel 'frontier_prvsiyan' 'opponents\frontier_prvsiyan\main.py'
+      - name: Aggregate safety-v3 minus raw
+        if: always()
+        run: |
+          @'
+          import glob,json,statistics
+          from pathlib import Path
+          panels=[]; vals=[]
+          for p in sorted(glob.glob('results/panel/*.json')):
+              d=json.load(open(p,encoding='utf-8')); name=Path(p).stem
+              ds=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]
+              vals.extend(ds)
+              panels.append({'name':name,'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'ties':sum(x==0 for x in ds),'mean':statistics.fmean(ds) if ds else 0.0,'worst':min(ds) if ds else None,'best':max(ds) if ds else None,'rows':[{'seed':r['seed'],'diff':r['candidate_minus_champion_money']} for r in d.get('rows',[])]})
+          out={'comparison':'safety_v3_minus_exact_raw','seeds':'641-644','paired_rows':len(vals),'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else 0.0,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'panels':panels}
+          Path('results/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v3-vs-raw-isolation
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
