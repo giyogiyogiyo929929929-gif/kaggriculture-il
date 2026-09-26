@@ -1,7 +1,7 @@
 # EXP-20260926-v150-runtime-noop-second-pass
 
 ## Status
-KEEP TESTING — burned + sealed action equivalence PASS, formal runtime PASS, hard-opponent regression queued.
+KEEP TESTING — burned + sealed action equivalence PASS, formal runtime PASS, hard-opponent regression PASS, public diversity final check queued.
 
 ## Parent / champion
 - parent candidate: `v147_confirmed_v111_clone`
@@ -63,7 +63,7 @@ Seeds `1701..1712`, both seats = 24 games.
 - mismatches 0, exceptions 0
 - v111 evaluations: 32,148 -> 26,210 (-18.4708224462%)
 
-Because v150 returned exactly the same actions and rewards as v147 on every previously sealed game, the prior v147 sealed performance result (10W/0L/2T vs v115, mean +36.6667, worst 0) is behaviorally inherited on this panel.
+Because v150 returned exactly the same actions and rewards as v147 on every previously sealed game, the prior v147 sealed result is behaviorally inherited on this panel: 10W/0L/2T vs v115, mean +36.6667, worst 0.
 
 ## Final runtime qualification
 Run `36252343922` — success.
@@ -87,7 +87,22 @@ Formal thresholds:
 - exceptions: 0
 - workflow `formal_pass`: true
 
-Notably, under the same GC-on instrumentation v115 and v147 both had >200 ms GC-associated tails, while v150 did not in this qualification run.
+## Hard-opponent regression
+Run `36256381428` — success.
+Opponent universe: `jaxa_2802`, `melon_squeeze`, `peak_2950`, `salem_2900`, `score_2820`, `shop_router_v7`, `tetsutani_ms`, `thomas_router_95`.
+Seeds `520101..520104`, matched pairs.
+
+Aggregate:
+- pairs: 32
+- wins/losses/ties: **0 / 0 / 32**
+- candidate_minus_champion mean: **0.0**
+- worst: **0.0**
+- best: **0.0**
+- candidate exceptions: **0**
+- champion exceptions: **0**
+- `regression_free`: **true**
+
+Every individual opponent was 0W/0L/4T with mean/worst/best all 0. This reproduces the prior v147 hard-opponent safety result with v150 directly against v115.
 
 ## Remaining validation
 1. exact reconstruction / syntax: PASS
@@ -95,9 +110,9 @@ Notably, under the same GC-on instrumentation v115 and v147 both had >200 ms GC-
 3. full burned action equivalence: PASS
 4. sealed action equivalence: PASS
 5. final GC-on runtime: PASS
-6. hard-opponent regression: QUEUED (`v150` vs `v115`, same 8-opponent universe and seeds `520101..520104`)
-7. public diversity regression: run if needed after hard panel; do not infer from v147 alone
-8. final documentation / PROMOTE only after known-opponent regression is clean
+6. hard-opponent regression: PASS
+7. public diversity regression: QUEUED (`v150-public-diversity-panel`, same 7-opponent universe and seeds `621..624` as prior v147 panel)
+8. if public diversity is clean, update promotion/handover/SCORES records and make final PROMOTE decision
 
 ## Runs
 - duplicate-candidate diagnostic: `36245268147` — success
@@ -105,7 +120,8 @@ Notably, under the same GC-on instrumentation v115 and v147 both had >200 ms GC-
 - full burned action equivalence: `36249173738` — success
 - final runtime qualification: `36252343922` — success / formal PASS
 - sealed action equivalence: `36252365551` — success
-- hard-opponent regression: workflow added, pending run completion
+- hard-opponent regression: `36256381428` — success / regression-free
+- public diversity regression: workflow added, pending completion
 
 ## Decision
-KEEP TESTING. Formal champion remains v115 until the known-opponent regression gate is clean and promotion records are updated.
+KEEP TESTING. Formal champion remains v115 until public diversity is clean and promotion records are updated.
