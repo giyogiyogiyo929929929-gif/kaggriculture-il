@@ -14,6 +14,7 @@ _V117_REPORT = {
     "cash_blocks": 0,
     "next_slot_blocks": 0,
     "parent_shift_blocks": 0,
+    "future_wheat_blocks": 0,
     "repay_merges": 0,
     "repay_inserts": 0,
     "repay_shortfalls": 0,
@@ -181,6 +182,9 @@ def agent(obs, config=None):
         next_market = list((_ACTIONS[step + 1].get("market") or []))
         if len(next_market) > 7:
             _V117_REPORT["next_slot_blocks"] += 1
+            return action
+        if any(_v117_planned_wheat(step + k) > 0 for k in (2, 3, 4) if step + k < len(_ACTIONS)):
+            _V117_REPORT["future_wheat_blocks"] += 1
             return action
 
         q = native_q
