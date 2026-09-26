@@ -1,0 +1,33 @@
+name: Export Public Opponents v148 eval
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - '.github/workflows/export-public-opponents-v148.yml'
+jobs:
+  export:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify opponent files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @(
+            'opponents/beat_v48/main.py',
+            'opponents/bl_v20/main.py',
+            'opponents/bl_v21/main.py',
+            'opponents/farming_v2/main.py',
+            'opponents/frontier_prvsiyan/main.py'
+          )
+          foreach ($p in $paths) { if (!(Test-Path $p)) { throw "missing $p" } }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v148-known-opponents
+          path: |
+            opponents/beat_v48/main.py
+            opponents/bl_v20/main.py
+            opponents/bl_v21/main.py
+            opponents/farming_v2/main.py
+            opponents/frontier_prvsiyan/main.py
+          retention-days: 7
