@@ -2,7 +2,7 @@
 
 ## Status
 
-STATIC AUDIT / CLOSED for the guarded four-turn sale reservation transfer. Formal champion remains v147. No seed consumed. No Kaggle submission.
+STATIC AUDIT / CLOSED for the guarded four-turn sale reservation transfer. Formal champion remains v147. No new seed consumed by this audit. No Kaggle submission.
 
 ## Why this audit was done
 
@@ -28,18 +28,42 @@ Current formal champion v147 is reconstructed from exact v115 and then adds the 
 
 Do not create another candidate whose main change is this same four-turn reservation unless a later code audit proves the inherited mechanism was removed or materially changed.
 
+## Recovered public-room-guard screen
+
+The old public-room-guard run `36132699144` completed successfully against exact v115. Its artifact was re-read without running any new games.
+
+Direct seeds 681..692:
+
+- 9 positive / 1 negative / 2 zero candidate-minus-champion pairs
+- mean `+49.67`
+- worst `-84` on seed 689
+- best `+492`
+- exceptions 0
+
+Old easy public panel, 6 opponents x 4 seeds:
+
+- 9 positive / 12 negative / 3 zero candidate-minus-champion rows
+- mean `+40.83`
+- worst `-4`
+- exceptions 0
+
+These are cash-delta diagnostics rather than outcome-transition evidence. They show activity but not clean safety, and the evaluation parent was v115 rather than current v147. There is no reason to spend new seeds on this mechanism before the stronger v153 line is resolved.
+
+Decision for current queue: public-room-guard is HOLD / LOW PRIORITY, not an active candidate. Revisit only if current replay telemetry identifies shed-capacity overflow as a repeated cause of actual losses.
+
+## Sparse Shop Hybrid source check
+
+The public notebook page for Kaito Fukami's `103-128-fresh-public-v43-sparse-shop-hybrid` is still available and reports Apache-2.0. The project already has a published `main.py` SHA-256 (`69f06a802b62aa08f28705dab5728eb924bb6a7c23ffe0164f65b104cc3dadf3`) and summarized branch behavior in the older transfer-priority log.
+
+However the current static audit has not recovered the exact source body from the repository or Kaggle page. Do not implement an inferred YARN branch from prose. Require the audited source or an equivalent exact artifact before comparing it to v147 internals.
+
 ## Decision
 
 - guarded four-turn sales transfer: CLOSED AS ALREADY PRESENT
-- do not spend development or sealed seeds on this mechanism again
-- remove it from the active next-candidate queue
+- public-room-guard: HOLD / LOW PRIORITY
+- Sparse Shop Hybrid: STATIC AUDIT ONLY; source body required before implementation
+- six-sheep / broad production expansion: HOLD
 - continue v153 dense self-exposure evaluation
-
-## Remaining public-transfer queue
-
-1. Sparse Shop Hybrid: static audit only; first prove that v147 lacks an equivalent observable YARN branch and that compatible continuations exist before implementing anything.
-2. public-room-guard: lower priority; only revisit if outcome-centric evidence suggests capacity overflow is causing losses.
-3. six-sheep / broad production expansion: hold until market-only hypotheses are exhausted or telemetry identifies a repeatable production deficit.
 
 ## Next hypothesis discipline
 
