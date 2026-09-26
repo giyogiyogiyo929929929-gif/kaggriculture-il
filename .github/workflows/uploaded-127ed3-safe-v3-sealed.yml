@@ -1,0 +1,129 @@
+name: uploaded 127ed3 safety-v3 sealed
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v3-sealed.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sealed:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and reconstruct agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          engine=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          assert engine=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e',engine
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          assert hashlib.sha256(safe).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\v147.py
+      - name: Sealed matched H2H both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import hashlib,json,math,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          LABEL='uploaded-127ed3-safe-v3-sealed-v1-20260926'
+          EXPECTED=[1568256014,1883909388,367317921,458289146,782863572,202158583,832110153,63047626,1574966926,42399278,1542138614,407900870]
+          derived=[]; i=0
+          while len(derived)<12:
+              h=hashlib.sha256(f'{LABEL}:{i}'.encode()).digest(); v=int.from_bytes(h[:4],'big') % 2000000000
+              if v not in derived and v>1000000: derived.append(v)
+              i+=1
+          assert derived==EXPECTED,(derived,EXPECTED)
+          C=Path('tmp/safe_v3.py'); H=Path('tmp/v147.py'); games=[]
+          def money(env,seat):
+              for obs in (env.state[seat].get('observation'),env.steps[-1][seat].get('observation')):
+                  if isinstance(obs,dict):
+                      farms=obs.get('farms')
+                      if isinstance(farms,list) and len(farms)>seat and isinstance(farms[seat],dict):
+                          for k in ('money','cash'):
+                              if k in farms[seat]: return float(farms[seat][k])
+              return float(env.state[seat]['reward'])
+          def one(seed,cs):
+              paths=[C,H] if cs==0 else [H,C]; agents=[]; errors=[[],[]]
+              for seat,p in enumerate(paths):
+                  a=load_like_kaggle(p)
+                  def w(obs,cfg=None,_a=a,_s=seat):
+                      try:return call_like_kaggle(_a,obs,cfg)
+                      except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                  agents.append(w)
+              env=make('kaggriculture',configuration={'seed':seed}); env.run(agents); m=[money(env,0),money(env,1)]; hs=1-cs
+              return {'seed':seed,'candidate_seat':cs,'candidate_money':m[cs],'champion_money':m[hs],
+                      'candidate_minus_champion':m[cs]-m[hs],'statuses':[x.get('status') for x in env.state],'errors':errors}
+          for s in EXPECTED:
+              for cs in (0,1):
+                  r=one(s,cs); games.append(r); print('SEALED_GAME',json.dumps(r))
+          pairs=[]
+          for s in EXPECTED:
+              rs=[r for r in games if r['seed']==s]; ds=[r['candidate_minus_champion'] for r in rs]; v=statistics.mean(ds)
+              pairs.append({'seed':s,'seat0_delta':ds[0],'seat1_delta':ds[1],'pair_mean_delta':v,'outcome':'W' if v>0 else 'L' if v<0 else 'D'})
+          vals=[p['pair_mean_delta'] for p in pairs]; mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'label':'SEALED_V1_PRECOMMITTED_BEFORE_EXECUTION','seed_derivation_label':LABEL,
+               'candidate_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df',
+               'champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','seeds':EXPECTED,
+               'pair_wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},'mean_pair_delta':mean,'median_pair_delta':statistics.median(vals),
+               'se':se,'mean_minus_2se':mean-2*se,'worst_pair_delta':min(vals),'best_pair_delta':max(vals),
+               'seat0_mean':statistics.mean(r['candidate_minus_champion'] for r in games if r['candidate_seat']==0),
+               'seat1_mean':statistics.mean(r['candidate_minus_champion'] for r in games if r['candidate_seat']==1),
+               'exceptions':sum(len(e) for r in games for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in games),'pairs':pairs}
+          print('SEALED_SUMMARY',json.dumps({k:v for k,v in out.items() if k!='pairs'},indent=2))
+          Path('results/sealed.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert out['exceptions']==0 and out['non_done']==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v3-sealed-v1
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
