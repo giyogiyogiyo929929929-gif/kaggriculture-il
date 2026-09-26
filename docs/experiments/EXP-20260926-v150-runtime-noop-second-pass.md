@@ -1,17 +1,17 @@
 # EXP-20260926-v150-runtime-noop-second-pass
 
 ## Status
-KEEP TESTING — focused and full burned action equivalence passed; final runtime and sealed-panel equivalence queued.
+KEEP TESTING — burned + sealed action equivalence PASS, formal runtime PASS, hard-opponent regression queued.
 
 ## Parent / champion
 - parent candidate: `v147_confirmed_v111_clone`
 - formal champion: `v115_champion_same_turn_open_squeeze`
+- v115 SHA256: `c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2`
 - v147 SHA256: `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`
+- v150 SHA256: `0a5bfa1b9fa91dd7ebdee1f45640719b23a7b895cbd85cc1f4f17bddebb6387d`
 
 ## Motivation
-v147 has strong strategic evidence (burned matched seeds, sealed holdout, hard-opponent stress, public diversity) but its final runtime qualification exceeded the absolute `<200 ms` max threshold. Follow-up paired runtime diagnostics showed that extreme tails are strongly GC-dependent, while targeted cProfile identified `_v111_reorder` as a real hot path on some late turns.
-
-The v147 wrapper calls the parent v115 agent, detects whether the parent's v111 pass changed the action via `_V111_REPORT['changed_turns']`, and then may call `_v111_reorder` again after clone confirmation. When the parent v111 pass made no change, repeating the final reorder is expected to be a redundant no-op. Avoiding that call should reduce candidate enumeration, margin evaluation, temporary allocations, and GC pressure without changing strategic actions.
+v147 has strong strategic evidence but repeatedly exposed rare runtime tails. Profiling showed `_v111_reorder` is a real hot path and that extreme maxima are strongly GC-dependent. v147 may call `_v111_reorder` a second time after clone confirmation even when the parent v111 pass made no change.
 
 ## Candidate
 `v150_skip_noop_second_pass`
@@ -20,99 +20,92 @@ Builder: `ci/build_v150_skip_noop_second_pass.py`
 
 ### Change
 One guard only:
-
 - v147: run confirmed second `_v111_reorder` whenever clone/standard gates pass.
 - v150: run that second pass only when `parent_changed` is also true.
 
 No farm policy, market scoring, SELL quantity, order priority, prediction, race detection, or endgame parameter is changed.
 
-## Hypothesis
-If the parent v111 pass did not change the final market action, a second deterministic v111 pass on the same final action should be a no-op. Skipping such calls should therefore preserve v147 action traces while lowering runtime and allocation pressure.
-
 ## Duplicate-candidate probe
-Run `36245268147` completed successfully.
-
+Run `36245268147` — success.
 - evaluated candidates: 436,786
 - duplicate evaluated candidates: 72
 - duplicate fraction: ~0.0165%
-- known heavy 20,160-candidate late steps had no useful duplicate concentration
+- heavy 20,160-candidate turns had no useful duplicate concentration
 
-Decision on the alternative factor-cache idea: REJECT. Duplicate reuse is too rare to explain or materially reduce the hot path.
+Alternative factor-cache idea: REJECT. Duplicate reuse is too rare to materially reduce the hot path.
 
-## Focused equivalence/runtime result
-Run `36245566714` completed successfully.
+## Focused equivalence/runtime
+Run `36245566714` — success.
+Seeds `681,682,689,691,692`, both seats, 2 repetitions.
+- complete v147/v150 action traces identical in all 20 games
+- final rewards identical
+- mismatches 0, exceptions 0
+- v111 evaluations: 26,724 -> 22,052 (-17.48%)
+- median: 4.379 -> 4.297 ms
+- p99: 18.821 -> 18.378 ms
+- >50 ms: 51 -> 42
 
-Seeds: `681,682,689,691,692`, both seats, 2 repetitions.
+Focused raw max remained GC-noisy and was not used as formal qualification.
 
-Correctness:
-- candidate calls compared: 14,380 per version
-- complete v147/v150 action traces: identical in every tested game
-- final rewards: identical in every tested game
-- mismatches: 0
+## Full burned action equivalence
+Run `36249173738` — success.
+Seeds `681..692`, both seats = 24 games.
+- action traces identical: 24/24
+- final rewards identical: 24/24
+- mismatches 0, exceptions 0
+- v111 evaluations: 29,058 -> 22,710 (-21.8459632459%)
+
+## Sealed-panel action equivalence
+Run `36252365551` — success.
+Seeds `1701..1712`, both seats = 24 games.
+- action traces identical: 24/24
+- final rewards identical: 24/24
+- mismatches 0, exceptions 0
+- v111 evaluations: 32,148 -> 26,210 (-18.4708224462%)
+
+Because v150 returned exactly the same actions and rewards as v147 on every previously sealed game, the prior v147 sealed performance result (10W/0L/2T vs v115, mean +36.6667, worst 0) is behaviorally inherited on this panel.
+
+## Final runtime qualification
+Run `36252343922` — success.
+Engine `kaggle_environments==1.32.7`, sequential single-process, GC enabled, `perf_counter_ns` + `process_time_ns`, seeds `681,682,689,691,692`, seat swap.
+
+| metric | v115 | v147 | v150 |
+|---|---:|---:|---:|
+| calls | 7,190 | 7,190 | 7,190 |
+| median | 4.122 ms | 4.168 ms | 4.229 ms |
+| p95 | 8.821 ms | 9.240 ms | 9.254 ms |
+| p99 | 15.793 ms | 18.292 ms | 16.889 ms |
+| max | 774.735 ms | 1490.984 ms | **162.617 ms** |
+| CPU p99 | 15.625 ms | 15.625 ms | 15.625 ms |
+| CPU max | 765.625 ms | 1484.375 ms | **171.875 ms** |
+| >50 ms | 7 | 27 | 16 |
+| >200 ms | 1 | 2 | **0** |
+
+Formal thresholds:
+- p99 < 50 ms: PASS (`16.889 ms`)
+- max < 200 ms: PASS (`162.617 ms`)
 - exceptions: 0
-- v147 and v150 `second_pass_changed` counts: identical for every row
+- workflow `formal_pass`: true
 
-Work reduction:
-- total `_V111_REPORT.evaluations`, v147: 26,724
-- total `_V111_REPORT.evaluations`, v150: 22,052
-- reduction: 4,672 evaluations = ~17.48%
+Notably, under the same GC-on instrumentation v115 and v147 both had >200 ms GC-associated tails, while v150 did not in this qualification run.
 
-GC-on wall-clock summary:
-
-| metric | v147 | v150 |
-|---|---:|---:|
-| median | 4.379 ms | 4.297 ms |
-| p95 | 9.881 ms | 10.478 ms |
-| p99 | 18.821 ms | 18.378 ms |
-| >50 ms | 51 | 42 |
-| >200 ms | 2 | 3 |
-| max | 798.094 ms | 1620.081 ms |
-
-Interpretation:
-- The focused panel supports semantic equivalence and confirms a real reduction in v111 search work.
-- Median and p99 improve slightly; >50 ms calls also fall.
-- Absolute max remains dominated by rare GC/tail events and is not improved in this one run; v150 recorded a 1.62 s spike on seed 691 seat 0 despite an otherwise identical action trace. This prevents treating the focused timing sample as a formal runtime PASS.
-- Because paired tail diagnostics already showed large GC spikes in both v115 and v147, max must be reassessed with the established GC-on paired protocol rather than inferred from one raw maximum.
-
-## Full burned action-equivalence result
-Run `36249173738` completed successfully.
-
-Seeds: `681..692`, both seats, one comparison per seat = 24 games.
-
-Correctness:
-- complete v147/v150 action traces: identical in all 24 games
-- final rewards: identical in all 24 games
-- mismatches: 0
-- exceptions: 0
-
-Work reduction:
-- total `_V111_REPORT.evaluations`, v147: 29,058
-- total `_V111_REPORT.evaluations`, v150: 22,710
-- reduction: 6,348 evaluations = 21.8459632459%
-
-Per-seed behavior remained action-equivalent even where the amount of work removed varied substantially. Seed 687, for example, dropped from 3,180 to 1,967 v111 evaluations per seat while returning the exact same actions and rewards.
-
-Interpretation:
-- The broader burned panel strengthens the claim that v150 is a runtime-only implementation change rather than a strategic change.
-- This is still not sufficient by itself to inherit every v147 opponent/holdout result, because different opponents can induce different observations. A sealed-panel equivalence check and final runtime qualification are therefore queued.
-
-## Validation plan
-1. Build exact v115 and v147 and verify their known SHA256 values. PASS.
-2. Build v150 and `py_compile` all three agents. PASS.
-3. Focused complete action-equivalence test. PASS.
-4. Focused runtime/work reduction. PASS for work reduction; formal runtime still unresolved due GC tail.
-5. Expand complete action equivalence to all burned seeds `681..692`, both seats. PASS.
-6. Verify complete v147/v150 action equivalence on the prior sealed panel `1701..1712`, both seats. QUEUED.
-7. Run fresh sequential GC-on runtime qualification for v150 with v115/v147 controls under the same instrumentation. QUEUED.
-8. If runtime is satisfactory, run/verify the important known-opponent regression gate for v150 before any PROMOTE.
-9. Formal champion remains v115 until all gates pass.
+## Remaining validation
+1. exact reconstruction / syntax: PASS
+2. focused action equivalence: PASS
+3. full burned action equivalence: PASS
+4. sealed action equivalence: PASS
+5. final GC-on runtime: PASS
+6. hard-opponent regression: QUEUED (`v150` vs `v115`, same 8-opponent universe and seeds `520101..520104`)
+7. public diversity regression: run if needed after hard panel; do not infer from v147 alone
+8. final documentation / PROMOTE only after known-opponent regression is clean
 
 ## Runs
 - duplicate-candidate diagnostic: `36245268147` — success
 - focused v150 equivalence/runtime: `36245566714` — success
 - full burned action equivalence: `36249173738` — success
-- v150 final runtime qualification: `36252343922` — queued
-- v150 sealed action equivalence: `36252365551` — queued
+- final runtime qualification: `36252343922` — success / formal PASS
+- sealed action equivalence: `36252365551` — success
+- hard-opponent regression: workflow added, pending run completion
 
 ## Decision
-KEEP TESTING.
+KEEP TESTING. Formal champion remains v115 until the known-opponent regression gate is clean and promotion records are updated.
