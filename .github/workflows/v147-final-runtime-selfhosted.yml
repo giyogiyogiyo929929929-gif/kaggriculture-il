@@ -1,0 +1,172 @@
+name: v147 final sequential runtime qualification
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-final-runtime-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          exp={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Sequential GC-on per-call timing
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          CANDIDATE='tmp/v147.py'
+          CHAMPION='tmp/v115.py'
+          SEEDS=[681,682,689,691,692]
+          uid=0
+
+          def load_agent(path):
+              global uid
+              uid += 1
+              p=Path(path).resolve()
+              name=f'_v147_runtime_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              mod=importlib.util.module_from_spec(spec)
+              sys.modules[name]=mod
+              sys.path.insert(0,str(p.parent))
+              try:
+                  spec.loader.exec_module(mod)
+              finally:
+                  sys.path.remove(str(p.parent))
+              fn=None
+              for value in vars(mod).values():
+                  if callable(value): fn=value
+              if fn is None: raise RuntimeError(f'no callable in {path}')
+              return fn
+
+          class Timed:
+              def __init__(self, fn):
+                  self.fn=fn
+                  code=getattr(fn,'__code__',None)
+                  self.argcount=code.co_argcount if code else 2
+                  self.ms=[]
+              def __call__(self, obs, config=None):
+                  t0=time.perf_counter_ns()
+                  out=self.fn(*[obs,config][:self.argcount])
+                  self.ms.append((time.perf_counter_ns()-t0)/1_000_000.0)
+                  return out
+
+          def q_nearest(vals,p):
+              if not vals: return None
+              s=sorted(vals)
+              return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+
+          assert gc.isenabled(), 'GC must remain enabled for qualification'
+          all_ms=[]
+          rows=[]
+          errors=[]
+          for seed in SEEDS:
+              for seat in (0,1):
+                  try:
+                      cand=Timed(load_agent(CANDIDATE))
+                      champ=load_agent(CHAMPION)
+                      agents=[cand,champ] if seat==0 else [champ,cand]
+                      env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                      env.run(agents)
+                      statuses=[x.get('status') for x in env.state]
+                      rewards=[x.get('reward') for x in env.state]
+                      if any(s not in ('DONE','INVALID','ERROR') for s in statuses):
+                          raise RuntimeError(f'unexpected terminal statuses seed={seed} seat={seat}: {statuses}')
+                      if any(s in ('INVALID','ERROR') for s in statuses):
+                          raise RuntimeError(f'agent failure seed={seed} seat={seat}: {statuses}')
+                      vals=cand.ms
+                      if len(vals) < 700:
+                          raise RuntimeError(f'too few timed calls seed={seed} seat={seat}: {len(vals)}')
+                      all_ms.extend(vals)
+                      rows.append({
+                        'seed':seed,'candidate_seat':seat,'calls':len(vals),
+                        'median_ms':statistics.median(vals),
+                        'p95_ms':q_nearest(vals,0.95),'p99_ms':q_nearest(vals,0.99),
+                        'max_ms':max(vals),'statuses':statuses,'rewards':rewards,
+                      })
+                  except Exception as e:
+                      errors.append({'seed':seed,'candidate_seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+
+          out={
+            'candidate':'v147_confirmed_v111_clone',
+            'candidate_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'champion':'v115_champion_same_turn_open_squeeze',
+            'engine':'kaggle_environments==1.32.7',
+            'mode':'sequential single-process; GC enabled; candidate invocation wall time via perf_counter_ns',
+            'seeds':SEEDS,'seat_swap':True,'gc_enabled':gc.isenabled(),
+            'calls':len(all_ms),
+            'median_ms':statistics.median(all_ms) if all_ms else None,
+            'p95_ms':q_nearest(all_ms,0.95),'p99_ms':q_nearest(all_ms,0.99),
+            'max_ms':max(all_ms) if all_ms else None,
+            'thresholds':{'p99_ms_lt':50.0,'max_ms_lt':200.0},
+            'errors':errors,'rows':rows,
+          }
+          out['pass']=(not errors and out['calls']>0 and out['p99_ms']<50.0 and out['max_ms']<200.0 and out['gc_enabled'])
+          Path('results/v147_runtime_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert out['pass'], out
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-final-runtime-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
