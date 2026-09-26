@@ -12,38 +12,53 @@ permissions:
 
 jobs:
   acquire:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install exact engine
-        run: python -m pip install 'kaggle-environments==1.32.7'
+      - name: Verify exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install "kaggle-environments==1.32.7"
+          if ($LASTEXITCODE -ne 0) { throw "engine install failed" }
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
       - name: Rebuild verified v121 champion
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
-      - name: Download public notebook output candidate
-        shell: bash
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          set -euxo pipefail
-          mkdir -p incoming
-          curl -fL --retry 3 --retry-delay 2 \
-            'https://www.kaggle.com/api/v1/kernels/output/download/raykkretzschmar/kaggriculture-rank-your-agent?version_number=27' \
-            -o incoming/notebook-output.zip
-          unzip -l incoming/notebook-output.zip
-          unzip -o incoming/notebook-output.zip -d incoming/unpacked
-          find incoming/unpacked -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
-          test -f incoming/unpacked/main.py
-          cp incoming/unpacked/main.py incoming/public_main.py
-          sha256sum incoming/public_main.py eval_agents/v130/v121_champion_same_turn_unwind.py | tee incoming/sha256.txt
-          wc -c -l incoming/public_main.py eval_agents/v130/v121_champion_same_turn_unwind.py | tee incoming/sizes.txt
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "champion rebuild failed" }
+      - name: Download public notebook output candidate
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path incoming | Out-Null
+          curl.exe -fL --retry 3 --retry-delay 2 "https://www.kaggle.com/api/v1/kernels/output/download/raykkretzschmar/kaggriculture-rank-your-agent?version_number=27" -o incoming/notebook-output.zip
+          if ($LASTEXITCODE -ne 0) { throw "candidate download failed" }
+          Expand-Archive -Force incoming/notebook-output.zip incoming/unpacked
+          Get-ChildItem incoming/unpacked -Recurse -File | ForEach-Object { "$($_.FullName) $($_.Length) bytes" }
+          if (-not (Test-Path incoming/unpacked/main.py)) { throw "main.py missing" }
+          Copy-Item incoming/unpacked/main.py incoming/public_main.py -Force
+          $code = @'
+          from pathlib import Path
+          import hashlib
+          for p in [Path('incoming/public_main.py'),Path('eval_agents/v130/v121_champion_same_turn_unwind.py')]:
+              b=p.read_bytes(); print(p, len(b), len(b.splitlines()), hashlib.sha256(b).hexdigest())
+          '@
+          $code | python - | Tee-Object -FilePath incoming/sha256.txt
       - name: Syntax and import preflight
         run: |
+          $ErrorActionPreference = 'Stop'
           python -m py_compile incoming/public_main.py
-          python - <<'PY'
+          if ($LASTEXITCODE -ne 0) { throw "compile failed" }
+          $code = @'
           import importlib.util, pathlib, time
           p=pathlib.Path('incoming/public_main.py')
           t=time.perf_counter(); spec=importlib.util.spec_from_file_location('incoming_candidate',p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -52,7 +67,9 @@ jobs:
           print('agent', callable(getattr(m,'agent',None)))
           print('telemetry', type(getattr(getattr(m,'kaggle_agent',None),'telemetry',None)).__name__)
           assert callable(getattr(m,'kaggle_agent',None)) or callable(getattr(m,'agent',None))
-          PY
+          '@
+          $code | python - | Tee-Object -FilePath incoming/preflight.txt
+          if ($LASTEXITCODE -ne 0) { throw "import preflight failed" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -61,3 +78,4 @@ jobs:
             incoming/
             eval_agents/v130/v121_champion_same_turn_unwind.py
           if-no-files-found: warn
+          retention-days: 30
