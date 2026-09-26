@@ -1,4 +1,4 @@
-name: Incoming Uploaded Main Selfhosted
+name: Incoming Uploaded Main vs v147
 on:
   push:
     branches: [eval-incoming-main-20260926]
@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   evaluate:
     runs-on: [self-hosted, Windows, X64]
@@ -17,32 +18,78 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - name: Reconstruct exact agents and engine
+
+      - name: Reconstruct exact candidate and champion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          $ErrorActionPreference='Stop'; $env:PATH="C:\Program Files\Git\usr\bin;$env:PATH"
-          python -m pip install "kaggle-environments==1.32.7"
-          New-Item -ItemType Directory -Force incoming,results | Out-Null
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force incoming,results,champion_artifact | Out-Null
           $code=@'
           from pathlib import Path
           import base64,lzma,hashlib
-          ns=['eval_payload/candidate_127ed.part0.b85','eval_payload/candidate_127ed.part1.b85','eval_payload/candidate_127ed.part2a.b85','eval_payload/candidate_127ed.part2b.b85','eval_payload/candidate_127ed.part3a.b85','eval_payload/candidate_127ed.part3b.b85']
+          ns=['eval_payload/candidate_127ed.part0','eval_payload/candidate_127ed.part1','eval_payload/candidate_127ed.part2a','eval_payload/candidate_127ed.part2b','eval_payload/candidate_127ed.part3a','eval_payload/candidate_127ed.part3b']
           raw=lzma.decompress(base64.b85decode(''.join(Path(n).read_text(encoding='ascii') for n in ns).encode()))
-          Path('incoming/main.py').write_bytes(raw); h=hashlib.sha256(raw).hexdigest(); print(len(raw),h)
-          assert len(raw)==501543 and h=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
-          '@; $code|python -
-          python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
-          python -m py_compile incoming/main.py
-          python scripts/analysis/audit_agent.py incoming/main.py | Tee-Object incoming/audit.txt
-      - name: Direct v121 matched pairs seat swap
+          Path('incoming/main.py').write_bytes(raw)
+          h=hashlib.sha256(raw).hexdigest()
+          print('candidate_bytes',len(raw)); print('candidate_sha256',h)
+          assert len(raw)==501543
+          assert h=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          '@
+          $code|python -
+          $headers=@{ Authorization="Bearer $env:GITHUB_TOKEN"; Accept="application/vnd.github+json"; "X-GitHub-Api-Version"="2022-11-28" }
+          Invoke-WebRequest -Headers $headers -Uri "https://api.github.com/repos/giyogiyogiyo929929929-gif/kaggriculture-il/actions/artifacts/10897930914/zip" -OutFile champion_artifact.zip
+          Expand-Archive -Force champion_artifact.zip champion_artifact
+          Copy-Item champion_artifact/package/main.py incoming/v147.py
+          $verify=@'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          vals={
+            'incoming/main.py':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652',
+            'incoming/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in vals.items():
+            g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(g,w)
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          es=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest(); print('engine_source_sha256',es)
+          assert es=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          '@
+          $verify|python -
+          python -m py_compile incoming/main.py incoming/v147.py
+
+      - name: Static import loader and audit
         run: |
-          python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline eval_agents/v130/v121_champion_same_turn_unwind.py --seed-start 500001 --seed-count 12 --out results/direct.json
+          $ErrorActionPreference='Stop'
+          $code=@'
+          from pathlib import Path
+          from kaggle_environments.agent import get_last_callable
+          from scripts.preflight import check_imports
+          import hashlib,time
+          for p in [Path('incoming/main.py'),Path('incoming/v147.py')]:
+            chk=check_imports([p]); print(p.name,chk.line()); assert chk.ok,chk.detail
+            raw=p.read_text(encoding='utf-8')
+            t=time.perf_counter(); fn=get_last_callable(raw,path=str(p)); dt=(time.perf_counter()-t)*1000
+            print(p.name,'last_callable',getattr(fn,'__name__',None),'loader_ms',dt)
+            assert callable(fn)
+          '@
+          $code|python - | Tee-Object incoming/preflight.txt
+          python scripts/analysis/audit_agent.py incoming/main.py | Tee-Object incoming/audit_candidate.txt
+          python scripts/analysis/audit_agent.py incoming/v147.py | Tee-Object incoming/audit_champion.txt
+
+      - name: Direct matched pairs seat swap
+        run: |
+          python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline incoming/v147.py --seed-start 500001 --seed-count 12 --out results/direct.json
           if ($LASTEXITCODE -ne 0) { throw 'direct failed' }
+
       - name: Differential known-opponent panels
         run: |
           function P($id,$opp,$seed,$n) {
             New-Item -ItemType Directory -Force "results/$id"|Out-Null
             python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline $opp --seed-start $seed --seed-count $n --out "results/$id/c.json"; if($LASTEXITCODE-ne 0){throw "candidate $id"}
-            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline $opp --seed-start $seed --seed-count $n --out "results/$id/h.json"; if($LASTEXITCODE-ne 0){throw "champion $id"}
+            python scripts/ci/run_exact_pair.py --candidate incoming/v147.py --baseline $opp --seed-start $seed --seed-count $n --out "results/$id/h.json"; if($LASTEXITCODE-ne 0){throw "champion $id"}
             python eval_assets/v130/compare_candidate_champion.py --candidate-json "results/$id/c.json" --champion-json "results/$id/h.json" --opponent $opp --out "results/$id/summary.json"; if($LASTEXITCODE-ne 0){throw "compare $id"}
           }
           P bl21 opponents/bl_v21 500101 4
@@ -51,33 +98,46 @@ jobs:
           P farming opponents/farming_v2 500101 4
           P firstline opponents/first_in_line 500101 4
           P starter starter 500101 4
+
       - name: Serial runtime
         run: |
           python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline starter --seed-start 500301 --seed-count 3 --out results/runtime_candidate.json
-          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline starter --seed-start 500301 --seed-count 3 --out results/runtime_champion.json
+          python scripts/ci/run_exact_pair.py --candidate incoming/v147.py --baseline starter --seed-start 500301 --seed-count 3 --out results/runtime_champion.json
+
       - name: Aggregate
         if: always()
         run: |
           $code=@'
           import json,glob,statistics,math
           from pathlib import Path
-          def pct(x,p): x=sorted(x);q=(len(x)-1)*p;a=int(q);b=min(a+1,len(x)-1);f=q-a;return x[a]*(1-f)+x[b]*f
-          direct=json.load(open('results/direct.json')); dd=[r['candidate_minus_baseline'] for r in direct if r.get('ok')]
+          def pct(x,p):
+            if not x:return None
+            x=sorted(x);q=(len(x)-1)*p;a=int(q);b=min(a+1,len(x)-1);f=q-a;return x[a]*(1-f)+x[b]*f
+          out={'candidate_sha256':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652','champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','engine':'1.32.7'}
+          if Path('results/direct.json').exists():
+            direct=json.load(open('results/direct.json')); ok=[r for r in direct if r.get('ok')]; dd=[r['candidate_minus_baseline'] for r in ok]
+            out['direct']={'n':len(dd),'wins':sum(x>0 for x in dd),'losses':sum(x<0 for x in dd),'ties':sum(x==0 for x in dd),'mean':statistics.fmean(dd) if dd else None,'se':statistics.stdev(dd)/math.sqrt(len(dd)) if len(dd)>1 else 0,'worst':min(dd) if dd else None,'best':max(dd) if dd else None,'rows':[{'seed':r['seed'],'diff':r['candidate_minus_baseline'],'normal_margin':r['normal']['rewards'][0]-r['normal']['rewards'][1],'swapped_margin':r['swapped']['rewards'][1]-r['swapped']['rewards'][0]} for r in ok]}
           panels=[]; allv=[]
           for p in glob.glob('results/*/summary.json'):
-            s=json.load(open(p)); v=[r['candidate_minus_champion'] for r in s.get('rows',[])]; allv+=v; panels.append({'name':Path(p).parent.name,'n':len(v),'wins':sum(x>0 for x in v),'losses':sum(x<0 for x in v),'mean':statistics.fmean(v) if v else None,'worst':min(v) if v else None,'seat0_mean':statistics.fmean([r['seat0_diff'] for r in s['rows']]) if v else None,'seat1_mean':statistics.fmean([r['seat1_diff'] for r in s['rows']]) if v else None})
-          def rt(p):
-            rs=json.load(open(p));x=[z for r in rs for z in r.get('candidate_runtime_ms',[])];return {'n':len(x),'median':statistics.median(x),'p95':pct(x,.95),'p99':pct(x,.99),'max':max(x),'exceptions':sum(r.get('candidate_exceptions',0) for r in rs)}
-          se=statistics.stdev(allv)/math.sqrt(len(allv)) if len(allv)>1 else 0
-          out={'candidate_sha256':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652','champion':'v121_champion_same_turn_unwind','engine':'1.32.7','direct':{'n':len(dd),'wins':sum(x>0 for x in dd),'losses':sum(x<0 for x in dd),'mean':statistics.fmean(dd) if dd else None,'se':statistics.stdev(dd)/math.sqrt(len(dd)) if len(dd)>1 else 0,'worst':min(dd) if dd else None,'best':max(dd) if dd else None},'differential':{'n':len(allv),'wins':sum(x>0 for x in allv),'losses':sum(x<0 for x in allv),'mean':statistics.fmean(allv) if allv else None,'se':se,'mean_minus_2se':statistics.fmean(allv)-2*se if allv else None,'worst':min(allv) if allv else None,'panels':panels},'runtime':{'candidate':rt('results/runtime_candidate.json'),'champion':rt('results/runtime_champion.json')}}
-          out['runtime']['candidate']['nfr_ok']=out['runtime']['candidate']['p99']<50 and out['runtime']['candidate']['max']<200 and out['runtime']['candidate']['exceptions']==0
-          Path('results/summary.json').write_text(json.dumps(out,indent=2));print(json.dumps(out,indent=2))
-          '@; $code|python -
+            s=json.load(open(p)); rows=s.get('rows',[]); v=[r['candidate_minus_champion'] for r in rows]; allv+=v
+            panels.append({'name':Path(p).parent.name,'n':len(v),'wins':sum(x>0 for x in v),'losses':sum(x<0 for x in v),'ties':sum(x==0 for x in v),'mean':statistics.fmean(v) if v else None,'worst':min(v) if v else None,'seat0_mean':statistics.fmean([r['seat0_diff'] for r in rows]) if v else None,'seat1_mean':statistics.fmean([r['seat1_diff'] for r in rows]) if v else None,'rows':rows})
+          if allv:
+            se=statistics.stdev(allv)/math.sqrt(len(allv)) if len(allv)>1 else 0
+            out['differential']={'n':len(allv),'wins':sum(x>0 for x in allv),'losses':sum(x<0 for x in allv),'ties':sum(x==0 for x in allv),'mean':statistics.fmean(allv),'se':se,'mean_minus_2se':statistics.fmean(allv)-2*se,'worst':min(allv),'best':max(allv),'panels':panels}
+          def rt(path):
+            if not Path(path).exists():return None
+            rs=json.load(open(path)); x=[z for r in rs for z in r.get('candidate_runtime_ms',[])]; exc=sum(r.get('candidate_exceptions',0) for r in rs)
+            return {'n':len(x),'median':statistics.median(x) if x else None,'p95':pct(x,.95),'p99':pct(x,.99),'max':max(x) if x else None,'exceptions':exc,'nfr_ok':bool(x) and pct(x,.99)<50 and max(x)<200 and exc==0}
+          out['runtime']={'candidate':rt('results/runtime_candidate.json'),'champion':rt('results/runtime_champion.json')}
+          Path('results/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@
+          $code|python -
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: incoming-upload-selfhosted-results
+          name: incoming-127ed-v147-eval
           path: |
-            incoming/audit.txt
+            incoming/*.txt
             results/
           retention-days: 30
