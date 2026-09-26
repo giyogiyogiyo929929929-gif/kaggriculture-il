@@ -1,0 +1,101 @@
+name: v153 v147 hard gate github hosted
+
+on:
+  push:
+    branches: [eval-v153-v147-dense-self-exposure-guard-20260927]
+    paths: [".github/workflows/v153-v147-hard-gate-ghhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          mkdir -p tmp results/hard
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v153_v147_dense_self_exposure_guard.py tmp/v147.py tmp/v153.py
+          python -m py_compile tmp/v147.py tmp/v153.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          assert got=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',got
+          print('v147_sha256='+got)
+          print('v153_sha256='+hashlib.sha256(Path('tmp/v153.py').read_bytes()).hexdigest())
+          PY
+      - name: Hard opponent panel 520101 to 520104
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/peak_2950/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/peak_2950.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/salem_2900/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/salem_2900.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/score_2820/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/score_2820.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/jaxa_2802/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/jaxa_2802.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/thomas_router_95/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/thomas_router_95.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/tetsutani_ms/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/tetsutani_ms.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/melon_squeeze/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/melon_squeeze.json
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v153.py --champion tmp/v147.py --opponent opponents/shop_router_v7/main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results/hard/shop_router_v7.json
+      - name: Aggregate outcome transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob,json,statistics
+          from pathlib import Path
+          def state(x): return 'W' if x>0 else ('L' if x<0 else 'D')
+          transitions={}; details=[]; cash=[]; exc=0; opponents={}
+          for p in sorted(glob.glob('results/hard/*.json')):
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              exc += int(d.get('candidate_exceptions',0))+int(d.get('champion_exceptions',0))
+              opp=Path(p).stem; oppcash=[]; optrans={}
+              for row in d['rows']:
+                  delta=float(row['candidate_minus_champion_money']); cash.append(delta); oppcash.append(delta)
+                  for s in row['seats']:
+                      c=state(float(s['candidate_margin'])); h=state(float(s['champion_margin']))
+                      k=f'{h}->{c}'; transitions[k]=transitions.get(k,0)+1; optrans[k]=optrans.get(k,0)+1
+                      if h!=c:
+                          details.append({'opponent':opp,'seed':row['seed'],'swap':s['swap'],'transition':k,'candidate_margin':s['candidate_margin'],'champion_margin':s['champion_margin'],'candidate_minus_champion_money':s['candidate_minus_champion_money']})
+              opponents[opp]={'mean_cash_delta':statistics.fmean(oppcash),'worst_seed_delta':min(oppcash),'transitions':optrans}
+          regress=sum(transitions.get(k,0) for k in ('W->D','W->L','D->L'))
+          improve=sum(transitions.get(k,0) for k in ('L->D','L->W','D->W'))
+          out={'games':sum(transitions.values()),'transitions':transitions,'regressions':regress,'improvements':improve,'changed_outcomes':details,'cash_seed_mean':statistics.fmean(cash),'cash_seed_worst':min(cash),'exceptions':exc,'opponents':opponents}
+          Path('results/v153_hard_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert exc==0,out
+          assert regress==0,out
+          assert improve>0,out
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-v147-hard-gate-ghhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
