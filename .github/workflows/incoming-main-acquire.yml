@@ -1,0 +1,63 @@
+name: incoming main acquisition and preflight
+
+on:
+  push:
+    branches: [eval-incoming-main-20260926]
+    paths:
+      - '.github/workflows/incoming-main-acquire.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine
+        run: python -m pip install 'kaggle-environments==1.32.7'
+      - name: Rebuild verified v121 champion
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
+      - name: Download public notebook output candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p incoming
+          curl -fL --retry 3 --retry-delay 2 \
+            'https://www.kaggle.com/api/v1/kernels/output/download/raykkretzschmar/kaggriculture-rank-your-agent?version_number=27' \
+            -o incoming/notebook-output.zip
+          unzip -l incoming/notebook-output.zip
+          unzip -o incoming/notebook-output.zip -d incoming/unpacked
+          find incoming/unpacked -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+          test -f incoming/unpacked/main.py
+          cp incoming/unpacked/main.py incoming/public_main.py
+          sha256sum incoming/public_main.py eval_agents/v130/v121_champion_same_turn_unwind.py | tee incoming/sha256.txt
+          wc -c -l incoming/public_main.py eval_agents/v130/v121_champion_same_turn_unwind.py | tee incoming/sizes.txt
+      - name: Syntax and import preflight
+        run: |
+          python -m py_compile incoming/public_main.py
+          python - <<'PY'
+          import importlib.util, pathlib, time
+          p=pathlib.Path('incoming/public_main.py')
+          t=time.perf_counter(); spec=importlib.util.spec_from_file_location('incoming_candidate',p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          print('import_ms', (time.perf_counter()-t)*1000)
+          print('kaggle_agent', callable(getattr(m,'kaggle_agent',None)))
+          print('agent', callable(getattr(m,'agent',None)))
+          print('telemetry', type(getattr(getattr(m,'kaggle_agent',None),'telemetry',None)).__name__)
+          assert callable(getattr(m,'kaggle_agent',None)) or callable(getattr(m,'agent',None))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incoming-main-acquisition
+          path: |
+            incoming/
+            eval_agents/v130/v121_champion_same_turn_unwind.py
+          if-no-files-found: warn
