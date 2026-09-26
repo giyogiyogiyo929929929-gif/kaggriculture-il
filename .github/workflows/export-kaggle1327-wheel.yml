@@ -1,0 +1,24 @@
+name: Export Kaggle 1.32.7 Wheel
+on:
+  push:
+    branches: [eval-upload-main-20260926]
+    paths: [.github/workflows/export-kaggle1327-wheel.yml]
+jobs:
+  export:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download exact wheel
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          python -m pip download --no-deps "kaggle-environments==1.32.7" -d results
+          python -c "import hashlib,pathlib; p=next(pathlib.Path('results').glob('kaggle_environments-1.32.7-*.whl')); h=hashlib.sha256(p.read_bytes()).hexdigest(); print(h); assert h=='2a1bb862ad2d6463080f80f6a766f46d94b53fd57168cfeddb9857fc3dbc4c8f'"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-environments-1.32.7-wheel
+          path: results/*.whl
+          retention-days: 7
