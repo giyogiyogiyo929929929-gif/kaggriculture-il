@@ -1,0 +1,162 @@
+name: v149 vs v115 pre-reorder duplicate-sell guard screen
+
+on:
+  push:
+    branches: [eval-v149-pre-reorder-guard-20260926]
+    paths: [".github/workflows/v149-v115-pre-reorder-guard-screen.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build exact agents and static checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v149_v147_pre_reorder_duplicate_guard.py tmp\v115.py tmp\v149.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v149.py
+          $check = @'
+          import hashlib, importlib.util, sys
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest() == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest() == '8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          p=Path('tmp/v149.py').resolve(); spec=importlib.util.spec_from_file_location('_v149_static',p); mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          assert mod._v149_duplicate_sell_item({'market':[['SELL','CARROT',1],['SELL','CARROT',2]]}) is True
+          assert mod._v149_duplicate_sell_item({'market':[['SELL','CARROT',1],['SELL','WHEAT',2]]}) is False
+          print('v149_sha256', hashlib.sha256(Path('tmp/v149.py').read_bytes()).hexdigest())
+          '@
+          $check | python -
+      - name: Runtime preflight
+        run: |
+          python scripts\eval.py tmp\v149.py tmp\v115.py -n 1 -j 1 --seed-start 681 --json results\runtime_681.json
+      - name: Focus seed691 vs v115 and v147
+        run: |
+          python scripts\eval.py tmp\v149.py tmp\v115.py -n 1 -j 1 --seed-start 691 --json results\seed691_v149_vs_v115.json
+          python scripts\eval.py tmp\v149.py tmp\v147.py -n 1 -j 1 --seed-start 691 --json results\seed691_v149_vs_v147.json
+      - name: Original v147 burned matched seeds with seat swap
+        run: |
+          $seeds = @(121,662,681,1131,3235,3599,3755,4052,4197,4828,6370,7448)
+          foreach ($seed in $seeds) {
+            python scripts\eval.py tmp\v149.py tmp\v115.py -n 1 -j 1 --seed-start $seed --json ("results\burned_"+$seed+".json")
+            if ($LASTEXITCODE -ne 0) { throw "burned seed failed: $seed" }
+          }
+      - name: Focused first-divergence telemetry seed691
+        run: |
+          $code = @'
+          import copy, importlib.util, json, sys
+          from pathlib import Path
+          from kaggle_environments import make
+          uid=0
+          def load_agent(path):
+              global uid; uid+=1; p=Path(path).resolve(); name=f'_v149_diag_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); mod=importlib.util.module_from_spec(spec); sys.modules[name]=mod; sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              agent=None
+              for value in vars(mod).values():
+                  if callable(value): agent=value
+              return agent,mod
+          class Recorder:
+              def __init__(self,fn): self.fn=fn; code=getattr(fn,'__code__',None); self.argcount=code.co_argcount if code else 2; self.trace=[]
+              def __call__(self,obs,config=None):
+                  action=self.fn(*[obs,config][:self.argcount]); self.trace.append({'step':int(obs.get('step',-1)),'money':int(obs['farms'][int(obs.get('player',0))]['money']),'action':copy.deepcopy(action)}); return action
+          def run(seed,a_path,b_path):
+              af,am=load_agent(a_path); bf,bm=load_agent(b_path); a=Recorder(af); b=Recorder(bf)
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run([a,b])
+              return {'a':a.trace,'b':b.trace,'rewards':[s.get('reward') for s in env.state],'a_telemetry':copy.deepcopy(getattr(am,'_V149_REPORT',None))}
+          def first_div(x,y):
+              bx={r['step']:r for r in x}; by={r['step']:r for r in y}
+              s=next((k for k in sorted(set(bx)&set(by)) if bx[k]['action']!=by[k]['action']),None)
+              return None if s is None else {'step':s,'control':bx[s],'candidate':by[s]}
+          seed=691
+          control=run(seed,'tmp/v115.py','tmp/v115.py')
+          s0=run(seed,'tmp/v149.py','tmp/v115.py')
+          s1=run(seed,'tmp/v115.py','tmp/v149.py')
+          out={'seed':seed,'control_rewards':control['rewards'],'seat0_rewards':s0['rewards'],'seat1_rewards':s1['rewards'],'seat0_first_divergence':first_div(control['a'],s0['a']),'seat1_first_divergence':first_div(control['b'],s1['b']),'seat0_telemetry':s0['a_telemetry'],'seat1_telemetry':s1['a_telemetry']}
+          Path('results/v149_seed691_telemetry.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+      - name: Public known-opponent regression panel
+        run: |
+          $specs = @(
+            @('starter','starter'), @('beat_v48','opponents\beat_v48\main.py'), @('bl_v20','opponents\bl_v20\main.py'),
+            @('bl_v21','opponents\bl_v21\main.py'), @('farming_v2','opponents\farming_v2\main.py'), @('frontier_prvsiyan','opponents\frontier_prvsiyan\main.py')
+          )
+          foreach ($s in $specs) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v149.py --champion tmp\v115.py --opponent $s[1] --seed-start 661 --seed-count 4 --jobs 2 --out ("results\public_"+$s[0]+".json")
+            if ($LASTEXITCODE -ne 0) { throw "public panel failed: $($s[0])" }
+          }
+      - name: Aggregate screen
+        if: always()
+        run: |
+          $code = @'
+          import glob, hashlib, json, statistics
+          from pathlib import Path
+          def direct(path):
+              d=json.loads(Path(path).read_text(encoding='utf-8')); vals=[]; seat=[]
+              for g in d.get('matches_detail',[]): seat.append(float(g['money'][0])-float(g['money'][1]))
+              if seat: vals=[statistics.fmean(seat)]
+              return {'delta':vals[0] if vals else None,'seat_diffs':seat,'exceptions':d.get('exceptions')}
+          burned=[]
+          for p in sorted(glob.glob('results/burned_*.json'), key=lambda x:int(Path(x).stem.split('_')[-1])):
+              r=direct(p); r['seed']=int(Path(p).stem.split('_')[-1]); burned.append(r)
+          bvals=[r['delta'] for r in burned if r['delta'] is not None]
+          pubs=[]; pvals=[]
+          for p in sorted(glob.glob('results/public_*.json')):
+              d=json.load(open(p,encoding='utf-8')); vals=[float(r['candidate_minus_champion_money']) for r in d.get('rows',[])]; pvals+=vals
+              pubs.append({'panel':Path(p).stem,'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None})
+          out={
+            'candidate':'v149_v147_pre_reorder_duplicate_guard','parent_behavior':'v147_confirmed_v111_clone','champion':'v115_champion_same_turn_open_squeeze',
+            'engine':'kaggle_environments==1.32.7','metric':'candidate_minus_champion = candidate - champion',
+            'sha256':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ['tmp/v115.py','tmp/v147.py','tmp/v149.py']},
+            'seed691_vs_v115':direct('results/seed691_v149_vs_v115.json'),'seed691_vs_v147':direct('results/seed691_v149_vs_v147.json'),
+            'burned':{'pairs':len(bvals),'wins':sum(x>0 for x in bvals),'losses':sum(x<0 for x in bvals),'ties':sum(x==0 for x in bvals),'mean':statistics.fmean(bvals) if bvals else None,'worst':min(bvals) if bvals else None,'best':max(bvals) if bvals else None,'rows':burned},
+            'public':{'pairs':len(pvals),'wins':sum(x>0 for x in pvals),'losses':sum(x<0 for x in pvals),'ties':sum(x==0 for x in pvals),'mean':statistics.fmean(pvals) if pvals else None,'worst':min(pvals) if pvals else None,'panels':pubs}}
+          Path('results/v149_screen_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v149-v115-pre-reorder-guard-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
