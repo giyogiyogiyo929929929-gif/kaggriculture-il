@@ -19,6 +19,8 @@ entries=[
  ('v117_wheat_post_town_delay1.py',d,None),
 ]
 for name,text,sha in entries:
- p=root/name; p.write_text(text); got=hashlib.sha256(p.read_bytes()).hexdigest()
+ p=root/name
+ p.write_bytes(text.encode('utf-8'))
+ got=hashlib.sha256(p.read_bytes()).hexdigest()
  if sha is not None: assert got==sha,(name,got,sha)
  print(name,got)
