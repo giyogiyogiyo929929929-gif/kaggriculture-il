@@ -1,0 +1,200 @@
+--- v115.py
++++ v104.py
+@@ -3442,13 +3442,62 @@
+ 
+ def _r36_reserve(obs,action):
+     player=int(obs['player']);h=_RACE_STATE.get(player,{}).get('horizon',0)
+-    if h>_R37_HORIZONS.get(player,2):
++    base_h=_R37_HORIZONS.get(player,2)
++    if h<=base_h:return _RACE_ORIG_RESERVE(obs,action)
++    # v104-branch96: mirror EGG uses a 20-turn reservation only while the public EGG market is scarce; every other item keeps v96 horizon.
++    if h!=_RACE_HORIZON_MIRROR:
+         saved=_R37_HORIZONS.get(player);_R37_HORIZONS[player]=h
+         try:return _RACE_ORIG_RESERVE(obs,action)
+         finally:
+             if saved is None:_R37_HORIZONS.pop(player,None)
+             else:_R37_HORIZONS[player]=saved
+-    return _RACE_ORIG_RESERVE(obs,action)
++    step=int(obs['step'])
++    if not 216<=step<696:return action
++    native=_IMPL.chassis.players[player]
++    tape=_IMPL.chassis.routes[native['route']]
++    commands=[action.get('farmer') or ['PASS'],*(action.get('hands') or [])]
++    view=FarmView(obs)
++    if any(len(c)>1 and c[0]=='PLACE' and c[1] in ANIMAL_STRUCTURE
++           and view.inv(i).get(c[1],0)>0 for i,c in enumerate(commands[:len(view.positions)])):
++        return action
++    stock=projected_shed(action,view)
++    market=action.get('market',[])
++    blocked={o[1] for o in market if len(o)>1 and o[0] in ('SELL','BUY_PRODUCT')}
++    blocked.update(c[1] for c in commands if len(c)>1 and c[0]=='PICKUP')
++    blocked.update(c[1] for queue in native['pending'].values() for pos,c in queue
++                   if len(c)>1 and c[0]=='PICKUP')
++    debts=native['sell_state'].setdefault('r36_debts',{})
++    block_end=(step//72+1)*72-1
++    for item in PRODUCTS:
++        if item in ('WHEAT','FERTILIZER') or item in blocked or view.prices.get(item,0)<2:continue
++        available=max(0,int(stock.get(item,0)))
++        if not available or len(market)>=10:continue
++        # v104h20-branch96: shorten EGG reservation only while the public EGG market is scarce.
++        # Once inventory reaches the engine's I0=10000 reference level, retain v96's 24-turn mirror horizon.
++        egg_inventory=int(obs['market']['inventory'].get('EGG',10000))
++        item_h=20 if item=='EGG' and egg_inventory<10000 else h
++        end=min(695,step+item_h,block_end)
++        if end<=step:continue
++        reservations=[]
++        for due_step in range(step+1,end+1):
++            future=tape[due_step]
++            work=[future.get('farmer') or ['PASS'],*(future.get('hands') or [])]
++            if any(len(c)>1 and c[:2]==['PICKUP',item] for c in work):break
++            if any(len(o)>1 and o[:2]==['BUY_PRODUCT',item] for o in future.get('market',[])):break
++            planned=sum(max(0,int(o[2])) for o in future.get('market',[]) if len(o)>=3 and o[:2]==['SELL',item])
++            amount=min(available,max(0,planned-debts.get(due_step,{}).get(item,0)))
++            if amount:
++                reservations.append((due_step,amount));available-=amount
++            if not available:break
++        total=sum(a for _,a in reservations)
++        if not total:continue
++        order=['SELL',item,total]
++        try: idx=next(i for i,o in enumerate(market) if not o); market[idx]=order
++        except StopIteration: market.append(order)
++        for due_step,amount in reservations:
++            bucket=debts.setdefault(due_step,{})
++            bucket[item]=bucket.get(item,0)+amount
++        _R36_REPORT['reservations']+=len(reservations);_R36_REPORT['units']+=total
++    return dict(action,market=market)
+ 
+ def _race_reserve_h24(obs,action):
+     return _r36_reserve(obs,action)
+@@ -3492,14 +3541,66 @@
+ 
+ agent.telemetry=_R37_REPORT
+ 
+-# r38: minimum realized-delta confirmation.  A persistent mirror now requires
+-# at least two consecutive exact replay transitions before the long horizon is
+-# allowed.  The first matching transition records the candidate, the second
+-# one confirms it.  Any mismatch rejects the mirror path for that game.
+-_R38_PARENT=agent
+-_R38_STATE={}
+-_R38_REPORT=dict(r38_calls=0,r38_candidates=0,r38_confirmed=0,r38_rejected=0,r38_errors=0)
+-_R38_MIN_STREAK=2
++# v96: require a persistent exact replay for the 24-turn mirror reserve.  The
++# parent r38 accepted two matching transitions; this layer keeps the exact same
++# public test but waits for 11 consecutive matches.  The stricter gate is
++# intentionally global: only the mirror branch is delayed, all other race/
++# prediction paths remain byte-for-byte parent behavior.
++_V96_PARENT=agent
++_V96_STATE={}
++_V96_REPORT=dict(v96_calls=0,v96_candidates=0,v96_confirmed=0,v96_rejected=0,v96_errors=0)
++_V96_MIN_STREAK=11
++
++def _v96_state(player,step):
++    st=_V96_STATE.get(player)
++    if st is None or step<=st.get('step',-1):
++        st=_V96_STATE[player]=dict(step=-1,pending=None,streak=0,confirmed=False,rejected=False)
++    st['step']=step
++    return st
++
++def agent(observation,configuration=None):
++    step=int(observation.get('step',0));player=int(observation.get('player',0))
++    if step==0:
++        _V96_STATE.pop(player,None)
++        for k in _V96_REPORT:_V96_REPORT[k]=0
++    _V96_REPORT['v96_calls']+=1
++    st=_v96_state(player,step)
++    try:
++        pending=st.get('pending')
++        if pending and pending['step']==step-1 and not st['rejected']:
++            farms=observation['farms']
++            own_delta=int(farms[player]['money'])-pending['own_money']
++            rival_delta=int(farms[1-player]['money'])-pending['rival_money']
++            if own_delta==rival_delta:
++                st['streak']+=1
++                if st['streak']==1:_V96_REPORT['v96_candidates']+=1
++                if st['streak']>=_V96_MIN_STREAK and not st['confirmed']:
++                    st['confirmed']=True;_V96_REPORT['v96_confirmed']+=1
++            else:
++                st['rejected']=True;st['confirmed']=False;_V96_REPORT['v96_rejected']+=1
++        st['pending']=None
++    except Exception:_V96_REPORT['v96_errors']+=1
++
++    # Parent first: preserve all non-mirror behavior and the parent's own
++    # short-horizon race decisions.  We only suppress the long mirror reserve
++    # until the stricter confirmation is satisfied.
++    saved=_RACE_HORIZON_MIRROR
++    try:
++        if not st['confirmed']:
++            globals()['_RACE_HORIZON_MIRROR']=2
++        action=_V96_PARENT(observation,configuration)
++    finally:
++        globals()['_RACE_HORIZON_MIRROR']=saved
++    try:
++        if not st['confirmed'] and not st['rejected'] and _v105_standard(configuration) and _v44y_clone_gate(observation):
++            farms=observation['farms']
++            st['pending']=dict(step=step,own_money=int(farms[player]['money']),rival_money=int(farms[1-player]['money']))
++    except Exception:_V96_REPORT['v96_errors']+=1
++    return action
++
++agent.telemetry=_V96_REPORT
++kaggle_submission_agent_v96=agent
++
++# r38: minimum realized-delta confirmation.  A persistent mirror now requires
++# at least two consecutive exact replay transitions before the long horizon is
++# allowed.  The first matching transition records the candidate, the second
++# one confirms it.  Any mismatch rejects the mirror path for that game.
++_R38_PARENT=agent
++_R38_STATE={}
++_R38_REPORT=dict(r38_calls=0,r38_candidates=0,r38_confirmed=0,r38_rejected=0,r38_errors=0)
++_R38_MIN_STREAK=2
+@@ -3563,12 +3664,45 @@
+ agent.telemetry=_R38_REPORT
+ kaggle_submission_agent_r38=agent
+ 
++# v99 candidate: remove r38 tail and use v96 behavior directly.  This alias is
++# deliberate and marks v96 as the active parent for the subsequent wrappers.
++agent=_V96_PARENT
++agent.telemetry=_V96_PARENT.telemetry
++kaggle_submission_agent_v99=agent
++
++# v100: lead-11 activation for v96 persistent-mirror behavior.  Preserve the
++# 11-transition exact replay confirmation but allow the mirror reserve to turn
++# on one step earlier than the previous implementation's observation boundary.
++_V100_PARENT=agent
++_V100_REPORT=dict(v100_calls=0,v100_early=0,v100_errors=0)
++def agent(observation,configuration=None):
++    _V100_REPORT['v100_calls']+=1
++    try:
++        step=int(observation.get('step',0));player=int(observation.get('player',0))
++        st=_V96_STATE.get(player)
++        # If the 11th exact transition is pending from the previous turn, apply
++        # it before the parent decision so the mirror horizon activates now.
++        if st and not st.get('confirmed') and not st.get('rejected') and st.get('pending') and st['pending']['step']==step-1 and st.get('streak',0)==_V96_MIN_STREAK-1:
++            farms=observation['farms'];p=st['pending']
++            if int(farms[player]['money'])-p['own_money']==int(farms[1-player]['money'])-p['rival_money']:
++                st['streak']+=1;st['confirmed']=True;_V96_REPORT['v96_confirmed']+=1;_V100_REPORT['v100_early']+=1
++        return _V100_PARENT(observation,configuration)
++    except Exception:
++        _V100_REPORT['v100_errors']+=1
++        return _V100_PARENT(observation,configuration)
++agent.telemetry=_V100_REPORT
++kaggle_submission_agent_v100=agent
++
+ # Preserve v77 behavior while still passing through the rewritten v77->v115 patch.
+ kaggle_submission_agent_v77 = agent
+ 
+-# EXP293 opening micro-audit.  Public notebook inspiration: V4x Double-Pump Hires + C16 trader order,
+-# Apache-2.0 mechanisms only; no copied source.  v115 replaces the old exposed BUY5+BUY10+SELL60 tape
+-# with a small neutral probe at step0, then buys the five feed units before the rival's slot-1 feed BUY.
+-_OPEN_PARENT=agent
++# v101 candidate: h20 in scarce market, via the v104 reserve already embedded above.
++# Keep v100 lead-11 activation as the active parent and preserve every other path.
++_V101_PARENT=agent
++_V101_REPORT=dict(v101_calls=0)
++def agent(observation,configuration=None):
++    _V101_REPORT['v101_calls']+=1
++    return _V101_PARENT(observation,configuration)
++agent.telemetry=_V101_REPORT
++kaggle_submission_agent_v101=agent
++
++# v104 candidate final alias: scarce EGG mirror horizon=20, lead-11 mirror activation.
++kaggle_submission_agent_v104=agent
