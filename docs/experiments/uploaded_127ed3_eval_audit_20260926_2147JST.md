@@ -25,6 +25,22 @@ Audit the uploaded raw candidate and the current safety-v3 / CARROT2 feed2 evalu
 - burned stress already recorded: seeds 621-632, 11W/1L/0D, mean +856.6667, mean-2SE +360.1307, worst -946, exceptions 0, non-DONE 0.
 - decision remains KEEP TESTING; champion is unchanged.
 
+## Raw-isolation attribution — PASS
+
+Actions run `36242466654`, job `108405426847`, self-hosted Windows X64 runner `CIYOI`.
+
+Compared byte-exact safety-v3 against its byte-exact raw parent on the ten already-burned dev seeds `641, 350003, 101, 211, 347, 509, 733, 911, 1201, 1601`, both seats.
+
+- exact raw SHA256: `127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652`
+- exact safety-v3 SHA256: `87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df`
+- all 20 per-seat deltas: exactly `0`
+- matched-pair W/L/D: `0/0/10`
+- mean / median / SE / worst / best safety-v3-minus-raw: all `0`
+- safety-v3 exceptions: `0`
+- raw exceptions: `0`
+
+Conclusion: on this burned dev block the safety-only wrapper is tactically inert. The previously observed improvement versus v147 is attributable to the uploaded raw tactical path, not to the wrapper; safety-v3 retains the raw trajectory while adding the outer exception fallback.
+
 ## Sealed seed audit
 
 Two different blocks had been described as sealed:
@@ -77,7 +93,7 @@ Formal workflows target:
 ## Decision
 
 - raw uploaded candidate: promising but not the promotion target; keep as immutable parent/reference.
-- safety-v3: KEEP TESTING pending canonical sealed block and important-opponent regression.
+- safety-v3: raw-isolation PASS and KEEP TESTING pending canonical sealed block and important-opponent regression.
 - feed2 exact child: DEV TEST ONLY; no sealed seeds allocated to it.
 - champion remains v147.
 - no Kaggle submission performed.
