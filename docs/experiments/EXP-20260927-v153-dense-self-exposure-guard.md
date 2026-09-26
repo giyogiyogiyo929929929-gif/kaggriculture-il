@@ -2,7 +2,7 @@
 
 ## Status
 
-**FOCUSED TEST RUNNING / NOT PROMOTED.** Formal champion remains v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
+**FOCUSED PASS / DIRECT BURNED REGRESSION QUEUED / NOT PROMOTED.** Formal champion remains v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
 
 ## Parent / scope
 
@@ -11,42 +11,59 @@
 - builder: `ci/build_v153_v147_dense_self_exposure_guard.py`
 - formal engine: `kaggle_environments==1.32.7`
 - focused workflow run: `36259740294`
+- burned direct workflow run: `36259855401`
 
 v153 preserves the v152 tactical mechanism exactly and adds one bugfix only: if the first market entry is an empty order `[]`, return the parent action before evaluating `orders[0][0]`.
 
-## Why the bugfix is separated
+## v152 bug that required v153
 
 Formal v152 focused run `36250312541` completed its game evaluation successfully against `score_2820`, seed `520104`, both seats:
 
-- v147: final margin `-9` in both seats
-- v152: final margin `+34` in both seats
+- v147 final margin: `-9` in both seats
+- v152 final margin: `+34` in both seats
 - candidate-minus-champion money: `+20 / +20`, pair `+20`
 - margin delta: `+43 / +43`
 - external candidate exceptions: `0`
 - v152 telemetry per seat: `eligible=3`, `changed=1`, `errors=11`
 
-The 11 internal errors were traced to parent market actions whose first entry was `[]`; v152 indexed `orders[0][0]` before checking that first order was non-empty. Example affected steps in the source replay include 474, 569, 573, 670, 671, 677, 686, 687, 688, 689, 690. These turns were not the tactical reorder turn.
+The 11 internal errors were traced to parent market actions whose first entry was `[]`; v152 indexed `orders[0][0]` before checking that first order was non-empty. Example affected steps in the source replay include 474, 569, 573, 670, 671, 677, 686, 687, 688, 689, 690. These were not the tactical reorder turn.
 
-The useful change remained one valid reorder per game. The bugfix therefore does not alter the economic hypothesis and should preserve the focused gain while reducing internal errors to zero.
+## v153 focused formal result
 
-## Required focused acceptance
+The guarded implementation reproduces the tactical gain exactly on `score_2820`, seed `520104`, both seats:
 
-Before any broader regression:
+- v153 money: `148766` in both candidate seats
+- v147 money: `148746` in both corresponding champion controls
+- candidate-minus-champion money: `+20 / +20`, pair `+20`
+- v153 margin: `+34` in both seats
+- v147 margin: `-9` in both seats
+- margin delta: `+43 / +43`
+- seat dependence: none in this cell
+- external candidate exceptions: `0`
+- telemetry per seat: `eligible=3`, `changed=1`, `errors=0`
 
-1. exact v147 SHA assertion passes;
-2. syntax passes;
-3. same score_2820 / 520104 both seats;
-4. candidate-minus-champion remains `+20/+20` (or at least preserves the loss-to-win conversion in both seats);
-5. `_V153_REPORT.errors == 0` in both seats;
-6. `_V153_REPORT.changed == 1` in both seats;
-7. external exceptions == 0.
+Thus the empty-order bugfix removes all observed internal errors without changing the single useful reorder or the loss-to-win conversion.
 
-If all pass, next gate is burned direct seeds 681..692, both seats. No sealed seeds are to be spent before direct regression and hard-panel checks.
+The historical v111 counterfactual run `36250732794` also completed successfully with zero errors and showed no v111 change at step649. This supports the interpretation that the v153 mechanism reaches a market-order case structurally excluded by existing v111 rather than duplicating a current champion reorder.
+
+## Next gate
+
+Burned direct regression workflow `36259855401` evaluates v153 directly against exact v147 on seeds `681..692`, both seats, using `candidate_minus_champion = candidate - champion`. These are already-burned development seeds; no sealed information is consumed.
+
+Acceptance before hard-panel expansion:
+
+- no candidate exceptions;
+- no material worst regression;
+- no systematic seat bias;
+- any changed seed is inspected before proceeding;
+- if neutral on direct clone-like play, retain the hard-cell win as opponent-specific evidence but do not infer general improvement from that alone.
+
+If the direct gate is acceptable, next steps are hard-opponent cells 520101..520104, activation/wash-item net-revenue telemetry, then stress. Only after those gates may an unused sealed range be declared.
 
 ## Decision discipline
 
-- v152: tactically promising but implementation has internal exception path; do not promote.
+- v152: tactically successful but implementation has an internal exception path; do not promote.
 - v153: KEEP TESTING.
-- champion remains v147.
+- champion remains exact v147.
 - no Kaggle submission.
 - no new sealed seeds spent.
