@@ -1,0 +1,112 @@
+name: v153 v147 burned direct formal 681-692
+
+on:
+  push:
+    branches: [eval-v153-v147-dense-self-exposure-20260927]
+    paths: ["ci/TRIGGER_v153_burned_direct_formal"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v147 and formal v153
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guarded.py tmp\v147.py tmp\v153.py
+          python -m py_compile tmp\v147.py tmp\v153.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          expected={
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'tmp/v153.py':'26c756e5a1acc78bae124775da4d79239ed2b8c755a39cdada55d9aca551d2d4',
+          }
+          for p,w in expected.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Burned direct v153 vs v147 seeds681-692 both seats
+        run: |
+          python scripts\eval.py tmp\v153.py tmp\v147.py -n 12 -j 4 --seed-start 681 --json results\burned_v153_vs_v147_681_692.json
+          if ($LASTEXITCODE -ne 0) { throw 'burned direct eval failed' }
+      - name: Aggregate candidate-minus-champion
+        run: |
+          $code=@'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/burned_v153_vs_v147_681_692.json').read_text(encoding='utf-8'))
+          by={}; seat={0:[],1:[]}; ext_exc=0; rows=[]
+          for g in d.get('matches_detail',[]):
+              seed=int(g['seed']); delta=float(g['money'][0])-float(g['money'][1])
+              s=1 if bool(g.get('swap')) else 0
+              seat[s].append(delta); by.setdefault(seed,[]).append(delta)
+              ext_exc += int((g.get('exceptions') or {}).get('a',0))
+          vals=[]
+          for seed in sorted(by):
+              ds=by[seed]; assert len(ds)==2,(seed,ds)
+              pair=statistics.fmean(ds); vals.append(pair)
+              rows.append({'seed':seed,'seat_diffs':ds,'candidate_minus_champion':pair})
+          se=statistics.stdev(vals)/(len(vals)**0.5) if len(vals)>1 else 0.0
+          out={
+            'metric':'candidate_minus_champion = candidate - champion',
+            'candidate':'v153_guarded_dense_self_exposure',
+            'candidate_sha256':'26c756e5a1acc78bae124775da4d79239ed2b8c755a39cdada55d9aca551d2d4',
+            'champion':'v147_confirmed_v111_clone',
+            'champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'engine':'kaggle_environments==1.32.7',
+            'seeds':'681-692 burned dev',
+            'pairs':len(vals),
+            'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+            'mean':statistics.fmean(vals),'se':se,'mean_minus_2se':statistics.fmean(vals)-2*se,
+            'worst':min(vals),'best':max(vals),
+            'seat0_mean':statistics.fmean(seat[0]) if seat[0] else None,
+            'seat1_mean':statistics.fmean(seat[1]) if seat[1] else None,
+            'candidate_external_exceptions':ext_exc,'rows':rows,
+          }
+          Path('results/v153_burned_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-v147-burned-direct-formal-681-692
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
