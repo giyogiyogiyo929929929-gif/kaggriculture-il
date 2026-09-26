@@ -1,0 +1,236 @@
+name: v147 self-hosted runtime preflight v2
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v147-selfhosted-runtime-preflight-v2.yml"
+      - "ci/build_v140_v92_k2_isolated.py"
+      - "ci/build_v147_confirmed_v111_clone.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact engine and expose GNU patch
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print('engine='+kaggle_environments.__version__)"
+
+      - name: Verify official Kaggriculture 1.32.7 source identity
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import hashlib
+          import importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          version = importlib.metadata.version('kaggle-environments')
+          path = Path(kg.__file__)
+          got = hashlib.sha256(path.read_bytes()).hexdigest()
+          print('kaggle-environments=' + version)
+          print('kaggriculture.py=' + str(path))
+          print('kaggriculture.py sha256=' + got)
+          assert version == '1.32.7', version
+          assert got == 'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e', got
+          '@
+          $code | python -
+
+      - name: Build exact v115 v140 and v147
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          $builder140 = (git hash-object ci/build_v140_v92_k2_isolated.py).Trim()
+          Write-Host "v140_builder_blob=$builder140"
+          if ($builder140 -ne '5d9bb6d934a0f0b34934e368eec8bf9878fdda6f') { throw "unexpected v140 builder blob $builder140" }
+
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ("tmp/main.py", "ci/v76.patch"):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b"\r\n",b"\n"))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path("tmp/main.py")
+          p.write_bytes(p.read_bytes()+b"\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n")
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python ci\build_v140_v92_k2_isolated.py tmp\v115.py tmp\v140.py
+          if ($LASTEXITCODE -ne 0) { throw 'v140 build failed' }
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          if ($LASTEXITCODE -ne 0) { throw 'v147 build failed' }
+          python -m py_compile tmp\v115.py tmp\v140.py tmp\v147.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+
+          $code = @'
+          import hashlib, json
+          from pathlib import Path
+          expected = {
+              'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+              'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          hashes={}
+          for p in ('tmp/v115.py','tmp/v140.py','tmp/v147.py'):
+              got=hashlib.sha256(Path(p).read_bytes()).hexdigest()
+              hashes[p]=got
+              print(p,got)
+              if p in expected:
+                  assert got == expected[p], (p,got,expected[p])
+          Path('results/source_identity.json').write_text(json.dumps(hashes,indent=2),encoding='utf-8')
+          '@
+          $code | python -
+
+      - name: Historical official-interpreter parity calibration
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          from pathlib import Path
+          from scripts.eval import play_match
+          expected = {
+              (641, False): (83887.0, 83887.0),
+              (641, True):  (83887.0, 83887.0),
+              (642, False): (62145.0, 62183.0),
+              (642, True):  (62145.0, 62183.0),
+              (643, False): (89373.0, 89373.0),
+              (643, True):  (89373.0, 89373.0),
+          }
+          rows=[]
+          for seed in (641,642,643):
+              for swap in (False,True):
+                  result=play_match('tmp/v140.py','tmp/v115.py',seed,swap)
+                  got=tuple(float(x) for x in result['money'])
+                  want=expected[(seed,swap)]
+                  print('seed',seed,'swap',swap,'got',got,'expected',want)
+                  assert got == want, (seed,swap,got,want)
+                  rows.append({'seed':seed,'swap':swap,'v140':got[0],'v115':got[1],'candidate_minus_champion':got[0]-got[1]})
+          Path('results/historical_parity.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@
+          $code | python -
+
+      - name: Kaggle loader and broken-observation parity smoke
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          from pathlib import Path
+          from scripts.preflight import load_like_kaggle, call_like_kaggle, BROKEN_OBSERVATIONS
+          out={}
+          for name in ('v115','v147'):
+              agent=load_like_kaggle(Path('tmp')/f'{name}.py')
+              rows=[]
+              for obs in BROKEN_OBSERVATIONS:
+                  try:
+                      action=call_like_kaggle(agent,obs,None)
+                      ok=isinstance(action,dict) and set(action)=={'farmer','hands','market'} and all(isinstance(action[k],list) for k in action)
+                      rows.append({'ok':ok,'error':None})
+                  except Exception as exc:
+                      rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+              out[name]={'callable':getattr(agent,'__name__',str(agent)),'broken_observations':rows}
+              assert getattr(agent,'__name__',None) == 'agent'
+          for name in ('v115','v147'):
+              assert all(r['ok'] for r in out[name]['broken_observations'][:-1]), out[name]
+          c=out['v115']['broken_observations'][-1]
+          v=out['v147']['broken_observations'][-1]
+          assert c['ok'] == v['ok'], (c,v)
+          assert c['error'] == v['error'], (c,v)
+          Path('results/loader_smoke.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - name: Serial runtime gate on burned seeds and both seats
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json, time, statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle, call_like_kaggle
+
+          def measure(path,seed,swap):
+              agent=load_like_kaggle(Path(path)); timings=[]; errors=[]
+              def timed(obs,config=None):
+                  t=time.perf_counter()
+                  try:
+                      return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:
+                      errors.append(f'{type(exc).__name__}: {exc}')
+                      return {'farmer':['PASS'],'hands':[],'market':[]}
+                  finally:
+                      timings.append(time.perf_counter()-t)
+              env=make('kaggriculture',configuration={'seed':seed})
+              env.run(['starter',timed] if swap else [timed,'starter'])
+              ordered=sorted(timings); n=len(ordered); seat=1 if swap else 0
+              p99=ordered[min(n-1,int(n*0.99))] if n else 0.0
+              return {'seed':seed,'swap':swap,'seat':seat,'calls':n,
+                      'median_ms':statistics.median(ordered)*1000 if n else 0.0,
+                      'p99_ms':p99*1000,'worst_ms':max(ordered)*1000 if n else 0.0,
+                      'errors':errors,'status':env.state[seat].get('status')}
+
+          out={name:[measure(f'tmp/{name}.py',seed,swap) for seed in (641,642) for swap in (False,True)]
+               for name in ('v115','v147')}
+          summary={}
+          for name,rows in out.items():
+              summary[name]={
+                  'games':len(rows),
+                  'median_of_game_medians_ms':statistics.median(r['median_ms'] for r in rows),
+                  'max_game_p99_ms':max(r['p99_ms'] for r in rows),
+                  'worst_turn_ms':max(r['worst_ms'] for r in rows),
+                  'exceptions':sum(len(r['errors']) for r in rows),
+              }
+          summary['v147_minus_v115']={
+              'median_of_game_medians_ms':summary['v147']['median_of_game_medians_ms']-summary['v115']['median_of_game_medians_ms'],
+              'max_game_p99_ms':summary['v147']['max_game_p99_ms']-summary['v115']['max_game_p99_ms'],
+              'worst_turn_ms':summary['v147']['worst_turn_ms']-summary['v115']['worst_turn_ms'],
+          }
+          payload={'engine':'kaggle_environments==1.32.7','opponent':'starter','seeds':[641,642],
+                   'both_seats':True,'serial':True,'rows':out,'summary':summary}
+          Path('results/runtime.json').write_text(json.dumps(payload,indent=2),encoding='utf-8')
+          print(json.dumps(payload,indent=2))
+          for name,rows in out.items():
+              for r in rows:
+                  assert not r['errors'], (name,r)
+                  assert r['status'] == 'DONE', (name,r)
+                  assert r['p99_ms'] < 50.0, (name,r)
+                  assert r['worst_ms'] < 200.0, (name,r)
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-selfhosted-runtime-preflight-v2
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
