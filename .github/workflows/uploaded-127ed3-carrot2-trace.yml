@@ -35,7 +35,7 @@ jobs:
           root=Path('ci/uploaded_127ed3')
           raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
           assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
-          src=raw.decode('utf-8')
+          src=raw.decode('utf-8').replace('\r\n','\n')
           old='''                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n                    units[i] = ["PLANT", "CARROT"]\n'''
           new='''                if cu * (p_c - _CA_DROP) - 20 > wu * p_w - 10 + _CA_MARGIN:\n                    _CA_DETAIL_TRACE.append({\n                        "step": step, "day": day, "seat": seat, "pos": list(pos),\n                        "p_c": p_c, "p_w": p_w, "wheat_total": _ca_wheat_total(observation),\n                        "feed1": _ca_feed_need(seat, step, 1), "feed2": _ca_feed_need(seat, step, 2),\n                        "feed3": _ca_feed_need(seat, step, 3), "wu": wu, "cu": cu,\n                        "edge": cu * (p_c - _CA_DROP) - 20 - (wu * p_w - 10),\n                        "spare_wheat": st["spare_wheat"], "spare_carrot": st["spare_carrot"]})\n                    units[i] = ["PLANT", "CARROT"]\n'''
           assert src.count(old)==1,src.count(old)
