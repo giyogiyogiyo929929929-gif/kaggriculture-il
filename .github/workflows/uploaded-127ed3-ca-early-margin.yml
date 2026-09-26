@@ -1,0 +1,90 @@
+name: uploaded 127ed3 CARROT2 early-margin focused test
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-early-margin.yml'
+      - 'ci/build_uploaded_127ed3_ca_early_margin.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          Path('tmp/raw.py').write_bytes(raw)
+          '@ | python -
+          python ci\build_uploaded_127ed3_ca_early_margin.py tmp\raw.py tmp\candidate.py
+          python -m py_compile tmp\raw.py tmp\candidate.py
+
+      - name: Same-seed both-seat parent comparison
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,statistics,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle,turn_time_stats
+          C=Path('tmp/candidate.py'); P=Path('tmp/raw.py')
+          seeds=[641,350003,101,211,347,509,733,911,1201,1601]
+          rows=[]
+          def money(env,s):
+              for src in (env.state[s].get('observation'),env.steps[-1][s].get('observation')):
+                  if isinstance(src,dict):
+                      f=src.get('farms')
+                      if isinstance(f,list) and len(f)>s and isinstance(f[s],dict) and 'money' in f[s]: return float(f[s]['money'])
+              return float(env.state[s]['reward'])
+          for seed in seeds:
+              for cs in (0,1):
+                  ca=load_like_kaggle(C); pa=load_like_kaggle(P); aa=[ca,pa] if cs==0 else [pa,ca]
+                  tt=[[],[]]; errs=[[],[]]; wrapped=[]
+                  for seat,a in enumerate(aa):
+                      def w(obs,cfg=None,_a=a,_s=seat):
+                          t=time.perf_counter()
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception as e:errs[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                          finally:tt[_s].append(time.perf_counter()-t)
+                      wrapped.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(wrapped)
+                  m=[money(env,0),money(env,1)]; ps=1-cs
+                  rows.append({'seed':seed,'candidate_seat':cs,'candidate_minus_parent':m[cs]-m[ps],'money':m,'statuses':[x.get('status') for x in env.state],'errors':errs,'p99_ms':turn_time_stats(tt[cs])['p99']*1000,'worst_ms':turn_time_stats(tt[cs])['worst']*1000})
+          pairs=[]
+          for seed in seeds:
+              rr=[r for r in rows if r['seed']==seed]; ds=[r['candidate_minus_parent'] for r in rr]; mean=sum(ds)/2
+              pairs.append({'seed':seed,'seat0':ds[0],'seat1':ds[1],'pair_mean':mean,'outcome':'W' if mean>0 else 'L' if mean<0 else 'D'})
+          vals=[p['pair_mean'] for p in pairs]
+          out={'parent_sha':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652','candidate_sha':'bad25166aa91712007af8a010f571dab5cf87873dc75f762f2e83b152849faad','pairs':pairs,'wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},'mean':statistics.mean(vals),'median':statistics.median(vals),'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['candidate_minus_parent'] for r in rows if r['candidate_seat']==0),'seat1_mean':statistics.mean(r['candidate_minus_parent'] for r in rows if r['candidate_seat']==1),'exceptions':sum(len(e) for r in rows for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in rows),'max_p99_ms':max(r['p99_ms'] for r in rows),'max_worst_ms':max(r['worst_ms'] for r in rows),'rows':rows}
+          Path('results/ca_early_margin.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-early-margin
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
