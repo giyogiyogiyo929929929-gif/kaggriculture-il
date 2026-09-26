@@ -3,7 +3,9 @@ name: v148 duplicate SELL guard evaluation
 on:
   push:
     branches: [eval-v148-duplicate-sell-guard-20260926]
-    paths: [".github/workflows/v148-duplicate-sell-guard.yml"]
+    paths:
+      - ".github/workflows/v148-duplicate-sell-guard.yml"
+      - "ci/build_v148_duplicate_sell_guard.py"
   workflow_dispatch:
 
 permissions:
