@@ -2,7 +2,7 @@
 
 ## Status
 
-**FOCUSED TEST PENDING. NOT PROMOTED.** Formal champion remains exact v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
+**FOCUSED TEST PENDING / RUNNER BLOCKED. NOT PROMOTED.** Formal champion remains exact v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
 
 ## Parent / candidate
 
@@ -53,6 +53,16 @@ v152 opens only a narrower part of that boundary:
 
 So v152 is not a broad "allow wash SELL reordering" experiment. It tests whether SELL-vs-SELL ordering inside a dense pre-BUY block can safely use executable self-impact exposure. Because it touches a region that older Layer D intentionally kept fixed, a hard-cell win is not enough: burned direct regression and wash-item telemetry are mandatory before any sealed test.
 
+## Static implementation audit
+
+The builder requires the exact v147 SHA before appending the mechanism and checks that `_r37_market_price`, `_R37_MARKET_PARAMS`, `projected_shed`, and `FarmView` are present.
+
+The critical stock input is also consistent with the hypothesis: the inherited `projected_shed(action, FarmView(observation))` delegates to the chassis `_projected_shed`, whose contract is shed contents **after unit actions but before the market runs**. It therefore does not accidentally score SELL orders from post-sale residual stock. The v152 quantity is clamped to `min(order quantity, projected pre-market stock)`.
+
+The reorder is stable on equal scores and edits only `orders[:end]`, where `end` is the first non-SELL order. No SELL crosses the later BUY barrier.
+
+Static audit result: **PASS for the intended one-change mechanism.** This is not a substitute for the formal full-game focused test.
+
 ## Causal source cell
 
 Formal ledger run `36245506969`, opponent `score_2820`, seed520104, both seats.
@@ -94,20 +104,24 @@ Scanning the full v147 vs score_2820 seed520104 ledger, the dense precondition i
 
 Thus the source-cell intervention is a single action-order change per game despite a general market rule.
 
-## Focused formal workflow
+## Focused formal workflows / infrastructure state
 
-Workflow: `.github/workflows/v152-v147-dense-self-exposure-focused.yml`
+Primary self-hosted workflow: `.github/workflows/v152-v147-dense-self-exposure-focused.yml`
 
-Run at creation: `36250312541` (queued at last observation; no queued state is counted as evidence).
+- run `36250312541`
+- state at latest observation: **queued**; no game step has run
+- queued state is not candidate evidence
 
-The workflow:
+A GitHub-hosted Ubuntu fallback was added without changing the evaluation logic:
 
-1. reconstructs exact v115 and exact v147;
-2. asserts v147 SHA;
-3. builds v152;
-4. runs `py_compile`;
-5. evaluates v152 vs v147 independently against score_2820 seed520104, both seats, formal engine 1.32.7;
-6. records v152 telemetry and a full candidate ledger.
+- workflow: `.github/workflows/v152-v147-dense-self-exposure-ghhosted.yml`
+- run `36252244587`
+- conclusion: **failure before any workflow step** (`steps=[]`)
+- this is an infrastructure/runner-start failure and is explicitly **not** counted as a tactical or runtime failure of v152
+
+The existing v111 counterfactual diagnostic run `36250732794` is also queued and supplies no additional evidence yet.
+
+The formal focused workflow, once an execution environment actually starts, reconstructs exact v115/v147, asserts v147 SHA, builds v152, runs `py_compile`, evaluates v152 and v147 independently against score_2820 seed520104 in both seats under engine 1.32.7, and records candidate ledger/telemetry.
 
 ## Promotion discipline
 
@@ -122,3 +136,10 @@ Do not spend unused sealed seeds from this focused result alone. If v152 convert
 7. runtime final.
 
 If the focused result is neutral or regressive, reject v152 and use the recorded counterexample rather than threshold sweeping.
+
+## Current decision
+
+- v152: **KEEP TESTING**, blocked only on a valid formal runner execution.
+- champion: keep exact v147 unchanged.
+- no sealed seeds spent.
+- no Kaggle submission performed.
