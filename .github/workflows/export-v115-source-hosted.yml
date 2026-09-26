@@ -1,0 +1,57 @@
+name: export-exact-v115-source-hosted
+on:
+  push:
+    branches: [eval-v148-duplicate-sell-guard-20260926]
+    paths: [".github/workflows/export-v115-source-hosted.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct exact formal v115
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'patch.exe missing' }
+          $env:Path = "$gitUsr;$env:Path"
+          New-Item -ItemType Directory -Force -Path tmp,out | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py out\v115_champion_same_turn_open_squeeze.py
+          if ($LASTEXITCODE -ne 0) { throw 'v115 reconstruction failed' }
+          @'
+          import hashlib
+          from pathlib import Path
+          p=Path('out/v115_champion_same_turn_open_squeeze.py')
+          got=hashlib.sha256(p.read_bytes()).hexdigest()
+          exp='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          print('sha256',got,'bytes',p.stat().st_size)
+          assert got==exp,(got,exp)
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exact-v115-source-hosted
+          path: out/v115_champion_same_turn_open_squeeze.py
+          if-no-files-found: error
+          retention-days: 7
