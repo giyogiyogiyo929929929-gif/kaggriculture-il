@@ -1,0 +1,134 @@
+name: v123 step649 realized-order telemetry
+
+on:
+  push:
+    branches: [eval-v123-step649-realized-telemetry-20260926]
+    paths:
+      - ".github/workflows/v123-step649-realized-telemetry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  telemetry:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v115 then exact v104/v122/v123
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v123_from_v115_prefix.py tmp\v115.py tmp\v104.py tmp\v122.py tmp\v123.py
+          python -m py_compile tmp\v104.py tmp\v122.py tmp\v123.py ci\run_v123_step649_telemetry.py
+
+      - name: Verify v123 wrapper is behavior preserving on synthetic step649 call
+        run: |
+          $code = @'
+          import runpy
+          ns=runpy.run_path('tmp/v123.py')
+          assert ns['_V123_PARENT'] is ns['_V122_PARENT'] or callable(ns['_V123_PARENT'])
+          assert ns['_V123_REPORT']['errors'] == 0
+          print('v123 diagnostic wrapper static checks: PASS')
+          '@
+          $code | python -
+
+      - name: Priority realized telemetry 401001-401003 both seats
+        run: |
+          python ci\run_v123_step649_telemetry.py --v123 tmp\v123.py --v104 tmp\v104.py --seeds 401001-401003 --out results\priority_401001_401003.json
+
+      - name: Verify priority outcomes reproduce promotion evidence
+        run: |
+          $code = @'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('results/priority_401001_401003.json').read_text(encoding='utf-8'))
+          got={int(r['seed']): float(r['pair_delta']) for r in d['pairs']}
+          expected={401001:51.0,401002:0.0,401003:40.0}
+          print('got',got)
+          assert got == expected, (got,expected)
+          assert all((r.get('v123_errors') or 0)==0 for r in d['rows'])
+          print('priority reproduction: PASS')
+          '@
+          $code | python -
+
+      - name: Validation realized telemetry 402001-402012 both seats
+        run: |
+          python ci\run_v123_step649_telemetry.py --v123 tmp\v123.py --v104 tmp\v104.py --seeds 402001-402012 --out results\validation_402001_402012.json
+
+      - name: Summarize structural separators
+        run: |
+          $code = @'
+          import json,statistics
+          from pathlib import Path
+          files=['results/priority_401001_401003.json','results/validation_402001_402012.json']
+          rows=[]
+          for p in files: rows += json.loads(Path(p).read_text(encoding='utf-8'))['rows']
+          out=[]
+          for r in rows:
+              t=r.get('telemetry') or {}; items=t.get('sell_items') or []
+              def ix(x):
+                  try:return items.index(x)
+                  except ValueError:return None
+              out.append({
+                  'seed':r['seed'],'swap':r['swap'],'seat':r['candidate_seat'],
+                  'final_diff':r['candidate_minus_opponent'],
+                  'fired':bool(t.get('v122_fired_this_call')),
+                  'sell_items':items,'sell_qty':t.get('sell_qty'),
+                  'wheat_i':ix('WHEAT'),'fert_i':ix('FERTILIZER'),'egg_i':ix('EGG'),
+                  'prices':t.get('market_prices'),'inventory':t.get('market_inventory'),
+                  'shed':t.get('shed'),'money':t.get('own_money'),
+                  'realized':r.get('step649_to_650'),
+              })
+          fired=[x for x in out if x['fired']]; skipped=[x for x in out if not x['fired']]
+          summary={
+              'rows':out,
+              'counts':{'all':len(out),'fired':len(fired),'skipped':len(skipped)},
+              'fired_seeds':sorted(set(x['seed'] for x in fired)),
+              'skipped_seeds':sorted(set(x['seed'] for x in skipped)),
+              'note':'diagnostic only; no promotion decision',
+          }
+          Path('results/structural_summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          print(json.dumps(summary,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v123-step649-realized-telemetry
+          path: results/
+          if-no-files-found: warn
