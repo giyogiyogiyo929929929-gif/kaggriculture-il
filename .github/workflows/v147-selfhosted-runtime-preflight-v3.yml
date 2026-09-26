@@ -1,0 +1,155 @@
+name: v147 self-hosted runtime preflight v3
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v147-selfhosted-runtime-preflight-v3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install and verify official 1.32.7
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          $code=@'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          v=importlib.metadata.version('kaggle-environments')
+          h=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          print('version',v); print('engine_sha',h)
+          assert v=='1.32.7'
+          assert h=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          '@
+          $code | python -
+
+      - name: Reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          $builder=(git hash-object ci/build_v140_v92_k2_isolated.py).Trim()
+          if ($builder -ne '5d9bb6d934a0f0b34934e368eec8bf9878fdda6f') { throw "bad v140 builder $builder" }
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $code=@'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $code | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $code=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $code | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v140_v92_k2_isolated.py tmp\v115.py tmp\v140.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v140.py tmp\v147.py
+          $code=@'
+          import hashlib
+          from pathlib import Path
+          def h(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          assert h('tmp/v115.py')=='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          assert h('tmp/v147.py')=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          raw=Path('tmp/v140.py').read_bytes()
+          normalized=raw.replace(b'\r\n',b'\n')
+          nh=hashlib.sha256(normalized).hexdigest()
+          print('v140_raw_sha',hashlib.sha256(raw).hexdigest())
+          print('v140_normalized_sha',nh)
+          assert nh=='8d96c789bec1b708f38716c96828e366f58fb0cdcc151a1a38c2fc4763a71139'
+          '@
+          $code | python -
+
+      - name: Historical parity calibration from original artifact
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code=@'
+          import json
+          from pathlib import Path
+          from scripts.eval import play_match
+          expected={
+            (641,False):(65199.0,65195.0),(641,True):(65199.0,65195.0),
+            (642,False):(62145.0,62183.0),(642,True):(62145.0,62183.0),
+            (643,False):(118732.0,118732.0),(643,True):(118732.0,118732.0),
+          }
+          rows=[]
+          for seed in (641,642,643):
+            for swap in (False,True):
+              r=play_match('tmp/v140.py','tmp/v115.py',seed,swap)
+              got=tuple(float(x) for x in r['money']); want=expected[(seed,swap)]
+              print(seed,swap,got,want); assert got==want,(seed,swap,got,want)
+              rows.append({'seed':seed,'swap':swap,'v140':got[0],'v115':got[1],'diff':got[0]-got[1]})
+          Path('results/historical_parity.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@
+          $code | python -
+
+      - name: Serial runtime gate
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code=@'
+          import json,time,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          def measure(path,seed,swap):
+            agent=load_like_kaggle(Path(path)); ts=[]; errors=[]
+            def timed(obs,config=None):
+              t=time.perf_counter()
+              try: return call_like_kaggle(agent,obs,config)
+              except Exception as exc:
+                errors.append(f'{type(exc).__name__}: {exc}'); return {'farmer':['PASS'],'hands':[],'market':[]}
+              finally: ts.append(time.perf_counter()-t)
+            env=make('kaggriculture',configuration={'seed':seed})
+            env.run(['starter',timed] if swap else [timed,'starter'])
+            xs=sorted(ts); n=len(xs); seat=1 if swap else 0
+            return {'seed':seed,'swap':swap,'calls':n,'median_ms':statistics.median(xs)*1000,
+                    'p99_ms':xs[min(n-1,int(n*0.99))]*1000,'worst_ms':max(xs)*1000,
+                    'errors':errors,'status':env.state[seat].get('status')}
+          out={n:[measure(f'tmp/{n}.py',s,w) for s in (641,642) for w in (False,True)] for n in ('v115','v147')}
+          summary={}
+          for n,rows in out.items():
+            summary[n]={'median_of_game_medians_ms':statistics.median(r['median_ms'] for r in rows),
+                        'max_game_p99_ms':max(r['p99_ms'] for r in rows),
+                        'worst_turn_ms':max(r['worst_ms'] for r in rows),
+                        'exceptions':sum(len(r['errors']) for r in rows)}
+            for r in rows:
+              assert not r['errors']; assert r['status']=='DONE'; assert r['p99_ms']<50.0; assert r['worst_ms']<200.0
+          summary['v147_minus_v115']={k:summary['v147'][k]-summary['v115'][k] for k in ('median_of_game_medians_ms','max_game_p99_ms','worst_turn_ms')}
+          payload={'engine':'kaggle_environments==1.32.7','serial':True,'seeds':[641,642],'both_seats':True,'rows':out,'summary':summary}
+          Path('results/runtime.json').write_text(json.dumps(payload,indent=2),encoding='utf-8')
+          print(json.dumps(summary,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-selfhosted-runtime-preflight-v3
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
