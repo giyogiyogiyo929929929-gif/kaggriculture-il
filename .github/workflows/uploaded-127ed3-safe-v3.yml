@@ -1,0 +1,99 @@
+name: uploaded 127ed3 safe wrapper v3
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact raw and safety-v3 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          Path('tmp/raw.py').write_bytes(raw)
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          got=hashlib.sha256(safe).hexdigest(); print('safe_v3_sha',got)
+          assert got=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          '@ | python -
+          python -m py_compile tmp\raw.py tmp\safe_v3.py
+      - name: Formal loader malformed probes and valid-game equivalence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle,BROKEN_OBSERVATIONS,turn_time_stats
+          R=Path('tmp/raw.py'); S=Path('tmp/safe_v3.py')
+          static={}
+          for name,p in [('raw',R),('safe_v3',S)]:
+              a=load_like_kaggle(p); probes=[]
+              for obs in BROKEN_OBSERVATIONS:
+                  try:
+                      x=call_like_kaggle(a,obs,None)
+                      ok=isinstance(x,dict) and set(x)=={'farmer','hands','market'} and all(isinstance(x[k],list) for k in x)
+                      probes.append({'ok':ok,'error':None,'action':x if ok else None})
+                  except Exception as e:
+                      probes.append({'ok':False,'error':f'{type(e).__name__}: {e}'})
+              static[name]={'callable':getattr(a,'__name__',None),'broken':probes,'all_pass':all(q['ok'] for q in probes)}
+          assert static['safe_v3']['callable']=='agent', static
+          rows=[]
+          def money(env,s):
+              for src in (env.state[s].get('observation'),env.steps[-1][s].get('observation')):
+                  if isinstance(src,dict):
+                      f=src.get('farms')
+                      if isinstance(f,list) and len(f)>s and isinstance(f[s],dict) and 'money' in f[s]: return float(f[s]['money'])
+              return float(env.state[s]['reward'])
+          for seed in [641,350003,733,911]:
+              for ss in (0,1):
+                  paths=[S,R] if ss==0 else [R,S]; tt=[[],[]]; errors=[[],[]]; agents=[]
+                  for seat,p in enumerate(paths):
+                      a=load_like_kaggle(p)
+                      def w(obs,cfg=None,_a=a,_s=seat):
+                          t=time.perf_counter()
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                          finally:tt[_s].append(time.perf_counter()-t)
+                      agents.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents); m=[money(env,0),money(env,1)]; rs=1-ss
+                  rows.append({'seed':seed,'safe_seat':ss,'safe_minus_raw':m[ss]-m[rs],'money':m,'statuses':[x.get('status') for x in env.state],'errors':errors,'safe_runtime':turn_time_stats(tt[ss])})
+          out={'raw_sha256':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652','safe_v3_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','engine':'1.32.7','engine_source_sha256':'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e','static':static,'rows':rows,'all_valid_game_ties':all(r['safe_minus_raw']==0 for r in rows),'exceptions':sum(len(e) for r in rows for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in rows),'max_safe_p99_ms':max(r['safe_runtime']['p99']*1000 for r in rows),'max_safe_worst_ms':max(r['safe_runtime']['worst']*1000 for r in rows)}
+          print(json.dumps(out,indent=2)); Path('results/safe_v3.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert static['safe_v3']['all_pass']
+          assert out['all_valid_game_ties'] and out['exceptions']==0 and out['non_done']==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v3
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
