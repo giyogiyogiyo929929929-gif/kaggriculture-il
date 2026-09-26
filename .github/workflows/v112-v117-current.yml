@@ -6,6 +6,7 @@ on:
       - ".github/workflows/v112-v117-current.yml"
       - "experiments/v112_v116_milk_micro/build_sources.py"
       - "experiments/v112_v116_milk_micro/v117_suffix.pyfrag"
+      - "experiments/v112_v116_milk_micro/test_v117_suffix_synthetic.py"
       - "experiments/v112_v116_milk_micro/run_v117_eval.py"
   workflow_dispatch:
 permissions:
@@ -21,6 +22,7 @@ jobs:
       - run: python -m pip install "kaggle-environments==1.32.7"
       - run: |
           cd experiments/v112_v116_milk_micro
+          python test_v117_suffix_synthetic.py
           python build_sources.py
           python -m py_compile v112_wheat_lead3_lowdemand.py v117_wheat_post_town_delay1.py run_v117_eval.py
           python run_v117_eval.py
