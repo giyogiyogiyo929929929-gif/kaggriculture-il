@@ -1,0 +1,119 @@
+name: safety-v3 public opponent pool
+
+on:
+  push:
+    branches: [eval-safe-v3-public-pool-20260926]
+    paths:
+      - '.github/workflows/safe-v3-public-opponent-pool.yml'
+      - 'ci/eval_safe_v3_public_pool.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install exact engine and reconstruct exact agents
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python - <<'PY'
+          import base64, gzip, hashlib, importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments') == '1.32.7'
+          engine = hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          print('engine_sha256', engine)
+          assert engine == 'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root = Path('ci/uploaded_127ed3')
+          raw = gzip.decompress(base64.b64decode(''.join((root / f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest() == '127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          suffix = b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe = raw + suffix
+          Path('tmp/safe_v3.py').write_bytes(safe)
+          got = hashlib.sha256(safe).hexdigest()
+          print('safe_v3_sha256', got)
+          assert got == '87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          PY
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py', 'ci/v76.patch'):
+              p = Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tmp/main.py')
+          p.write_bytes(p.read_bytes() + b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          def h(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          print('v147_sha256', h('tmp/v147.py'))
+          assert h('tmp/v147.py') == '8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          PY
+          python -m py_compile tmp/safe_v3.py tmp/v147.py ci/eval_safe_v3_public_pool.py
+
+      - name: Audit selected in-repo opponent entry files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          labels = [
+              'beat_v48','bl_v21','farming_v2','frontier_prvsiyan',
+              'peak_2950','salem_2900','jaxa_2802','tetsutani_adaptive',
+              'market_rhythm','order_book','reactive_router','haodou_db_latest',
+          ]
+          for label in labels:
+              p = Path('opponents') / label / 'main.py'
+              print(label, 'READY' if p.exists() else 'MISSING', p)
+              if p.exists():
+                  compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+          PY
+
+      - name: Run burned-seed public diversity panel
+        run: |
+          set -euo pipefail
+          python ci/eval_safe_v3_public_pool.py \
+            --candidate tmp/safe_v3.py \
+            --champion tmp/v147.py \
+            --seed-start 621 --seed-count 4 \
+            --opponent starter=starter \
+            --opponent beat_v48=opponents/beat_v48/main.py \
+            --opponent bl_v21=opponents/bl_v21/main.py \
+            --opponent farming_v2=opponents/farming_v2/main.py \
+            --opponent frontier_prvsiyan=opponents/frontier_prvsiyan/main.py \
+            --opponent peak_2950=opponents/peak_2950/main.py \
+            --opponent salem_2900=opponents/salem_2900/main.py \
+            --opponent jaxa_2802=opponents/jaxa_2802/main.py \
+            --opponent tetsutani_adaptive=opponents/tetsutani_adaptive/main.py \
+            --opponent market_rhythm=opponents/market_rhythm/main.py \
+            --opponent order_book=opponents/order_book/main.py \
+            --opponent reactive_router=opponents/reactive_router/main.py \
+            --opponent haodou_db_latest=opponents/haodou_db_latest/main.py \
+            --out results/public_pool.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safe-v3-public-opponent-pool
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
