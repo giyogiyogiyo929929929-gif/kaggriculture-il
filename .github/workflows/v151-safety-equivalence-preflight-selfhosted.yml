@@ -1,0 +1,138 @@
+name: v151 safety equivalence preflight
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v151-safety-equivalence-preflight-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact parent chain and build v151
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results,results\v151 | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v150.py tmp\v151.py
+          @'
+          import hashlib,json
+          from pathlib import Path
+          expected={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'tmp/v150.py':'0a5bfa1b9fa91dd7ebdee1f45640719b23a7b895cbd85cc1f4f17bddebb6387d',
+          }
+          got={}
+          for p in ('tmp/v115.py','tmp/v147.py','tmp/v150.py','tmp/v151.py'):
+              got[p]=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,got[p])
+          for p,w in expected.items(): assert got[p]==w,(p,got[p],w)
+          Path('results/v151/main.py').write_bytes(Path('tmp/v151.py').read_bytes())
+          Path('results/v151/build.json').write_text(json.dumps({'sha256':got['tmp/v151.py'],'bytes':Path('tmp/v151.py').stat().st_size},indent=2),encoding='utf-8')
+          '@ | python -
+      - name: Kaggle-compatible preflight and package
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\preflight.py --main results\v151\main.py --entry agent --build --output results\v151\submission.tar.gz --json results\v151\preflight.json
+          if ($LASTEXITCODE -ne 0) { throw 'v151 preflight failed' }
+      - name: Burned and sealed action equivalence vs v150
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import importlib.util,json,sys,traceback
+          from pathlib import Path
+          from kaggle_environments import make
+          SEEDS=list(range(681,693))+list(range(1701,1713)); uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v151eq_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          class Capture:
+              def __init__(self,fn): self.fn=fn; self.actions=[]
+              def __call__(self,obs,cfg=None):
+                  out=self.fn(obs,cfg); self.actions.append(out); return out
+          def run_one(path,seed,seat):
+              m=load(path); opp=load('tmp/v115.py').agent; cap=Capture(m.agent)
+              agents=[cap,opp] if seat==0 else [opp,cap]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              statuses=[x.get('status') for x in env.state]; rewards=[x.get('reward') for x in env.state]
+              if statuses != ['DONE','DONE']: raise RuntimeError((path,seed,seat,statuses))
+              return cap.actions,rewards
+          rows=[]; mismatches=[]; errors=[]
+          for seed in SEEDS:
+            for seat in (0,1):
+              try:
+                aa,ar=run_one('tmp/v150.py',seed,seat); ba,br=run_one('tmp/v151.py',seed,seat)
+                sa=(aa==ba); sr=(ar==br); first=None
+                if not sa:
+                    first=next((i for i,(x,y) in enumerate(zip(aa,ba)) if x!=y),None)
+                row={'seed':seed,'seat':seat,'same_actions':sa,'same_rewards':sr,'first_mismatch':first}
+                rows.append(row)
+                if not (sa and sr): mismatches.append(row)
+              except Exception as e:
+                errors.append({'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          out={'seeds':SEEDS,'games':len(rows),'action_equivalent':not mismatches and not errors,'mismatches':mismatches,'errors':errors,'rows':rows}
+          Path('results/v151/equivalence.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert not errors,errors
+          assert not mismatches,mismatches
+          '@ | python -
+      - name: Verify package bytes
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          root=Path('results/v151'); main=root/'main.py'; tar=root/'submission.tar.gz'
+          main_sha=hashlib.sha256(main.read_bytes()).hexdigest(); tar_sha=hashlib.sha256(tar.read_bytes()).hexdigest()
+          with tarfile.open(tar,'r:gz') as tf:
+              names=tf.getnames(); assert names==['main.py'],names
+              packed=tf.extractfile('main.py').read()
+          assert hashlib.sha256(packed).hexdigest()==main_sha
+          out={'main_sha256':main_sha,'archive_sha256':tar_sha,'archive_bytes':tar.stat().st_size,'archive_members':names,'packed_main_matches_source':True}
+          (root/'manifest.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v151-safety-equivalence-preflight-selfhosted
+          path: results/v151/
+          if-no-files-found: error
+          retention-days: 30
