@@ -13,6 +13,7 @@ _V117_REPORT = {
     "low_demand_blocks": 0,
     "cash_blocks": 0,
     "next_slot_blocks": 0,
+    "parent_shift_blocks": 0,
     "repay_merges": 0,
     "repay_inserts": 0,
     "repay_shortfalls": 0,
@@ -147,6 +148,23 @@ def agent(obs, config=None):
 
         if step < 300 or step + 1 >= len(_ACTIONS):
             return action
+
+        native_q = _v117_planned_wheat(step)
+        actual_q = _v117_actual_wheat_sell(action)
+        if native_q <= 0 or actual_q <= 0:
+            return action
+        if actual_q != native_q:
+            _V117_REPORT["parent_shift_blocks"] += 1
+            return action
+        try:
+            pst = _V110_STATE.get(seat, {})
+            if int(pst.get("due_step", -1)) > step:
+                _V117_REPORT["parent_shift_blocks"] += 1
+                return action
+        except Exception:
+            _V117_REPORT["parent_shift_blocks"] += 1
+            return action
+
         if _v110_wheat_demand_shop_count(obs) < 4:
             _V117_REPORT["low_demand_blocks"] += 1
             return action
@@ -165,12 +183,7 @@ def agent(obs, config=None):
             _V117_REPORT["next_slot_blocks"] += 1
             return action
 
-        native_q = _v117_planned_wheat(step)
-        actual_q = _v117_actual_wheat_sell(action)
-        q = min(native_q, actual_q)
-        if q <= 0:
-            return action
-
+        q = native_q
         out, removed = _v117_remove_wheat(action, q)
         if removed != q:
             return action
