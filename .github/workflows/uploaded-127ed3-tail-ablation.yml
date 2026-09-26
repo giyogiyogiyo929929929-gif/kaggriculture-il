@@ -1,0 +1,136 @@
+name: uploaded 127ed3 tail ablation vs v147
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-tail-ablation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ablation:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install official engine and reconstruct sources
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          Path('tmp/full.py').write_bytes(raw)
+          suffixes={
+            'no_ig': b'''\n# ablation: bypass IG only\ndef agent(observation, configuration=None):\n    return mg_agent(observation, configuration)\nagent.telemetry = mg_agent.telemetry\n''',
+            'no_mg_ig': b'''\n# ablation: bypass MG and IG\ndef agent(observation, configuration=None):\n    return e402_agent(observation, configuration)\nagent.telemetry = e402_agent.telemetry\n''',
+            'no_e402': b'''\n# ablation: bypass E402, keep MG+IG\n_MG_PARENT = e410_agent\ndef agent(observation, configuration=None):\n    return ig_agent(observation, configuration)\nagent.telemetry = ig_agent.telemetry\n''',
+            'no_e410': b'''\n# ablation: bypass E410, keep E402+MG+IG\n_E402_PARENT = cxd_agent\ndef agent(observation, configuration=None):\n    return ig_agent(observation, configuration)\nagent.telemetry = ig_agent.telemetry\n''',
+            'no_cxd': b'''\n# ablation: bypass CXD, keep E410+E402+MG+IG\n_E410_PARENT = _CXD_HOST\ndef agent(observation, configuration=None):\n    return ig_agent(observation, configuration)\nagent.telemetry = ig_agent.telemetry\n''',
+          }
+          for name,sfx in suffixes.items():
+              Path(f'tmp/{name}.py').write_bytes(raw+sfx)
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          '@ | python -
+          python -m py_compile tmp\full.py tmp\no_ig.py tmp\no_mg_ig.py tmp\no_e402.py tmp\no_e410.py tmp\no_cxd.py tmp\v147.py
+
+      - name: Focused matched ablation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,statistics,time
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle,turn_time_stats
+          H=Path('tmp/v147.py')
+          variants=['full','no_ig','no_mg_ig','no_e402','no_e410','no_cxd']
+          seeds=[641,350003,101,733,911,1201]
+          rows=[]
+          def money(env,s):
+              for src in (env.state[s].get('observation'),env.steps[-1][s].get('observation')):
+                  if isinstance(src,dict):
+                      f=src.get('farms')
+                      if isinstance(f,list) and len(f)>s and isinstance(f[s],dict) and 'money' in f[s]: return float(f[s]['money'])
+              return float(env.state[s]['reward'])
+          def run(v,seed,cs):
+              ca=load_like_kaggle(Path('tmp')/f'{v}.py'); ha=load_like_kaggle(H)
+              aa=[ca,ha] if cs==0 else [ha,ca]; tt=[[],[]]; errors=[[],[]]; wrapped=[]
+              for s,a in enumerate(aa):
+                  def w(obs,cfg=None,_a=a,_s=s):
+                      t=time.perf_counter()
+                      try:return call_like_kaggle(_a,obs,cfg)
+                      except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                      finally:tt[_s].append(time.perf_counter()-t)
+                  wrapped.append(w)
+              env=make('kaggriculture',configuration={'seed':seed});env.run(wrapped)
+              m=[money(env,0),money(env,1)];hs=1-cs
+              return {'variant':v,'seed':seed,'candidate_seat':cs,'delta':m[cs]-m[hs],'money':m,
+                      'statuses':[x.get('status') for x in env.state],'errors':errors,
+                      'p99_ms':turn_time_stats(tt[cs])['p99']*1000,'worst_ms':turn_time_stats(tt[cs])['worst']*1000}
+          for v in variants:
+              for seed in seeds:
+                  for cs in (0,1):
+                      r=run(v,seed,cs);rows.append(r);print(json.dumps(r))
+          summary={}
+          for v in variants:
+              vr=[r for r in rows if r['variant']==v]; pairs=[]
+              for seed in seeds:
+                  rr=[r for r in vr if r['seed']==seed]; total=sum(r['delta'] for r in rr); mean=total/2
+                  pairs.append({'seed':seed,'seat0':rr[0]['delta'],'seat1':rr[1]['delta'],'pair_mean':mean,'outcome':'W' if mean>0 else 'L' if mean<0 else 'D'})
+              vals=[p['pair_mean'] for p in pairs]
+              summary[v]={'pairs':pairs,'wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},
+                          'mean':statistics.mean(vals),'median':statistics.median(vals),'worst':min(vals),'best':max(vals),
+                          'seat0_mean':statistics.mean(r['delta'] for r in vr if r['candidate_seat']==0),
+                          'seat1_mean':statistics.mean(r['delta'] for r in vr if r['candidate_seat']==1),
+                          'exceptions':sum(len(e) for r in vr for e in r['errors']),
+                          'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in vr),
+                          'max_p99_ms':max(r['p99_ms'] for r in vr),'max_worst_ms':max(r['worst_ms'] for r in vr)}
+          print('SUMMARY',json.dumps(summary,indent=2));Path('results/ablation.json').write_text(json.dumps({'rows':rows,'summary':summary},indent=2),encoding='utf-8')
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-tail-ablation
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
