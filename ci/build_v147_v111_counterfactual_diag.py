@@ -19,8 +19,10 @@ def agent(observation, configuration=None):
     try:
         before = [list(o) for o in (action.get("market") or [])]
         _V111_CF_REPORT["calls"] += 1
-        after = _v111_reorder(observation, before)
-        after = [list(o) for o in (after or [])]
+        probe = dict(action)
+        probe["market"] = [list(o) for o in before]
+        after_action = _v111_reorder(observation, probe)
+        after = [list(o) for o in ((after_action or {}).get("market") or [])]
         if after != before:
             _V111_CF_REPORT["changes"] += 1
             stock = projected_shed(action, FarmView(observation))
