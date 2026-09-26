@@ -1,0 +1,113 @@
+name: v144 burned room guard panel telemetry
+
+on:
+  push:
+    branches: [diag-v144-room-guard-panel-20260926]
+    paths:
+      - ".github/workflows/v144-room-guard-burned-panel-telemetry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  telemetry:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+      - name: Reconstruct exact v115 and v144
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name)
+              p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'exact v115 reconstruction failed' }
+          python ci\build_v144_public_room_guard.py tmp\v115.py tmp\v144.py
+          if ($LASTEXITCODE -ne 0) { throw 'v144 build failed' }
+          python -m py_compile tmp\v115.py tmp\v144.py ci\diagnose_public_room_guard.py
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          p=Path('tmp/v115.py')
+          got=hashlib.sha256(p.read_bytes()).hexdigest()
+          print('v115_sha256',got)
+          assert got == 'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          '@
+          $check | python -
+      - name: Trace burned seeds 681 through 692 both seats
+        run: |
+          $script = @'
+          import json
+          from pathlib import Path
+          import ci.diagnose_public_room_guard as d
+
+          rows=[]
+          for seed in range(681,693):
+              for seat in (0,1):
+                  base=d.run('tmp/v115.py','tmp/v115.py',seed,seat)
+                  cand=d.run('tmp/v144.py','tmp/v115.py',seed,seat)
+                  div=d.first_div(base,cand)
+                  rows.append({
+                      'seed': seed,
+                      'seat': seat,
+                      'baseline_focal_money': base['focal_reward'],
+                      'baseline_rival_money': base['rival_reward'],
+                      'candidate_focal_money': cand['focal_reward'],
+                      'candidate_rival_money': cand['rival_reward'],
+                      'candidate_minus_selfplay_focal_money': cand['focal_reward']-base['focal_reward'],
+                      'candidate_minus_selfplay_rival_money': cand['rival_reward']-base['rival_reward'],
+                      'candidate_direct_margin': cand['margin']-base['margin'],
+                      'baseline_exceptions': base['exceptions'],
+                      'candidate_exceptions': cand['exceptions'],
+                      'divergence': div,
+                  })
+          out={'purpose':'burned 681-692 room_guard separation telemetry; not promotion evidence',
+               'engine':'kaggle_environments==1.32.7',
+               'champion':'exact_v115','candidate':'v144_room_guard','rows':rows}
+          Path('results/v144_burned_panel_telemetry.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps([{'seed':r['seed'],'seat':r['seat'],'margin':r['candidate_direct_margin'],'step':(r['divergence'] or {}).get('step')} for r in rows],indent=2))
+          '@
+          $script | python -
+          if ($LASTEXITCODE -ne 0) { throw 'burned telemetry failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v144-burned-panel-telemetry
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
