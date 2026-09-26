@@ -1,0 +1,80 @@
+name: v149 fresh screen
+on:
+  push:
+    branches: [eval-v149-fresh-20260926]
+    paths: [".github/workflows/v149-fresh-screen.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  screen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v115 and v149
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content $env:GITHUB_PATH $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $x=@'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@; $x|python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if($LASTEXITCODE-ne 0){throw 'patch failed'}; Pop-Location
+          $x=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@; $x|python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v149_room_guard_buy_netting.py tmp\v115.py tmp\v149.py
+          python -m py_compile tmp\v115.py tmp\v149.py
+          $x=@'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v115.py').read_bytes()).hexdigest()=='c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2'
+          '@; $x|python -
+      - name: Fresh direct seeds 731001-731020
+        run: |
+          python scripts\eval.py tmp\v149.py tmp\v115.py -n 20 -j 4 --seed-start 731001 --json results\fresh_direct.json
+      - name: Fresh public panel seeds 731101-731103
+        run: |
+          $specs=@(@('starter','starter'),@('beat_v48','opponents\beat_v48\main.py'),@('bl_v20','opponents\bl_v20\main.py'),@('bl_v21','opponents\bl_v21\main.py'),@('farming_v2','opponents\farming_v2\main.py'),@('frontier_prvsiyan','opponents\frontier_prvsiyan\main.py'))
+          foreach($s in $specs){python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v149.py --champion tmp\v115.py --opponent $s[1] --seed-start 731101 --seed-count 3 --jobs 2 --out ("results\panel_"+$s[0]+".json"); if($LASTEXITCODE-ne 0){throw "panel failed $($s[0])"}}
+      - name: Aggregate
+        if: always()
+        run: |
+          $x=@'
+          import json,glob,statistics,math
+          from pathlib import Path
+          def pairs(p):
+              if not Path(p).exists(): return None
+              d=json.load(open(p,encoding='utf-8')); by={}
+              for g in d['matches_detail']: by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':s,'delta':statistics.fmean(v),'seat_diffs':v} for s,v in sorted(by.items())]; v=[r['delta'] for r in rows]; se=statistics.stdev(v)/math.sqrt(len(v)) if len(v)>1 else 0
+              return {'pairs':len(v),'wins':sum(x>0 for x in v),'losses':sum(x<0 for x in v),'ties':sum(x==0 for x in v),'mean':statistics.fmean(v) if v else None,'se':se,'mean_minus_2se':statistics.fmean(v)-2*se if v else None,'worst':min(v) if v else None,'best':max(v) if v else None,'rows':rows,'exceptions':d['exceptions']}
+          ps=[]; allv=[]
+          for p in sorted(glob.glob('results/panel_*.json')):
+              d=json.load(open(p,encoding='utf-8')); v=[float(r['candidate_minus_champion_money']) for r in d['rows']]; allv+=v; ps.append({'name':Path(p).stem,'wins':sum(x>0 for x in v),'losses':sum(x<0 for x in v),'ties':sum(x==0 for x in v),'mean':statistics.fmean(v) if v else None,'worst':min(v) if v else None,'best':max(v) if v else None})
+          se=statistics.stdev(allv)/math.sqrt(len(allv)) if len(allv)>1 else 0
+          out={'candidate':'v149_room_guard_buy_netting','reference':'v115','engine':'1.32.7','direct':pairs('results/fresh_direct.json'),'public':{'pairs':len(allv),'wins':sum(x>0 for x in allv),'losses':sum(x<0 for x in allv),'ties':sum(x==0 for x in allv),'mean':statistics.fmean(allv) if allv else None,'se':se,'mean_minus_2se':statistics.fmean(allv)-2*se if allv else None,'worst':min(allv) if allv else None,'best':max(allv) if allv else None,'panels':ps},'decision':'fresh screen only; no automatic promotion'}
+          Path('results/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@; $x|python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v149-fresh-screen
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
