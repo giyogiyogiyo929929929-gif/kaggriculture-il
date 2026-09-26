@@ -1,0 +1,136 @@
+name: v147 runtime phase profile
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-runtime-phase-profile-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+      - name: Profile parent and second-pass reorder separately
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import importlib.util, json, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS=[681,682,689,691,692]
+          REPS=2
+          uid=0
+          def load_module(path):
+              global uid
+              uid+=1
+              p=Path(path).resolve(); name=f'_phase_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              mod=importlib.util.module_from_spec(spec); sys.modules[name]=mod
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              return mod
+          def last_callable(mod):
+              fn=None
+              for v in vars(mod).values():
+                  if callable(v): fn=v
+              return fn
+
+          rows=[]; errors=[]
+          for rep in range(REPS):
+            for seed in SEEDS:
+              for seat in (0,1):
+                try:
+                  m=load_module('tmp/v147.py'); champ=last_callable(load_module('tmp/v115.py'))
+                  phase={'where':'outside','step':None,'seat':seat,'rep':rep,'seed':seed}
+                  events=[]
+                  orig_parent=m._V147_PARENT
+                  orig_reorder=m._v111_reorder
+                  def timed_parent(obs, cfg=None):
+                      old=phase['where']; phase['where']='parent'; phase['step']=int(obs.get('step',0))
+                      t0=time.perf_counter_ns(); c0=time.process_time_ns()
+                      try: return orig_parent(obs,cfg)
+                      finally:
+                          events.append({'kind':'parent','rep':rep,'seed':seed,'seat':seat,'step':phase['step'],
+                            'wall_ms':(time.perf_counter_ns()-t0)/1e6,'cpu_ms':(time.process_time_ns()-c0)/1e6})
+                          phase['where']=old
+                  def timed_reorder(obs, action):
+                      kind='second_reorder' if phase['where']!='parent' else 'parent_reorder'
+                      step=int(obs.get('step',0)); t0=time.perf_counter_ns(); c0=time.process_time_ns()
+                      try: return orig_reorder(obs,action)
+                      finally:
+                          events.append({'kind':kind,'rep':rep,'seed':seed,'seat':seat,'step':step,
+                            'wall_ms':(time.perf_counter_ns()-t0)/1e6,'cpu_ms':(time.process_time_ns()-c0)/1e6})
+                  m._V147_PARENT=timed_parent
+                  m._v111_reorder=timed_reorder
+                  cand=m.agent
+                  agents=[cand,champ] if seat==0 else [champ,cand]
+                  env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                  env.run(agents)
+                  rows.extend(events)
+                except Exception as e:
+                  errors.append({'rep':rep,'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          by={}
+          for r in rows:
+              by.setdefault(r['kind'],[]).append(r)
+          summary={}
+          for k,vals in by.items():
+              s=sorted(vals,key=lambda x:x['wall_ms'],reverse=True)
+              summary[k]={'calls':len(vals),'max_wall_ms':s[0]['wall_ms'] if s else None,
+                          'max_cpu_ms':max((x['cpu_ms'] for x in vals),default=None),
+                          'gt50':sum(x['wall_ms']>50 for x in vals),'gt200':sum(x['wall_ms']>200 for x in vals),
+                          'top20':s[:20]}
+          out={'seeds':SEEDS,'reps':REPS,'summary':summary,'errors':errors}
+          Path('results/v147_runtime_phase_profile.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          if errors: raise SystemExit(1)
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-runtime-phase-profile-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
