@@ -60,6 +60,31 @@ Raw candidate failed five malformed-observation probes (four `KeyError`, one `At
 
 Decision: **PASS as robustness-only layer**. This focused run is not the final dedicated runtime gate.
 
+## Formal safety-v3 dev H2H vs v147 — PASS TO STRESS/RUNTIME
+
+Actions run `36236548782`, job `108389259171`, exact `kaggle-environments==1.32.7`, exact engine-source SHA and exact candidate/champion SHA checks. Same ten already-burned dev seeds as the raw comparison, both seats.
+
+Authoritative job-log values:
+
+| seed | pair mean | result |
+|---:|---:|:---:|
+| 641 | -406 | L |
+| 350003 | -520 | L |
+| 101 | +467 | W |
+| 211 | +593 | W |
+| 347 | +317 | W |
+| 509 | +292 | W |
+| 733 | +3428 | W |
+| 911 | +1178 | W |
+| 1201 | +1283 | W |
+| 1601 | +253 | W |
+
+Summary: **8W/2L/0D**, mean **+688.5**, median **+392**, worst **-520**, best **+3428**, seat0 mean = seat1 mean = **+688.5**, exceptions0, non-DONE0. The tactical results exactly reproduce the raw uploaded candidate on all ten seeds. Malformed probes are all legal.
+
+Runtime observed inside this broad H2H: max candidate p99 **19.7103 ms**, max single candidate turn **442.9083 ms**. The p99 is below the formal 50 ms threshold, but the isolated worst turn exceeds the v147 formal 200 ms threshold. This broad-H2H timing is not treated as the final runtime decision; a dedicated serial benchmark matching the v147 methodology is required.
+
+Decision: **PASS TO BURNED STRESS + DEDICATED RUNTIME; KEEP TESTING overall**. Do not consume sealed seeds until these gates pass.
+
 ## Formal diagnostic / replay
 
 Actions run `36230151111`, seeds `641,350003,733,911`, both seats.
@@ -139,6 +164,10 @@ Summary: **0W/4L/6D**, mean **-112**, median0, worst **-693**, best0, seat0 mean
 
 Decision: **REJECT**. The stricter immediate-value filter produced no wins and four regressions, including making seed641 materially worse. Do not run direct v147 or sealed for this candidate. Mechanism inference: apparently marginal early CARROT swaps have downstream nonlinear value not captured by the immediate `(CARROT vs WHEAT)` price expression; do not repeat simple immediate-margin tightening.
 
+### Behavior-identical CARROT2 trace — QUEUED
+
+Because the broad immediate-margin guard regressed, the next CARROT2 work is instrumentation only, not another tactical change. Workflow `.github/workflows/uploaded-127ed3-carrot2-trace.yml`, Actions run `36238215853`, self-hosted runner. Contrast seeds 641/350003 (losses) and 733/911 (wins), both candidate seats. For each accepted WHEAT→CARROT swap it records step/day, WHEAT stock, one/two/three-day feed demand, expected WHEAT/CARROT units, prices, edge and spare-crop estimates. This run must not be used as evidence until completed.
+
 ## E402 finding
 
 E402 activates late and uses route2 from step648 for WHEAT/CARROT planting demand. Replay does not support E402 as the late planting shortfall cause. Do not prioritize removal.
@@ -155,17 +184,36 @@ Candidate SHA `e2d48abbfff9c885cefe80d6b746ec54870341284117e1f8d5436a3393b7c490`
 
 All four diagnostics finish with zero shed for both agents. There is no simple leftover-inventory liquidation failure. Seed733 is particularly important: v147 sells WOOL/WHEAT/FERTILIZER around 712–714, while raw delays a large WOOL sale until716 and still wins +3428. Blanket earlier liquidation is unsupported; endgame changes must be item/order/market-state-aware.
 
+## Exact known-opponent assets
+
+- exact `v134_candidate_center_nonsplit.py` recovered from the user's Library: SHA256 `693ca693378f8adae5d57642610ca682e43a03ad636be71141e1615a5e2d1edd`. A historical builder-derived v134 with a different SHA is **not** an acceptable substitute.
+- `public_main_opponent.py`: exact named file not found in the user's Library search as of this record. Keep this regression slot unresolved rather than silently substituting another file.
+
+## Current pending gates
+
+### Burned stress + dedicated runtime
+
+Workflow `.github/workflows/uploaded-127ed3-safe-v3-stress-runtime.yml`, Actions run `36237376092`, self-hosted Windows X64. Currently queued behind another repository self-hosted evaluation; no result is counted while queued.
+
+- burned stress: seeds 621–632, both seats, safety-v3 vs exact v147
+- dedicated runtime: same methodology as the v147 formal runtime benchmark — seeds 641/642, both seats, starter opponent, serial timing
+- runtime acceptance thresholds: p99 < 50 ms, worst single turn < 200 ms, exceptions0
+
+The branch does **not** spend a fresh sealed block unless burned stress preserves a multi-seed positive signal and the dedicated runtime gate passes.
+
 ## Current decision / next gates
 
 - official champion remains **v147**
 - raw uploaded: tactically strong but robustness-regressed
-- safety-v3: **PASS** as robustness-only layer and is the current surviving uploaded candidate base
+- safety-v3: current surviving uploaded candidate; exact SHA `87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df`
+- formal safety-v3 dev H2H: **8W/2L/0D, mean +688.5, worst -520, both seats identical, exceptions0**, exact reproduction of raw tactics
 - conservative early CARROT2: **REJECT**
 - MPX shop-aware: **REJECT**
 - IG/MG ablation: no demonstrated effect
-- no fresh sealed seeds consumed for the uploaded-candidate branch
-- no Kaggle submission performed
+- fresh sealed seeds consumed for safety-v3: **none**
+- overall decision: **KEEP TESTING**
+- no champion change and no Kaggle submission
 
-Next: run safety-v3 directly against v147 on the full ten burned dev seeds, both seats. If it reproduces the raw 8W/2L profile with no new failure, then consider fresh sealed seeds; do not assume transitivity from the four raw/safe equivalence games. After a direct survivor, run known-opponent regression including `public_main_opponent.py`, `v134_candidate_center_nonsplit.py`, starter/beat_v48/bl_v20/bl_v21/farming_v2/frontier_prvsiyan, plus a dedicated runtime gate. The two named historical files must be resolved exactly before use rather than silently substituted.
+Next order: (1) finish burned stress and dedicated runtime run `36237376092`; (2) only if both pass, allocate a genuinely unused sealed block and run safety-v3 vs v147 both seats; (3) inspect behavior-identical CARROT2 trace `36238215853` for a loss/win-separating condition before making any new CARROT2 candidate; (4) after sealed survival, run known-opponent regression using exact assets, including exact v134 and the v147 public panel. Keep `public_main_opponent.py` explicitly unresolved until the exact file is found.
 
 After this uploaded-candidate path is resolved, resume the planned ~24-turn h20/h24 counterfactual market study for EGG/MILK/STRAWBERRY/FERTILIZER and related items.
