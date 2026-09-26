@@ -2,8 +2,8 @@
 
 ## Identity
 
-- role: candidate only; never champion
-- uploaded parent: `/mnt/data/main.py`
+- role: candidate only; never infer champion from this file
+- uploaded source: `/mnt/data/main.py`
 - uploaded SHA256: `127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652`
 - formal champion: `v147_candidate_confirmed_v111_clone.py`
 - champion SHA256: `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`
@@ -13,14 +13,14 @@
 
 ## Static / syntax
 
-- local Python AST parse: PASS
+- local AST parse: PASS
 - local `py_compile`: PASS
-- exact upload transport is reconstructed from `ci/uploaded_127ed3/part00.b64` ... `part11.b64` and SHA-checked before formal runs.
-- final uploaded callable tail: `ig_agent`.
-- generic Chassis settings: `sell_lead=True`; `front_run=False`, `budget_guard=False`, `room_guard=False`, `dead_stock=False`, `terminal_liquidation=False`.
-- later wrappers implement independent sale timing, overflow, endgame, inventory-gap and race/copy logic; code presence is not treated as proof of firing.
+- exact upload transport: `ci/uploaded_127ed3/part00.b64` ... `part11.b64`; every formal workflow reconstructs and SHA-checks exact bytes
+- final uploaded callable tail: `ig_agent`
+- generic Chassis settings: `sell_lead=True`; `front_run=False`, `budget_guard=False`, `room_guard=False`, `dead_stock=False`, `terminal_liquidation=False`
+- later wrappers independently implement sale timing, overflow, endgame, inventory rescue and race/copy logic; code presence is not treated as firing evidence
 
-## Formal dev H2H: uploaded raw vs v147
+## Formal dev H2H — raw uploaded vs v147
 
 Actions run: `36228521905` (`uploaded-127ed3-v147-dev`).
 
@@ -28,43 +28,60 @@ Seeds: `641, 350003, 101, 211, 347, 509, 733, 911, 1201, 1601`, both seats.
 
 `candidate_minus_champion = candidate - champion`:
 
+| seed | pair mean | result |
+|---:|---:|:---:|
+| 641 | -406 | L |
+| 350003 | -520 | L |
+| 101 | +467 | W |
+| 211 | +593 | W |
+| 347 | +317 | W |
+| 509 | +292 | W |
+| 733 | +3428 | W |
+| 911 | +1178 | W |
+| 1201 | +1283 | W |
+| 1601 | +253 | W |
+
+Summary:
+
 - matched pairs: 10
 - W/L/D: **8/2/0**
 - mean: **+688.5**
 - median: **+392**
 - worst regression: **-520**
 - best: **+3428**
-- seat0 mean: **+688.5**
-- seat1 mean: **+688.5**
+- seat0 mean = seat1 mean = **+688.5**
 - exceptions: 0
 - non-DONE games: 0
 - max candidate game p99: 11.7561 ms
 - worst observed candidate turn: 268.3734 ms
 
-Pair means:
+Decision after raw dev H2H: **KEEP TESTING**. No PROMOTE.
 
-- 641: -406
-- 350003: -520
-- 101: +467
-- 211: +593
-- 347: +317
-- 509: +292
-- 733: +3428
-- 911: +1178
-- 1201: +1283
-- 1601: +253
+## Robustness regression and safety-only candidate
 
-Decision after dev H2H: **KEEP TESTING**. No PROMOTE.
+Raw uploaded candidate fails the malformed-observation preflight: four `KeyError` failures plus one `AttributeError`; v147 handled the first four in the same probe. This is a real preflight regression, so raw uploaded bytes are not promotion-eligible.
 
-## Robustness regression
+Safety-v3 is deliberately separated from tactics. It wraps final `ig_agent`, deletes the stale `agent` binding so the Kaggle-like last-callable loader selects the wrapper, and returns legal PASS only on unexpected exception. Expected SHA256: `87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df`.
 
-Malformed-observation probes on the raw uploaded candidate produced four `KeyError` failures and one `AttributeError` failure. v147 handled the first four and failed only the final `None` probe. This is a real preflight regression and must be fixed separately from tactical changes before any promotion.
+Workflow: `.github/workflows/uploaded-127ed3-safe-v3.yml`, run `36235154374`. As of the latest check it is **queued** on the formal self-hosted Windows runner. Required gate: all malformed probes legal + raw/safe exact final-money equivalence on seeds 641/350003/733/911 both seats. Do not treat queued as passed.
 
-A safety-only wrapper validation workflow was prepared to return a legal PASS action on unexpected exceptions while preserving valid-game behavior. Formal validation is currently queued behind the unavailable self-hosted runner.
+## Formal diagnostic / replay
 
-## Diagnostic seeds / telemetry
+Actions run: `36230151111`, seeds `641, 350003, 733, 911`, both seats.
 
-Formal diagnostic run: `36230151111`, seeds `641, 350003, 733, 911`, both seats.
+### Active vs dormant mechanisms
+
+Candidate seat0 telemetry on the four contrast seeds:
+
+- generic `front_run`: `front_turns=0` on all four — not an explanation of strength
+- race/copy machinery: active; clone-like counts are 217 / 476 / 282 / 458 and lost-race/escalation evidence is nonzero
+- `FLOWPX`: direct fires 0 on all four because `_FX_FLOW_MIN=999`; observation code exists but action layer is dormant here
+- `ADV`: active, units 99 / 31 / 32 / 43
+- `MPX`: active, units 68 / 45 / 100 / 56
+- queue/order layers: active
+- terminal helper: only one small fire on seed911 in this panel
+
+Therefore the current raw agent's race machinery must not be described as dormant, but generic front-run and FLOWPX are not current causal candidates on these games.
 
 ### Item-level candidate-minus-champion net market deltas
 
@@ -75,113 +92,87 @@ Formal diagnostic run: `36230151111`, seeds `641, 350003, 733, 911`, both seats.
 | 733 | -1472 | +2324 | +996 | 0 | +150 | +1926 | -729 | +3428 |
 | 911 | +163 | -6 | +860 | 0 | +425 | -293 | +29 | +1178 |
 
-For WHEAT, early sale timing itself is not the simple failure mode. In seed 350003, same-size 89-unit lots sold one turn earlier by the candidate realized about `4010 vs 3812` and `3980 vs 3767`; final WHEAT deficits therefore come from broader quantity / production / purchasing differences, not merely a worse one-turn quote.
+STRAWBERRY is consistently positive on all four. WOOL is unstable. A universal premium-product lead-sell rule is not justified.
 
-### Realized sell-rate pattern
+### WHEAT: quantity, not realized SELL quote, is the main weakness
 
-Across all four diagnostic seeds, STRAWBERRY sell quantity is unchanged and candidate average realized unit price is higher:
+The candidate's mean realized WHEAT SELL unit price is actually higher than v147 on all four contrast seeds, but it sells fewer units:
 
-- 641: +1.34/unit
-- 350003: +1.51/unit
-- 733: +4.05/unit
-- 911: +3.45/unit
+| seed | cand avg sell | champ avg sell | cand sell qty | champ sell qty | WHEAT sell revenue delta |
+|---:|---:|---:|---:|---:|---:|
+| 641 | 38.67 | 37.57 | 229 | 276 | -1513 |
+| 350003 | 43.09 | 42.56 | 1665 | 1706 | -852 |
+| 733 | 37.02 | 35.93 | 333 | 415 | -2583 |
+| 911 | 36.83 | 36.00 | 358 | 380 | -494 |
 
-WOOL is worse on 641, 350003 and 911, but strongly better on 733. MILK is mixed.
+WHEAT BUY_PRODUCT is also generally later / higher-priced in the candidate. Thus the losing WHEAT paths should be investigated as crop mix / available quantity / purchasing chronology, not as a simple one-turn quote problem.
 
-This argues against applying one universal premium-product lead-sell rule to every item.
+## CARROT2 analysis
 
-## Replay finding: E402 is not the root cause of the losing WHEAT paths
+`_CA_` / CARROT2 conditionally replaces planned WHEAT plants with CARROT. Telemetry `ca_swaps` on seeds 641/350003/733/911 is **46 / 29 / 22 / 0**.
 
-`E402` activates from step 624 and uses route 2 from step 648 when estimating future WHEAT/CARROT planting demand. Route 2 has no WHEAT/CARROT PLANT operations from step 672 onward.
+Observed candidate-v147 PLANT substitutions show:
 
-Actual replay PLANT counts show no late planting shortfall attributable to E402:
+- seed641: material WHEAT→CARROT divergence starts step260; many early substitutions have immediate value margin roughly -18 to -6 under `(3*CARROT-20) - (4*WHEAT-10)`
+- seed350003: two observed substitutions at steps453 and501, margins about -12 and -4
+- seed733: material substitutions start step561; despite negative immediate margins, CARROT net revenue is +2324 and the pair wins +3428
+- seed911: no material later substitution
 
-- seed 350003: candidate/champion late planting is essentially identical; main crop differences are only two CARROT-for-WHEAT substitutions before step 624.
-- seed 641: the important WHEAT→CARROT divergence starts at step 260, long before E402.
-- seed 733: the important crop shift starts at step 561, also before E402.
-- seed 911: planting is almost identical after the opening.
+Consequently, deleting CARROT2 is not supported. It would remove a mechanism participating in seed733's large win.
 
-Therefore E402 removal is **not** the current priority.
+### New focused candidate: conservative early CARROT2 margin
 
-## Replay finding: CARROT2 (`_CA_`) explains the crop-mix divergence
+Hypothesis: the global `_CA_MARGIN=-20` is too permissive in the early/mid game. Constrain only `step < 540` to margin `0`, while preserving the existing `-20` behavior from step540 onward. This is one tactical change and intentionally preserves seed733's step561+ substitution regime.
 
-The uploaded candidate has a day 10–28 CARROT2 layer that conditionally replaces planned WHEAT planting with CARROT when its modeled value is higher.
+- parent SHA: `127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652`
+- candidate SHA: `bad25166aa91712007af8a010f571dab5cf87873dc75f762f2e83b152849faad`
+- builder: `ci/build_uploaded_127ed3_ca_early_margin.py`
+- byte-preserving local build: PASS
+- local `py_compile`: PASS
+- workflow: `.github/workflows/uploaded-127ed3-ca-early-margin.yml`
+- first panel: the ten already-burned raw-v147 dev seeds, both seats, candidate vs raw parent
+- run `36235967167`: **queued** at latest check
 
-First material substitutions:
+If it does not improve the two losing seeds without damaging the former wins, REJECT it. If it is positive vs raw, next gate is direct candidate-v147 matched H2H; do not infer transitivity.
 
-- seed 641: step 260
-- seed 350003: step 453
-- seed 733: step 561
-- seed 911: no material later substitution
+## E402 finding
 
-This layer is not an obvious deletion target: on seed 733 the candidate earns +2324 CARROT while losing -1472 WHEAT and wins the pair by +3428. On seed 641 WHEAT -1722 and CARROT +1691 nearly cancel, so the remaining loss is elsewhere.
+E402 activates late and uses route 2 from step648 for WHEAT/CARROT planting demand. Replay shows no late planting shortfall attributable to E402: seed641 divergence begins much earlier, seed350003 has only limited crop substitutions, seed733 divergence begins before E402, and seed911 is nearly identical. E402 removal is not the current priority.
 
-## Sale-timing layers
+## Tail IG/MG ablation — completed
 
-The uploaded candidate contains several active sale-timing layers. Diagnostic telemetry includes:
+Formal run `36233707730`, exact 1.32.7, seeds `641,350003,733,911`, both seats.
 
-- `ADV`: 99 / 31 / 32 / 43 units on seeds 641 / 350003 / 733 / 911
-- evening lead (`EV`): 64 / 23 / 9 / 6 units
-- dawn lead (`DP`): 27 / 11 / 0 / 4 units
-- midday lead (`MP`): 23 / 21 / 39 / 8 units
-- model lead (`MPX`): 68 / 45 / 100 / 56 units
-- `FLOWPX` rival-flow direct fires: 0 on all four diagnostic seeds (`_FX_FLOW_MIN=999`), despite rival-flow observations being collected
-- old `V9_RACE` detector is active (nonzero rival sales / lead evidence); do not call the uploaded candidate's race machinery dormant.
+Compared full raw vs variants ending at `mg_agent` (no IG) and `e402_agent` (no MG+IG). All three variants produced the same matched results:
 
-## New candidate: MPX shop-aware town draw
+- 641: -406
+- 350003: -520
+- 733: +3428
+- 911: +1178
 
-Hypothesis: `MODELPX` currently predicts town consumption with a generic `+1 every 4 turns, +1 every 24 turns` model, ignoring shop type and multiplicity. This can mis-estimate the next inventory/price for MILK/STRAWBERRY/WOOL. The file already contains `_v9_town_draw(shops, step)`, which models item- and shop-specific draw.
+Each variant: 2W/2L, mean +920, median +386, worst -520, best +3428, exceptions0. IG/MG are not causal for these selected outcome differences. Stop spending focused experiments on them unless new evidence appears.
 
-Candidate changes only the MPX prediction model:
+## MPX shop-aware town draw — REJECT
 
-1. `_mpx_draw_units(item, step, shops)` delegates to `_v9_town_draw`.
-2. MPX stores the previous step's shop list for rival-flow recovery.
-3. Current-step expected inventory uses the current shop list.
+Candidate SHA: `e2d48abbfff9c885cefe80d6b746ec54870341284117e1f8d5436a3393b7c490`.
 
-Parent SHA: `127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652`
+Formal run `36232817779` succeeded under exact 1.32.7. On burned diagnostic seeds `641,350003,733,911`, both seats, candidate vs raw parent was **0W/0L/4D**, mean/median/worst/best all 0, exceptions0, non-DONE0. The proposed shop-aware MPX draw yielded no final-money effect on the intended contrast panel. **REJECT / no demonstrated effect; do not spend sealed seeds.**
 
-Candidate SHA: `e2d48abbfff9c885cefe80d6b746ec54870341284117e1f8d5436a3393b7c490`
+## Endgame finding
 
-Builder: `ci/build_uploaded_127ed3_mpx_shopdraw.py`
+All four diagnostic games finish with candidate and champion shed at zero; there is no simple leftover-inventory liquidation failure. Seed733 is especially important: v147 sells WOOL/WHEAT/FERTILIZER around steps712–714, while the raw candidate delays a large WOOL sale until step716 and still wins the pair by +3428. Therefore a blanket earlier-liquidation rule is not supported. Endgame work should remain item-, order-, and market-state-aware.
 
-Local syntax: PASS.
-Synthetic draw checks:
+## Decision / next gates
 
-- one `YARN_STORE`, normal shop tick: WOOL draw 2
-- two `YARN_STORE`, normal shop tick: WOOL draw 4
-- `PIZZA_SHOP + SMOOTHIE_SHOP`, normal shop tick: MILK draw 2
+- official champion remains **v147**
+- raw uploaded candidate: **KEEP TESTING**, not promotable because malformed-input safety regressed and worst dev pair is -520
+- safety-v3: **TESTING / queued**
+- MPX shop-aware candidate: **REJECT — no demonstrated effect**
+- IG/MG tail ablation: **no demonstrated causal effect on selected panel**
+- CARROT2 early-margin candidate: **TESTING / queued**
+- no fresh sealed seeds consumed for the uploaded-candidate branch yet
+- no Kaggle submission performed
 
-Focused matched workflow: `.github/workflows/uploaded-127ed3-mpx-shopdraw.yml`, run `36232817779` queued.
+After safety-v3 and CARROT2 focused results: direct champion H2H for any surviving candidate, then fresh sealed seeds, known-opponent regression including `public_main_opponent.py`, `v134_candidate_center_nonsplit.py`, starter/beat_v48/bl_v20/bl_v21/farming_v2/frontier_prvsiyan, and dedicated runtime. Only then consider PROMOTE.
 
-Initial focused seeds are deliberately already-burned diagnostic seeds `641, 350003, 733, 911`, both seats. No fresh sealed seed is consumed at this stage.
-
-## Runner / infrastructure status
-
-The self-hosted Windows runner that produced the formal 1.32.7 results is currently unavailable; new self-hosted runs remain queued.
-
-A temporary `windows-latest` fallback was tried for the focused tail ablation and safety-wrapper validation. Both failed before any workflow step started (`runner_id=0`, empty step list). These are infrastructure failures, not candidate failures. Final runtime / promotion decisions must still use the self-hosted formal path.
-
-## Pending focused evaluations
-
-- full / no-IG / no-MG+IG tail ablation on diagnostic seeds
-- safety-only wrapper valid-game equivalence + malformed-input regression
-- MPX shop-aware candidate vs raw uploaded parent
-
-## Decision
-
-- formal champion remains **v147**.
-- raw uploaded candidate: **KEEP TESTING**.
-- MPX shop-aware candidate: **TESTING / queued**, not promotion-eligible yet.
-- no sealed test yet.
-- no Kaggle submission performed.
-
-## Next hypothesis / next actions
-
-After the focused runs become available:
-
-1. reject any ablation/model change that damages the +3428 seed 733 mechanism without compensating stability gains;
-2. if MPX shop-aware improves the losing seeds without a material regression on 733/911, expand to burned dev seeds before sealed testing;
-3. if tail IG/MG ablation is neutral, stop spending experiments on those layers;
-4. continue item-specific sell-timing analysis, especially keeping the consistently positive STRAWBERRY behavior separate from the unstable WOOL behavior;
-5. only after the uploaded candidate path is resolved, continue the planned ~24-turn h20/h24 counterfactual market study for EGG/MILK/STRAWBERRY/FERTILIZER;
-6. fresh sealed seeds and known-opponent regression remain mandatory before any PROMOTE.
+After this uploaded-candidate path is resolved, resume the planned ~24-turn h20/h24 counterfactual market study for EGG/MILK/STRAWBERRY/FERTILIZER and related items.
