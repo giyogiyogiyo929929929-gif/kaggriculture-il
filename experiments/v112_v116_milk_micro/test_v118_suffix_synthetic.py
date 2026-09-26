@@ -51,6 +51,14 @@ def main():
     assert r["reorders"] == 0 and r["scarcity_blocks"] == 1
 
     a, r = run_case(
+        [["SELL","WHEAT",5],["SELL","MILK",3]],
+        {"WHEAT":10020,"MILK":0},
+        {"WHEAT":24,"MILK":256},
+    )
+    assert a["market"][0][1] == "MILK"
+    assert r["reorders"] == 1 and r["milk"] == 1
+
+    a, r = run_case(
         [["SELL","WHEAT",5],["SELL","MILK",3],["SELL","WOOL",2]],
         {"WHEAT":10020,"MILK":9950,"WOOL":9940},
         {"WHEAT":24,"MILK":190,"WOOL":230},

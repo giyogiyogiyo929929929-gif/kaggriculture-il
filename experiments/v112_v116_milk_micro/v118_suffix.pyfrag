@@ -54,7 +54,8 @@ def _v118_market_maps(obs):
 
 def _v118_num(mapping, key, default=0.0):
     try:
-        return float(_get(mapping, key, default) or default)
+        value = _get(mapping, key, default)
+        return float(default if value is None else value)
     except Exception:
         return float(default)
 
