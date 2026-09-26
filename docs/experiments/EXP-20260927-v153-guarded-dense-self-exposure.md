@@ -2,7 +2,7 @@
 
 ## Status
 
-**FOCUSED TEST RUNNING. NOT PROMOTED.** Formal champion remains v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
+**FOCUSED TEST QUEUED. NOT PROMOTED.** Formal champion remains v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
 
 ## Parent / identity
 
@@ -12,6 +12,11 @@
 - builder: `ci/build_v153_v147_dense_self_exposure_guarded.py`
 - branch: `eval-v153-v147-dense-self-exposure-20260927`
 - formal engine: `kaggle_environments==1.32.7`
+- locally reconstructed v153 SHA256 from exact final-preflight v147 source: `41fcaf176fc379ee42034bd98e853e1d6e6d03f7201a0d05a964a789b84e1c22`
+- local `py_compile`: PASS
+- local import: PASS
+
+The formal workflow must reproduce the same v153 SHA before its game result is accepted.
 
 ## Why v153 exists
 
@@ -51,6 +56,21 @@ if not (288 <= step < 694) or not orders or not orders[0] or orders[0][0] != "SE
 
 No scoring thresholds, order quantities, BUY barriers, farm actions, opening policy or terminal behavior change relative to v152.
 
+Functional diff audit between v152 and v153: apart from identifier/report renaming, the only behavior change is `not orders[0]` in the early guard.
+
+## Focused synthetic checks
+
+Using the exact v147 source recovered from formal final-preflight run `36216080495`:
+
+1. leading empty market order `[[], ...]` returns the parent action unchanged and leaves `_V153_REPORT.errors == 0`;
+2. a synthetic dense five-item SELL block is reordered by descending self-impact exposure;
+3. the later BUY barrier retains its exact position relative to the leading SELL block;
+4. telemetry on the synthetic changed case is `eligible=1`, `changed=1`, `errors=0`.
+
+Synthetic result: **PASS**.
+
+This is only a focused implementation check, not formal game evidence.
+
 ## Supporting counterfactual evidence
 
 The separate v147/v111 counterfactual workflow `36250732794` completed successfully. Existing v111 had no change at source step649, supporting that the FERTILIZER-before-MILK improvement is outside the current v111 reachable region rather than a simple threshold miss.
@@ -59,8 +79,11 @@ The separate v147/v111 counterfactual workflow `36250732794` completed successfu
 
 Workflow run `36256621802` evaluates v153 against exact v147 on `score_2820`, seed520104, both seats under engine 1.32.7.
 
+At latest check the run is queued because self-hosted runner `CIYOI` is occupied by an unrelated v150 hard-opponent regression run. The queued state is not evaluation evidence and the other run is not interrupted.
+
 Required to continue:
 
+- formal v153 SHA equals `41fcaf176fc379ee42034bd98e853e1d6e6d03f7201a0d05a964a789b84e1c22`;
 - reproduce `candidate_minus_champion_money = +20/+20` (or otherwise preserve the loss-to-win conversion);
 - both seats improve consistently;
 - external exceptions `0`;
