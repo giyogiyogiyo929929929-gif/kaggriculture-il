@@ -52,6 +52,22 @@ No farm strategy, sale quantity policy, prediction threshold, or endgame policy 
 
 The sealed range was searched in the repository before use and had no match. It is used once for this candidate and must not be retuned against if the sealed gate fails.
 
+## Preregistered burned prediction
+
+Recorded before the v150 workflow produced any match result.
+
+Focused v147 telemetry showed that positive first-divergence actions on seeds 681, 682 and 689 contained only unique SELL item kinds, while seed 691 alone contained duplicate `CARROT` SELL orders at the first divergence. If the guard is scoped correctly and that duplicate action is the only cause of the seat instability, v150 should preserve the v147 result on every burned seed except 691 and restore seed 691 to champion behavior.
+
+Expected burned result under that narrow mechanism:
+
+- seed 691 single-seat deltas: `0 / 0` instead of v147 `-52 / +56`
+- matched pairs 681..692: **8 wins / 0 losses / 4 ties**
+- mean candidate-minus-champion: **+47.333...** (`568 / 12`)
+- worst matched pair: `0`
+- minimum single-seat delta: `0`
+
+Any materially different pattern means the guard fires on additional duplicate-SELL states or the causal hypothesis is incomplete and requires telemetry review before promotion.
+
 ## Gates before sealed evaluation
 
 Burned gate requires:
@@ -77,7 +93,17 @@ Pending workflow completion.
 
 ## Telemetry findings
 
-Pending. Required focused checks are seed 691 (guard must prevent the unsafe second pass) and positive reorder seeds such as 689 (safe unique-item reorder must remain active).
+Focused v147 artifact `10900648604` confirms:
+
+- seed 681 first divergence step 552: unique SELL kinds; final `+4 / +4`
+- seed 682 first divergence step 481: unique SELL kinds; final `+170 / +170`
+- seed 689 first divergence step 409: unique SELL kinds; final `+230 / +230`
+- seed 691 first divergence step 673: duplicate `CARROT` SELL orders; final `-52 / +56`
+- at each recorded first divergence the observation was equal and the SELL multiset was unchanged; the treatment changed order only
+
+The focused telemetry artifact's diagnostic cash-window field used `private.money` and is therefore null/invalid; final rewards and action/state divergence data are unaffected.
+
+Required v150 checks remain: seed 691 must suppress the unsafe second pass, while a positive unique-item seed such as 689 must retain it.
 
 ## Decision
 
