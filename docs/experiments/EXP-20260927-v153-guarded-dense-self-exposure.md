@@ -35,6 +35,26 @@ Formal focused result for v152:
 
 This is a clean loss-to-win conversion on the priority hard cell.
 
+## Exact causal / ledger attribution
+
+Comparing the original formal v147 ledger with the formal v152 candidate ledger shows an unusually clean intervention:
+
+- both seats have exactly **one action difference in the entire game**, at step649;
+- the only action difference is the order of the same leading SELL multiset;
+- from step650 onward the candidate has `+20` cash relative to the original v147 trajectory and score_2820 has `-23` cash relative to its original trajectory;
+- relative margin is therefore `+43` and remains fixed through the end of the game;
+- no later candidate action differs from the original v147 trajectory, so there is no policy-cascade explanation needed.
+
+Item-level market accounting explains the full `+43` margin change:
+
+1. **FERTILIZER**: moving candidate FERTILIZER into the same leading slot as score_2820 changes it from a delayed sale to simultaneous same-item competition. Candidate revenue changes by `+30`; opponent revenue changes by `-27`; relative effect `+57`.
+2. **WOOL**: as the tradeoff, candidate WOOL moves from simultaneous competition to one slot after the opponent WOOL. Candidate revenue changes by `-10`; opponent revenue changes by `+4`; relative effect `-14`.
+3. Net: candidate `+30-10 = +20`; opponent `-27+4 = -23`; relative margin `+57-14 = +43`.
+
+The later `BUY_PRODUCT FERTILIZER 2` barrier remains in the same position and the amount of FERTILIZER sold before that barrier is unchanged, so this is not a gross-sales artifact caused by a changed repurchase cost.
+
+This exactly reconciles the formal final-money result and provides a reproducible causal explanation for the loss-to-win conversion.
+
 ## v152 bug found by telemetry
 
 The candidate ledger completed and reported, in each mirrored seat:
@@ -69,7 +89,7 @@ Using the exact v147 source recovered from formal final-preflight run `362160804
 
 Synthetic result: **PASS**.
 
-This is only a focused implementation check, not formal game evidence.
+A local microbenchmark of the dense five-item exposure calculation plus stable sort at the source step649 state measured about `0.043 ms` median and `0.116 ms` p99 for the added core computation. This is only an overhead sanity check; formal runtime limits must still be tested later.
 
 ## Supporting counterfactual evidence
 
@@ -91,6 +111,8 @@ Required to continue:
 - `_V153_REPORT.changed == 1` in both seats.
 
 If this passes, proceed without sealed seeds to burned direct v147 seeds681..692, both seats, then hard-opponent panel and wash-item net-revenue telemetry before considering fresh sealed seeds.
+
+The next burned-direct workflow is already prepared as `.github/workflows/v153-v147-burned-direct.yml`, but its trigger file has deliberately not been created before the focused gate passes.
 
 ## Current decision
 
