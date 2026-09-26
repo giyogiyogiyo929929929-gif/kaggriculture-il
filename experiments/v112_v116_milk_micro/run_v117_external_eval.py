@@ -32,21 +32,33 @@ OPPONENTS = {
 
 
 def load(path: Path, tag: str):
+    """Load like Kaggle/project eval: sibling imports enabled; last callable wins."""
     spec = importlib.util.spec_from_file_location(tag, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[tag] = mod
-    spec.loader.exec_module(mod)
-    fn = getattr(mod, "agent", None)
-    if not callable(fn):
-        raise RuntimeError(f"{path} does not expose callable agent")
+    parent = str(path.parent)
+    sys.path.insert(0, parent)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        try:
+            sys.path.remove(parent)
+        except ValueError:
+            pass
+    fn = None
+    for value in vars(mod).values():
+        if callable(value):
+            fn = value
+    if fn is None:
+        raise RuntimeError(f"{path} contains no callable entrypoint")
     return mod, fn
 
 
 def game(agent_path: Path, opp_path: Path, seed: int, swap: bool):
     tag = f"m_{seed}_{int(swap)}_{time.time_ns()}"
-    mod_a, fa = load(agent_path, tag + "_a")
+    _, fa = load(agent_path, tag + "_a")
     _, fb = load(opp_path, tag + "_b")
     env = make("kaggriculture", configuration={"seed": int(seed)}, debug=False)
     env.run([fb, fa] if swap else [fa, fb])
@@ -56,7 +68,7 @@ def game(agent_path: Path, opp_path: Path, seed: int, swap: bool):
         "agent_reward": ar,
         "opponent_reward": br,
         "delta": ar - br,
-        "telemetry": copy.deepcopy(getattr(mod_a.agent, "telemetry", {})),
+        "telemetry": copy.deepcopy(getattr(fa, "telemetry", {})),
     }
 
 
@@ -161,6 +173,12 @@ def main():
     if missing:
         raise FileNotFoundError("missing evaluation files: " + ", ".join(missing))
 
+    # Fail early if any regression opponent cannot be resolved with the same
+    # entrypoint rule as Kaggle/project eval.
+    for i, (name, path) in enumerate(OPPONENTS.items()):
+        _, fn = load(path, f"preflight_{i}_{name}_{time.time_ns()}")
+        print("preflight", name, getattr(fn, "__name__", type(fn).__name__), flush=True)
+
     results = [compare_opponent(name, path) for name, path in OPPONENTS.items()]
 
     all_rows = [row for item in results for row in item["rows"]]
@@ -168,6 +186,7 @@ def main():
     report = {
         "engine": "kaggle_environments==1.32.7",
         "policy": "bronze-medal external regression panel",
+        "loader": "Kaggle-compatible last-callable with sibling import path",
         "sign": "candidate_minus_champion = candidate external pair diff - champion external pair diff",
         "champion": "v112_wheat_lead3_lowdemand",
         "candidate": "v117_wheat_post_town_delay1",
