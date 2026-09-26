@@ -23,6 +23,8 @@ jobs:
           python -m pip install jsonschema requests
           python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
       - name: Rebuild formal champion v121
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
           python eval_assets/v130/rebuild_eval_agents.py --out-dir eval_agents/v130
