@@ -57,21 +57,36 @@ Target evaluation environment: `kaggle_environments==1.32.7`, Python 3.11, exact
 
 Do not promote on the focused win alone. Require no W→L regression in matched hard/burned evaluation, zero exceptions/timeouts, seat-robust benefit, and fresh sealed reproduction. Formal champion remains v147 until those conditions and the project-wide PROMOTE criteria are met.
 
-## Orchestration update — 2026-09-27
+## Orchestration history — 2026-09-27
 
-The focused self-hosted run `36254145184` is queued. A GitHub-hosted fallback failed before any job step and is infrastructure-only evidence, not an agent regression.
+The first broad gate used a non-transitive auxiliary assertion on `(v153 vs v115) - (v147 vs v115)` and failed despite the direct matched v153-v147 comparison being non-negative on every burned seed. Kaggriculture market interaction means this indirect quantity is not a valid replacement for direct matched candidate-minus-champion evidence. The workflow was corrected so direct v153-v147 matched results are the gate and the v115 lineage comparison is diagnostic only.
 
-The self-hosted runner is currently occupied by older Safety-v3 public-outcome run `36252342056`, which is still in step 5. A later outcome-centric Safety-v3 run `36250594997` already completed successfully and established zero W→L transitions on the burned/formal-known blocks, so the older in-progress run is operationally redundant, but the available GitHub connector does not expose workflow cancellation.
+Confirmed direct burned evidence on seeds 681..692:
 
-To avoid manual sequencing after the runner becomes free, workflow `v153-v147-burned-hard-gate.yml` was added and queued as run `36254664268` (commit `1c80a5b43ed2e3dc12d7a42aaf45a35ddf349a2f`). It is deliberately gated in this order:
+- 8 wins / 0 losses / 4 ties by `candidate_minus_champion`
+- mean `+37`
+- worst `0`
+- best `+150`
+- exceptions `0`
 
-1. reconstruct exact v115/v147 and v153; static + SHA checks;
-2. repeat score_2820/520104 both-seat focused test and require L→W in both seats, candidate/champion match exceptions 0, and v153 telemetry `errors=0`, `eligible=3`, `changed=1`;
-3. only after focused success, evaluate burned seeds 681..692 for direct v153-v147 and lineage v153-v115 vs v147-v115; stop expansion if any matched pair or lineage-incremental pair is negative;
-4. only after burned success, evaluate eight hard opponents (`peak_2950`, `salem_2900`, `score_2820`, `jaxa_2802`, `thomas_router_95`, `tetsutani_ms`, `melon_squeeze`, `shop_router_v7`) on seeds 520101..520104 with both seats;
-5. hard-panel primary gate is outcome-centric: zero W→D, W→L, or D→L regressions, zero exceptions, and at least one improving transition.
+The corrected self-hosted gate is run `36256798350`; at the latest check it is queued because the self-hosted runner is occupied by the separate runtime-v150 hard-opponent regression run `36256381428`. A GitHub-hosted hard-gate attempt ended before meaningful match execution and is infrastructure-only evidence, not a v153 tactical regression.
 
-No fresh sealed seeds are used by this queued gate.
+## Static contingency analysis while runner is occupied
+
+No fresh seed was consumed. Existing diagnostic compact-step artifacts were scanned for the exact v153 eligibility shape: steps 288..693, action begins with a contiguous leading SELL block, at least five SELL orders, all distinct items.
+
+These artifacts compare another candidate against v147, so the v147/champion side was inspected explicitly rather than the candidate side.
+
+Observed v147 eligible contexts:
+
+- seed 641 (diagnostic loss context): four contexts on the v147 side — steps 458, 506, 578, 650
+- seed 350003 (diagnostic loss context): two contexts — steps 578, 650
+- seed 733 (diagnostic win context): zero contexts
+- seed 911 (diagnostic win context): one context — step 674
+
+This does not prove that v153 would reorder every eligible block, because eligibility is broader than the final self-exposure sort actually changing the order. It does show that the structural trigger is concentrated in the two known loss contexts and nearly absent in the two win controls.
+
+The focused causal win occurs at step 649. Therefore, if the hard panel later exposes a regression associated with late activation, the first refinement to test should be a single-condition window tightening around the observed causal region (for example excluding the late step-674 class) rather than changing farm logic, quantities, or the exposure score itself. Do not create that successor unless hard-panel evidence identifies an actual regression.
 
 ## Initial decision
 
