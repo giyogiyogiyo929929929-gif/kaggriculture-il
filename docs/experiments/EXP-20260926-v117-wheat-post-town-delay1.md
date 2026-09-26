@@ -43,6 +43,15 @@ On activation, v117 removes exactly the native WHEAT quantity from the current a
 
 Any repayment shortfall is telemetry-visible and is a rejection condition.
 
+## Observation-schema recheck
+
+The public observation layout was rechecked against an existing agent whose engine notes were verified against `kaggle_environments==1.32.7`. It documents:
+
+- `observation["market"] = {"inventory": {...}, "prices": {...}}`
+- `observation["town"] = {"unlocked_shops": [...]}`
+
+Therefore v117's `market.inventory.WHEAT` and Town-shop accesses are structurally consistent with the canonical observation schema. This check matters because a schema mismatch would otherwise look like a false no-activation via `market_empty_blocks`.
+
 ## Telemetry
 
 `agent.telemetry["wheat_post_town_delay1"]` records:
@@ -104,7 +113,26 @@ The first decision gate is activation/safety, before score interpretation:
 - `errors > 0` → REJECT;
 - otherwise inspect matched-pair W/L/D, mean, worst regression and activation concentration.
 
-Under the bronze-medal policy, even a positive v112 self-H2H is insufficient for promotion. A surviving candidate must also pass the diverse external panel, with special attention to independent-style opponents and historical regression sentinels such as JAXA / market_rhythm / k256_h2_q / ready_stock / v49-v50 where available.
+## Bronze external regression panel
+
+`run_v117_external_eval.py` is prepared to compare v112 and v117 against the same 10 heterogeneous historical regression sentinels:
+
+- `v49`
+- `v50`
+- `metav4_v13`
+- `k256_h2_q_v1`
+- `market_rhythm`
+- `story_of_seasons`
+- `thomas_router_93`
+- `tetsutani_dpts_b`
+- `jaxa_2802`
+- `ready_stock`
+
+Each agent/opponent comparison uses seeds `299001–299004` with seat swap. The report compares candidate and champion external pair differences on exactly the same opponent/seed, and explicitly counts W/D/L outcome regressions and improvements. This panel is retained because a previous broad-base candidate looked perfect against six top representatives yet regressed badly on this heterogeneous set, including a fatal JAXA regression.
+
+The 2026-09-25 public-replay analysis adds a second bronze-specific interpretation rule: independent opponents that diverge within three turns, especially seat 1, are a local regression focus. It is not treated as causal evidence because the public matchup selection is confounded. New candidates are still judged with controlled same-seed seat-swapped evaluation.
+
+Under the bronze-medal policy, even a positive v112 self-H2H is insufficient for promotion. A surviving candidate must pass this heterogeneous external panel without meaningful outcome regression, then receive any additional independent-style focused regression warranted by activation telemetry.
 
 ## Execution infrastructure
 
@@ -112,7 +140,11 @@ Canonical Linux workflow: `.github/workflows/v112-v117-current.yml`.
 
 GitHub Actions run `36243943015` and the later current-candidate run `36244053506` both failed before any workflow step was created (`steps=null`). Earlier v116 Linux runs showed the same behavior on both `ubuntu-latest` and `ubuntu-22.04`.
 
-A separate Windows hosted-runner diagnostic was created to distinguish Linux-image problems from wider Actions allocation problems. Run `36244088913` also failed before any step was created (`steps=null`). Therefore the current block is wider than one Linux image and is not evidence against v117.
+A separate Windows hosted-runner diagnostic was created to distinguish Linux-image problems from wider Actions allocation problems. Run `36244088913` also failed before any step was created (`steps=null`). Therefore the hosted-runner block is wider than one OS image and is not evidence against v117.
+
+A current-lineage self-hosted workflow, `.github/workflows/v112-v117-selfhosted.yml`, was then added using only the runner/environment pattern from the separate self-hosted experiment lineage; no v130+/v147 agent code or results are mixed into this lineage. It uses `[self-hosted, Windows, X64]`, Python 3.11 and verifies `kaggle_environments==1.32.7`. Its sequence is focused test → source reconstruction / py_compile → exact v117-v112 H2H → activation/safety gate → bronze external panel → artifact summary.
+
+Self-hosted run `36244974129` is currently queued with no executed steps. This is not evaluation evidence and does not change the champion.
 
 The local sandbox still does not contain `kaggle_environments`, and external package resolution is unavailable, so no canonical engine H2H numbers are fabricated or inferred.
 
@@ -120,4 +152,4 @@ The local sandbox still does not contain `kaggle_environments`, and external pac
 
 **KEEP TESTING. Formal champion remains v112.**
 
-v117 is implementation-ready and focused-test clean, but cannot be promoted without real engine activation and matched-pair evidence. If it survives v112 H2H, external breadth is the next priority because the project is now explicitly optimizing for robust bronze-medal performance rather than small self-play money gains.
+v117 is implementation-ready, focused-test clean, schema-checked, and has a fixed exact + bronze external evaluation path. It cannot be promoted without real engine activation and matched-pair evidence. If it survives v112 H2H, external outcome stability is the next priority because the project is explicitly optimizing for robust bronze-medal performance rather than small self-play money gains.
