@@ -1,0 +1,83 @@
+name: Incoming Uploaded Main Selfhosted
+on:
+  push:
+    branches: [eval-incoming-main-20260926]
+    paths: [".github/workflows/incoming-upload-selfhosted.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Reconstruct exact agents and engine
+        run: |
+          $ErrorActionPreference='Stop'; $env:PATH="C:\Program Files\Git\usr\bin;$env:PATH"
+          python -m pip install "kaggle-environments==1.32.7"
+          New-Item -ItemType Directory -Force incoming,results | Out-Null
+          $code=@'
+          from pathlib import Path
+          import base64,lzma,hashlib
+          ns=['eval_payload/candidate_127ed.part0.b85','eval_payload/candidate_127ed.part1.b85','eval_payload/candidate_127ed.part2a.b85','eval_payload/candidate_127ed.part2b.b85','eval_payload/candidate_127ed.part3a.b85','eval_payload/candidate_127ed.part3b.b85']
+          raw=lzma.decompress(base64.b85decode(''.join(Path(n).read_text(encoding='ascii') for n in ns).encode()))
+          Path('incoming/main.py').write_bytes(raw); h=hashlib.sha256(raw).hexdigest(); print(len(raw),h)
+          assert len(raw)==501543 and h=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          '@; $code|python -
+          python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
+          python -m py_compile incoming/main.py
+          python scripts/analysis/audit_agent.py incoming/main.py | Tee-Object incoming/audit.txt
+      - name: Direct v121 matched pairs seat swap
+        run: |
+          python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline eval_agents/v130/v121_champion_same_turn_unwind.py --seed-start 500001 --seed-count 12 --out results/direct.json
+          if ($LASTEXITCODE -ne 0) { throw 'direct failed' }
+      - name: Differential known-opponent panels
+        run: |
+          function P($id,$opp,$seed,$n) {
+            New-Item -ItemType Directory -Force "results/$id"|Out-Null
+            python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline $opp --seed-start $seed --seed-count $n --out "results/$id/c.json"; if($LASTEXITCODE-ne 0){throw "candidate $id"}
+            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline $opp --seed-start $seed --seed-count $n --out "results/$id/h.json"; if($LASTEXITCODE-ne 0){throw "champion $id"}
+            python eval_assets/v130/compare_candidate_champion.py --candidate-json "results/$id/c.json" --champion-json "results/$id/h.json" --opponent $opp --out "results/$id/summary.json"; if($LASTEXITCODE-ne 0){throw "compare $id"}
+          }
+          P bl21 opponents/bl_v21 500101 4
+          P bl16 opponents/bl_v16rc2 500101 4
+          P frontier opponents/frontier_prvsiyan 500101 4
+          P farming opponents/farming_v2 500101 4
+          P firstline opponents/first_in_line 500101 4
+          P starter starter 500101 4
+      - name: Serial runtime
+        run: |
+          python scripts/ci/run_exact_pair.py --candidate incoming/main.py --baseline starter --seed-start 500301 --seed-count 3 --out results/runtime_candidate.json
+          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline starter --seed-start 500301 --seed-count 3 --out results/runtime_champion.json
+      - name: Aggregate
+        if: always()
+        run: |
+          $code=@'
+          import json,glob,statistics,math
+          from pathlib import Path
+          def pct(x,p): x=sorted(x);q=(len(x)-1)*p;a=int(q);b=min(a+1,len(x)-1);f=q-a;return x[a]*(1-f)+x[b]*f
+          direct=json.load(open('results/direct.json')); dd=[r['candidate_minus_baseline'] for r in direct if r.get('ok')]
+          panels=[]; allv=[]
+          for p in glob.glob('results/*/summary.json'):
+            s=json.load(open(p)); v=[r['candidate_minus_champion'] for r in s.get('rows',[])]; allv+=v; panels.append({'name':Path(p).parent.name,'n':len(v),'wins':sum(x>0 for x in v),'losses':sum(x<0 for x in v),'mean':statistics.fmean(v) if v else None,'worst':min(v) if v else None,'seat0_mean':statistics.fmean([r['seat0_diff'] for r in s['rows']]) if v else None,'seat1_mean':statistics.fmean([r['seat1_diff'] for r in s['rows']]) if v else None})
+          def rt(p):
+            rs=json.load(open(p));x=[z for r in rs for z in r.get('candidate_runtime_ms',[])];return {'n':len(x),'median':statistics.median(x),'p95':pct(x,.95),'p99':pct(x,.99),'max':max(x),'exceptions':sum(r.get('candidate_exceptions',0) for r in rs)}
+          se=statistics.stdev(allv)/math.sqrt(len(allv)) if len(allv)>1 else 0
+          out={'candidate_sha256':'127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652','champion':'v121_champion_same_turn_unwind','engine':'1.32.7','direct':{'n':len(dd),'wins':sum(x>0 for x in dd),'losses':sum(x<0 for x in dd),'mean':statistics.fmean(dd) if dd else None,'se':statistics.stdev(dd)/math.sqrt(len(dd)) if len(dd)>1 else 0,'worst':min(dd) if dd else None,'best':max(dd) if dd else None},'differential':{'n':len(allv),'wins':sum(x>0 for x in allv),'losses':sum(x<0 for x in allv),'mean':statistics.fmean(allv) if allv else None,'se':se,'mean_minus_2se':statistics.fmean(allv)-2*se if allv else None,'worst':min(allv) if allv else None,'panels':panels},'runtime':{'candidate':rt('results/runtime_candidate.json'),'champion':rt('results/runtime_champion.json')}}
+          out['runtime']['candidate']['nfr_ok']=out['runtime']['candidate']['p99']<50 and out['runtime']['candidate']['max']<200 and out['runtime']['candidate']['exceptions']==0
+          Path('results/summary.json').write_text(json.dumps(out,indent=2));print(json.dumps(out,indent=2))
+          '@; $code|python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incoming-upload-selfhosted-results
+          path: |
+            incoming/audit.txt
+            results/
+          retention-days: 30
