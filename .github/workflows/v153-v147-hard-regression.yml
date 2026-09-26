@@ -1,0 +1,93 @@
+name: v153 v147 hard-opponent regression
+
+on:
+  push:
+    branches: [eval-v153-v147-dense-self-exposure-20260927]
+    paths: ["ci/TRIGGER_v153_hard_regression"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hard:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v147 and v153
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results\hard | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guarded.py tmp\v147.py tmp\v153.py
+          python -m py_compile tmp\v147.py tmp\v153.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          expected={'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','tmp/v153.py':'41fcaf176fc379ee42034bd98e853e1d6e6d03f7201a0d05a964a789b84e1c22'}
+          for p,w in expected.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Hard-opponent panel 520101-520104 both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          $opps=@('peak_2950','salem_2900','score_2820','jaxa_2802','thomas_router_95','tetsutani_ms','melon_squeeze','shop_router_v7')
+          foreach($opp in $opps) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v153.py --champion tmp\v147.py --opponent ("opponents\"+$opp+"\main.py") --seed-start 520101 --seed-count 4 --jobs 1 --out ("results\hard\"+$opp+".json")
+            if ($LASTEXITCODE -ne 0) { throw "hard eval failed: $opp" }
+          }
+      - name: Aggregate hard regression
+        run: |
+          $code=@'
+          import json,glob,statistics
+          from pathlib import Path
+          panels=[]; vals=[]; rows=[]; cexc=xexc=0
+          for p in sorted(glob.glob('results/hard/*.json')):
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              opp=Path(p).stem
+              panels.append({'opponent':opp,'wins':d['wins'],'losses':d['losses'],'ties':d['ties'],'mean':d['candidate_minus_champion_mean'],'worst':d['worst'],'best':d['best']})
+              cexc += int(d.get('candidate_exceptions',0)); xexc += int(d.get('champion_exceptions',0))
+              for r in d['rows']:
+                  v=float(r['candidate_minus_champion_money']); vals.append(v); rows.append({'opponent':opp,'seed':r['seed'],'candidate_minus_champion':v,'margin_delta':r['candidate_minus_champion_margin']})
+          out={'metric':'candidate_minus_champion = candidate - champion','candidate_sha256':'41fcaf176fc379ee42034bd98e853e1d6e6d03f7201a0d05a964a789b84e1c22','champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','engine':'kaggle_environments==1.32.7','pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'mean':statistics.fmean(vals) if vals else 0,'worst':min(vals) if vals else 0,'best':max(vals) if vals else 0,'candidate_exceptions':cexc,'champion_exceptions':xexc,'panels':panels,'rows':rows}
+          Path('results/v153_hard_regression_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-v147-hard-regression
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
