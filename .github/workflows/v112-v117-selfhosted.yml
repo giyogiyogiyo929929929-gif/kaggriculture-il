@@ -12,6 +12,10 @@ on:
       - "experiments/v112_v116_milk_micro/run_v117_external_eval.py"
   workflow_dispatch:
 
+concurrency:
+  group: v112-v117-selfhosted-current-lineage
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
