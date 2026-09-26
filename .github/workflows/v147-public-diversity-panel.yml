@@ -3,8 +3,7 @@ name: v147 public diversity panel
 on:
   push:
     branches: [eval-public-diversity-20260926]
-    paths:
-      - ".github/workflows/v147-public-diversity-panel.yml"
+    paths: [".github/workflows/v147-public-diversity-panel.yml"]
   workflow_dispatch:
 
 permissions:
@@ -12,52 +11,68 @@ permissions:
 
 jobs:
   panel:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install pinned engine
+      - name: Install pinned engine and reconstruct exact agents
         run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
           python -m pip install --no-deps "kaggle-environments==1.32.7"
           python -m pip install jsonschema requests
           python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
-      - name: Reconstruct exact formal champion and v147
-        run: |
-          mkdir -p tmp results
-          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
-          python - <<'PY'
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
           from pathlib import Path
           for name in ('tmp/main.py','ci/v76.patch'):
               p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
-          PY
-          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
-          printf '\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n' >> tmp/main.py
-          mv tmp/main.py tmp/v77.py
-          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
-          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
-          python -m py_compile tmp/v115.py tmp/v147.py
-          python - <<'PY'
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+          $check = @'
           import hashlib
           from pathlib import Path
           expected={'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2','tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'}
           for p,want in expected.items():
               got=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,got); assert got==want,(p,got,want)
-          PY
+          '@
+          $check | python -
       - name: Fetch and audit pinned Apache-2.0 public opponent
         run: |
-          curl --fail --location --retry 3 https://raw.githubusercontent.com/Seyamalam/Kaggriculture/8b8c421eb10634c756583ce10c75189f50c83a72/main.py --output tmp/seya_v21.py
-          python - <<'PY'
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/Seyamalam/Kaggriculture/8b8c421eb10634c756583ce10c75189f50c83a72/main.py' -OutFile 'tmp\seya_v21.py'
+          $audit = @'
           import ast,hashlib
           from pathlib import Path
           p=Path('tmp/seya_v21.py'); data=p.read_bytes()
           blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
-          print('git_blob_sha1',blob); print('sha256',hashlib.sha256(data).hexdigest())
+          sha256=hashlib.sha256(data).hexdigest()
+          print('git_blob_sha1',blob); print('sha256',sha256)
           assert blob=='fb34082a6b38e30f8088bfe8d7bf732e533f6318',blob
-          tree=ast.parse(data.decode())
-          imports=set(); dangerous=[]
+          tree=ast.parse(data.decode('utf-8')); imports=set(); dangerous=[]
           for n in ast.walk(tree):
               if isinstance(n,ast.Import): imports.update(a.name.split('.')[0] for a in n.names)
               elif isinstance(n,ast.ImportFrom) and n.module: imports.add(n.module.split('.')[0])
@@ -65,36 +80,40 @@ jobs:
           allowed={'__future__','base64','json','math','zlib'}
           print('imports',sorted(imports)); print('dangerous_calls',dangerous)
           assert imports<=allowed,sorted(imports-allowed); assert not dangerous,dangerous
-          PY
-          python -m py_compile tmp/seya_v21.py
+          '@
+          $audit | python -
+          python -m py_compile tmp\seya_v21.py
       - name: Smoke public opponent
         run: |
-          python - <<'PY'
+          $code = @'
           from kaggle_environments import make
           env=make('kaggriculture',configuration={'seed':621},debug=True)
           env.run(['tmp/seya_v21.py','starter'])
           assert len(env.steps)==720,len(env.steps)
           print([s.get('reward') for s in env.state])
-          PY
+          '@
+          $code | python -
       - name: Evaluate diverse opponent panel on burned seeds 621-624
         run: |
-          set -e
-          for spec in \
-            'starter starter' \
-            'beat_v48 opponents/beat_v48/main.py' \
-            'bl_v20 opponents/bl_v20/main.py' \
-            'bl_v21 opponents/bl_v21/main.py' \
-            'farming_v2 opponents/farming_v2/main.py' \
-            'frontier_prvsiyan opponents/frontier_prvsiyan/main.py' \
-            'seya_v21 tmp/seya_v21.py'; do
-            set -- $spec
-            echo "=== $1 ==="
-            python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v147.py --champion tmp/v115.py --opponent "$2" --seed-start 621 --seed-count 4 --jobs 4 --out "results/$1.json"
-          done
+          $ErrorActionPreference = 'Stop'
+          $specs = @(
+            @('starter','starter'),
+            @('beat_v48','opponents\beat_v48\main.py'),
+            @('bl_v20','opponents\bl_v20\main.py'),
+            @('bl_v21','opponents\bl_v21\main.py'),
+            @('farming_v2','opponents\farming_v2\main.py'),
+            @('frontier_prvsiyan','opponents\frontier_prvsiyan\main.py'),
+            @('seya_v21','tmp\seya_v21.py')
+          )
+          foreach ($s in $specs) {
+            Write-Host "=== $($s[0]) ==="
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v147.py --champion tmp\v115.py --opponent $s[1] --seed-start 621 --seed-count 4 --jobs 2 --out ("results\"+$s[0]+".json")
+            if ($LASTEXITCODE -ne 0) { throw "panel failed: $($s[0])" }
+          }
       - name: Aggregate relative and absolute performance
         if: always()
         run: |
-          python - <<'PY'
+          $code = @'
           import glob,json,math,statistics
           from pathlib import Path
           panels=[]; deltas=[]; cm_all=[]; hm_all=[]
@@ -111,10 +130,12 @@ jobs:
           n=len(deltas); mean=statistics.fmean(deltas) if n else 0.0; se=statistics.stdev(deltas)/math.sqrt(n) if n>1 else 0.0
           out={'candidate':'v147_confirmed_v111_clone','champion':'v115_champion_same_turn_open_squeeze','engine':'kaggle_environments==1.32.7','seed_block':[621,624],'opponents':[p['name'] for p in panels],'paired_seed_rows':n,'pair_wins':sum(x>0 for x in deltas),'pair_losses':sum(x<0 for x in deltas),'pair_ties':sum(x==0 for x in deltas),'candidate_minus_champion_mean':mean,'se':se,'mean_minus_2se':mean-2*se,'worst_pair_delta':min(deltas) if n else None,'candidate_absolute_games':len(cm_all),'candidate_absolute_wins':sum(x>0 for x in cm_all),'candidate_absolute_losses':sum(x<0 for x in cm_all),'candidate_absolute_ties':sum(x==0 for x in cm_all),'candidate_absolute_margin_mean':statistics.fmean(cm_all) if cm_all else 0.0,'champion_absolute_wins':sum(x>0 for x in hm_all),'champion_absolute_losses':sum(x<0 for x in hm_all),'champion_absolute_ties':sum(x==0 for x in hm_all),'champion_absolute_margin_mean':statistics.fmean(hm_all) if hm_all else 0.0,'panels':panels}
           Path('results/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
-          PY
+          '@
+          $code | python -
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: v147-public-diversity-panel
           path: results/
+          if-no-files-found: error
           retention-days: 30
