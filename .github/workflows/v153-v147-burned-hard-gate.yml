@@ -1,0 +1,190 @@
+name: v153 v147 burned and hard gate
+
+on:
+  push:
+    branches: [eval-v153-v147-dense-self-exposure-guard-20260927]
+    paths: [".github/workflows/v153-v147-burned-hard-gate.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v115 v147 and build v153
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results,results\hard | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v153.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          exp={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          print('v153',hashlib.sha256(Path('tmp/v153.py').read_bytes()).hexdigest())
+          '@
+          $check | python -
+
+      - name: Focused causal gate score2820 seed520104
+        run: |
+          $ErrorActionPreference='Stop'
+          python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v153.py --champion tmp\v147.py --opponent opponents\score_2820\main.py --seed-start 520104 --seed-count 1 --jobs 1 --out results\focused.json
+          python ci\diagnose_score2820_520104.py tmp\v153.py opponents\score_2820\main.py results\focused_ledger.json
+          $gate=@'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('results/focused.json').read_text(encoding='utf-8'))
+          transitions=[]
+          for row in p['rows']:
+              for s in row['seats']:
+                  c=float(s['candidate_margin']); h=float(s['champion_margin'])
+                  transitions.append({'swap':s['swap'],'candidate_margin':c,'champion_margin':h,'candidate_money_delta':s['candidate_minus_champion_money']})
+          led=json.loads(Path('results/focused_ledger.json').read_text(encoding='utf-8'))
+          tel=[]
+          for g in led['games']:
+              tel.append({'swap':g['swap'],'rewards':g['rewards'],'v153':g['telemetry'].get('_V153_REPORT',{})})
+          out={'transitions':transitions,'telemetry':tel,'candidate_exceptions':p['candidate_exceptions'],'champion_exceptions':p['champion_exceptions']}
+          Path('results/focused_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert p['candidate_exceptions']==0 and p['champion_exceptions']==0,out
+          assert len(transitions)==2 and all(x['candidate_margin']>0 and x['champion_margin']<0 for x in transitions),out
+          assert all(int(x['v153'].get('errors',0))==0 for x in tel),out
+          assert all(int(x['v153'].get('eligible',0))==3 for x in tel),out
+          assert all(int(x['v153'].get('changed',0))==1 for x in tel),out
+          '@
+          $gate | python -
+
+      - name: Burned direct and lineage gate 681 to 692
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\eval.py tmp\v153.py tmp\v147.py -n 12 -j 4 --seed-start 681 --json results\burned_v153_vs_v147.json
+          python scripts\eval.py tmp\v153.py tmp\v115.py -n 12 -j 4 --seed-start 681 --json results\burned_v153_vs_v115.json
+          python scripts\eval.py tmp\v147.py tmp\v115.py -n 12 -j 4 --seed-start 681 --json results\burned_v147_vs_v115.json
+          $gate=@'
+          import json,statistics
+          from pathlib import Path
+          def direct(path):
+              d=json.loads(Path(path).read_text(encoding='utf-8')); by={}
+              for g in d.get('matches_detail',[]):
+                  by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+              rows=[{'seed':s,'pair':statistics.fmean(v),'legs':v} for s,v in sorted(by.items())]
+              return rows,d.get('exceptions',{})
+          cv,ecv=direct('results/burned_v153_vs_v147.json')
+          c115,ec115=direct('results/burned_v153_vs_v115.json')
+          h115,eh115=direct('results/burned_v147_vs_v115.json')
+          cm={r['seed']:r for r in c115}; hm={r['seed']:r for r in h115}
+          lineage=[{'seed':s,'v153_vs_v115':cm[s]['pair'],'v147_vs_v115':hm[s]['pair'],'incremental':cm[s]['pair']-hm[s]['pair']} for s in sorted(cm)]
+          vals=[r['pair'] for r in cv]; inc=[r['incremental'] for r in lineage]
+          out={
+            'v153_vs_v147':{'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals),'worst':min(vals),'best':max(vals),'rows':cv,'exceptions':ecv},
+            'lineage_incremental':{'mean':statistics.fmean(inc),'worst':min(inc),'best':max(inc),'rows':lineage,'v153_exceptions':ec115,'v147_exceptions':eh115},
+          }
+          Path('results/burned_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          def zero(e): return int(e.get('a',0))==0 and int(e.get('b',0))==0
+          assert zero(ecv) and zero(ec115) and zero(eh115),out
+          # Early expansion gate: do not spend the hard panel if a matched burned pair regresses.
+          assert min(vals) >= 0, out
+          assert min(inc) >= 0, out
+          '@
+          $gate | python -
+
+      - name: Hard opponent outcome panel 520101 to 520104
+        run: |
+          $ErrorActionPreference='Stop'
+          $specs=@(
+            @('peak_2950','opponents\peak_2950\main.py'),
+            @('salem_2900','opponents\salem_2900\main.py'),
+            @('score_2820','opponents\score_2820\main.py'),
+            @('jaxa_2802','opponents\jaxa_2802\main.py'),
+            @('thomas_router_95','opponents\thomas_router_95\main.py'),
+            @('tetsutani_ms','opponents\tetsutani_ms\main.py'),
+            @('melon_squeeze','opponents\melon_squeeze\main.py'),
+            @('shop_router_v7','opponents\shop_router_v7\main.py')
+          )
+          foreach($s in $specs){
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v153.py --champion tmp\v147.py --opponent $s[1] --seed-start 520101 --seed-count 4 --jobs 2 --out ("results\hard\"+$s[0]+".json")
+            if($LASTEXITCODE -ne 0){ throw "hard panel failed: $($s[0])" }
+          }
+
+      - name: Aggregate hard outcome transitions
+        run: |
+          $ErrorActionPreference='Stop'
+          $code=@'
+          import glob,json,statistics
+          from pathlib import Path
+          def state(x): return 'W' if x>0 else ('L' if x<0 else 'D')
+          transitions={}; details=[]; cash=[]; exc=0
+          for p in sorted(glob.glob('results/hard/*.json')):
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              exc += int(d.get('candidate_exceptions',0))+int(d.get('champion_exceptions',0))
+              opp=Path(p).stem
+              oppcash=[]
+              for row in d['rows']:
+                  cash.append(float(row['candidate_minus_champion_money'])); oppcash.append(float(row['candidate_minus_champion_money']))
+                  for s in row['seats']:
+                      c=state(float(s['candidate_margin'])); h=state(float(s['champion_margin']))
+                      k=f'{h}->{c}'; transitions[k]=transitions.get(k,0)+1
+                      if h!=c:
+                          details.append({'opponent':opp,'seed':row['seed'],'swap':s['swap'],'transition':k,'candidate_margin':s['candidate_margin'],'champion_margin':s['champion_margin'],'candidate_minus_champion_money':s['candidate_minus_champion_money']})
+              print(opp,'mean_cash_delta',statistics.fmean(oppcash),'worst_seed',min(oppcash))
+          regress=sum(transitions.get(k,0) for k in ('W->D','W->L','D->L'))
+          improve=sum(transitions.get(k,0) for k in ('L->D','L->W','D->W'))
+          out={'games':sum(transitions.values()),'transitions':transitions,'regressions':regress,'improvements':improve,'changed_outcomes':details,'cash_seed_mean':statistics.fmean(cash) if cash else None,'cash_seed_worst':min(cash) if cash else None,'exceptions':exc}
+          Path('results/v153_hard_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert exc==0,out
+          assert regress==0,out
+          assert transitions.get('L->W',0)+transitions.get('D->W',0)+transitions.get('L->D',0) > 0,out
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-v147-burned-hard-gate
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
