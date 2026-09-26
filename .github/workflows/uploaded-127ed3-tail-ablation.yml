@@ -13,13 +13,13 @@ permissions:
 jobs:
   ablation:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 180
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install official engine and reconstruct sources
+      - name: Reconstruct exact candidate and champion
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -38,15 +38,8 @@ jobs:
           raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
           assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
           Path('tmp/full.py').write_bytes(raw)
-          suffixes={
-            'no_ig': b'''\n# ablation: bypass IG only\ndef agent(observation, configuration=None):\n    return mg_agent(observation, configuration)\nagent.telemetry = mg_agent.telemetry\n''',
-            'no_mg_ig': b'''\n# ablation: bypass MG and IG\ndef agent(observation, configuration=None):\n    return e402_agent(observation, configuration)\nagent.telemetry = e402_agent.telemetry\n''',
-            'no_e402': b'''\n# ablation: bypass E402, keep MG+IG\n_MG_PARENT = e410_agent\ndef agent(observation, configuration=None):\n    return ig_agent(observation, configuration)\nagent.telemetry = ig_agent.telemetry\n''',
-            'no_e410': b'''\n# ablation: bypass E410, keep E402+MG+IG\n_E402_PARENT = cxd_agent\ndef agent(observation, configuration=None):\n    return ig_agent(observation, configuration)\nagent.telemetry = ig_agent.telemetry\n''',
-            'no_cxd': b'''\n# ablation: bypass CXD, keep E410+E402+MG+IG\n_E410_PARENT = _CXD_HOST\ndef agent(observation, configuration=None):\n    return ig_agent(observation, configuration)\nagent.telemetry = ig_agent.telemetry\n''',
-          }
-          for name,sfx in suffixes.items():
-              Path(f'tmp/{name}.py').write_bytes(raw+sfx)
+          Path('tmp/no_ig.py').write_bytes(raw+b'''\n# ablation: bypass IG only\ndef agent(observation, configuration=None):\n    return mg_agent(observation, configuration)\nagent.telemetry = mg_agent.telemetry\n''')
+          Path('tmp/no_mg_ig.py').write_bytes(raw+b'''\n# ablation: bypass MG and IG\ndef agent(observation, configuration=None):\n    return e402_agent(observation, configuration)\nagent.telemetry = e402_agent.telemetry\n''')
           '@ | python -
           Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
           @'
@@ -70,9 +63,8 @@ jobs:
           from pathlib import Path
           assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
           '@ | python -
-          python -m py_compile tmp\full.py tmp\no_ig.py tmp\no_mg_ig.py tmp\no_e402.py tmp\no_e410.py tmp\no_cxd.py tmp\v147.py
-
-      - name: Focused matched ablation
+          python -m py_compile tmp\full.py tmp\no_ig.py tmp\no_mg_ig.py tmp\v147.py
+      - name: Run focused matched ablation
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -81,10 +73,7 @@ jobs:
           from pathlib import Path
           from kaggle_environments import make
           from scripts.preflight import load_like_kaggle,call_like_kaggle,turn_time_stats
-          H=Path('tmp/v147.py')
-          variants=['full','no_ig','no_mg_ig','no_e402','no_e410','no_cxd']
-          seeds=[641,350003,101,733,911,1201]
-          rows=[]
+          H=Path('tmp/v147.py'); variants=['full','no_ig','no_mg_ig']; seeds=[641,350003,733,911]; rows=[]
           def money(env,s):
               for src in (env.state[s].get('observation'),env.steps[-1][s].get('observation')):
                   if isinstance(src,dict):
@@ -92,8 +81,8 @@ jobs:
                       if isinstance(f,list) and len(f)>s and isinstance(f[s],dict) and 'money' in f[s]: return float(f[s]['money'])
               return float(env.state[s]['reward'])
           def run(v,seed,cs):
-              ca=load_like_kaggle(Path('tmp')/f'{v}.py'); ha=load_like_kaggle(H)
-              aa=[ca,ha] if cs==0 else [ha,ca]; tt=[[],[]]; errors=[[],[]]; wrapped=[]
+              ca=load_like_kaggle(Path('tmp')/f'{v}.py'); ha=load_like_kaggle(H); aa=[ca,ha] if cs==0 else [ha,ca]
+              tt=[[],[]]; errors=[[],[]]; wrapped=[]
               for s,a in enumerate(aa):
                   def w(obs,cfg=None,_a=a,_s=s):
                       t=time.perf_counter()
@@ -101,11 +90,8 @@ jobs:
                       except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
                       finally:tt[_s].append(time.perf_counter()-t)
                   wrapped.append(w)
-              env=make('kaggriculture',configuration={'seed':seed});env.run(wrapped)
-              m=[money(env,0),money(env,1)];hs=1-cs
-              return {'variant':v,'seed':seed,'candidate_seat':cs,'delta':m[cs]-m[hs],'money':m,
-                      'statuses':[x.get('status') for x in env.state],'errors':errors,
-                      'p99_ms':turn_time_stats(tt[cs])['p99']*1000,'worst_ms':turn_time_stats(tt[cs])['worst']*1000}
+              env=make('kaggriculture',configuration={'seed':seed});env.run(wrapped);m=[money(env,0),money(env,1)];hs=1-cs
+              return {'variant':v,'seed':seed,'candidate_seat':cs,'delta':m[cs]-m[hs],'money':m,'statuses':[x.get('status') for x in env.state],'errors':errors,'p99_ms':turn_time_stats(tt[cs])['p99']*1000,'worst_ms':turn_time_stats(tt[cs])['worst']*1000}
           for v in variants:
               for seed in seeds:
                   for cs in (0,1):
@@ -114,19 +100,12 @@ jobs:
           for v in variants:
               vr=[r for r in rows if r['variant']==v]; pairs=[]
               for seed in seeds:
-                  rr=[r for r in vr if r['seed']==seed]; total=sum(r['delta'] for r in rr); mean=total/2
+                  rr=[r for r in vr if r['seed']==seed]; mean=sum(r['delta'] for r in rr)/2
                   pairs.append({'seed':seed,'seat0':rr[0]['delta'],'seat1':rr[1]['delta'],'pair_mean':mean,'outcome':'W' if mean>0 else 'L' if mean<0 else 'D'})
               vals=[p['pair_mean'] for p in pairs]
-              summary[v]={'pairs':pairs,'wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},
-                          'mean':statistics.mean(vals),'median':statistics.median(vals),'worst':min(vals),'best':max(vals),
-                          'seat0_mean':statistics.mean(r['delta'] for r in vr if r['candidate_seat']==0),
-                          'seat1_mean':statistics.mean(r['delta'] for r in vr if r['candidate_seat']==1),
-                          'exceptions':sum(len(e) for r in vr for e in r['errors']),
-                          'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in vr),
-                          'max_p99_ms':max(r['p99_ms'] for r in vr),'max_worst_ms':max(r['worst_ms'] for r in vr)}
-          print('SUMMARY',json.dumps(summary,indent=2));Path('results/ablation.json').write_text(json.dumps({'rows':rows,'summary':summary},indent=2),encoding='utf-8')
+              summary[v]={'pairs':pairs,'wld':{k:sum(p['outcome']==k for p in pairs) for k in 'WLD'},'mean':statistics.mean(vals),'median':statistics.median(vals),'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['delta'] for r in vr if r['candidate_seat']==0),'seat1_mean':statistics.mean(r['delta'] for r in vr if r['candidate_seat']==1),'exceptions':sum(len(e) for r in vr for e in r['errors']),'non_done':sum(any(s!='DONE' for s in r['statuses']) for r in vr),'max_p99_ms':max(r['p99_ms'] for r in vr),'max_worst_ms':max(r['worst_ms'] for r in vr)}
+          Path('results/focused_ablation.json').write_text(json.dumps({'rows':rows,'summary':summary},indent=2),encoding='utf-8');print('SUMMARY',json.dumps(summary,indent=2))
           '@ | python -
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
