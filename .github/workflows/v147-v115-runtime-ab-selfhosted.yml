@@ -1,0 +1,199 @@
+name: v147 vs v115 paired runtime A-B diagnostic
+
+on:
+  push:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v147-v115-runtime-ab-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-ab:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitUsr = 'C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path = "$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize = @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append = @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\v115.py tmp\v147.py
+          $check = @'
+          import hashlib
+          from pathlib import Path
+          exp={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Paired wall and CPU timing, two repetitions
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          PATHS={'v115':'tmp/v115.py','v147':'tmp/v147.py'}
+          SEEDS=[681,682,689,691,692]
+          REPS=2
+          uid=0
+
+          def load_agent(path):
+              global uid
+              uid += 1
+              p=Path(path).resolve()
+              name=f'_runtime_ab_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              mod=importlib.util.module_from_spec(spec)
+              sys.modules[name]=mod
+              sys.path.insert(0,str(p.parent))
+              try:
+                  spec.loader.exec_module(mod)
+              finally:
+                  sys.path.remove(str(p.parent))
+              fn=None
+              for value in vars(mod).values():
+                  if callable(value): fn=value
+              if fn is None: raise RuntimeError(f'no callable in {path}')
+              return fn
+
+          def obs_step(obs):
+              try:
+                  if isinstance(obs,dict): return obs.get('step')
+                  return getattr(obs,'step',None)
+              except Exception:
+                  return None
+
+          class Timed:
+              def __init__(self, label, fn, rep, seed, seat):
+                  self.label=label; self.fn=fn; self.rep=rep; self.seed=seed; self.seat=seat
+                  code=getattr(fn,'__code__',None)
+                  self.argcount=code.co_argcount if code else 2
+                  self.records=[]
+              def __call__(self, obs, config=None):
+                  w0=time.perf_counter_ns(); c0=time.process_time_ns()
+                  out=self.fn(*[obs,config][:self.argcount])
+                  c1=time.process_time_ns(); w1=time.perf_counter_ns()
+                  self.records.append({
+                    'rep':self.rep,'seed':self.seed,'seat':self.seat,'step':obs_step(obs),
+                    'wall_ms':(w1-w0)/1_000_000.0,'cpu_ms':(c1-c0)/1_000_000.0,
+                  })
+                  return out
+
+          def q(vals,p):
+              if not vals: return None
+              s=sorted(vals)
+              return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+
+          def summarize(records):
+              w=[r['wall_ms'] for r in records]; c=[r['cpu_ms'] for r in records]
+              top=sorted(records,key=lambda r:r['wall_ms'],reverse=True)[:20]
+              return {
+                'calls':len(records),
+                'wall':{
+                  'median_ms':statistics.median(w),'p95_ms':q(w,.95),'p99_ms':q(w,.99),'max_ms':max(w),
+                  'gt50':sum(x>50 for x in w),'gt200':sum(x>200 for x in w),'gt500':sum(x>500 for x in w),
+                },
+                'cpu':{
+                  'median_ms':statistics.median(c),'p95_ms':q(c,.95),'p99_ms':q(c,.99),'max_ms':max(c),
+                  'gt50':sum(x>50 for x in c),'gt200':sum(x>200 for x in c),'gt500':sum(x>500 for x in c),
+                },
+                'top_wall_outliers':top,
+              }
+
+          assert gc.isenabled()
+          all_records={'v115':[],'v147':[]}; rows=[]; errors=[]
+          for rep in range(REPS):
+              for seed in SEEDS:
+                  for candidate_seat in (0,1):
+                      try:
+                          a115=Timed('v115',load_agent(PATHS['v115']),rep,seed,1-candidate_seat)
+                          a147=Timed('v147',load_agent(PATHS['v147']),rep,seed,candidate_seat)
+                          agents=[a147,a115] if candidate_seat==0 else [a115,a147]
+                          env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                          env.run(agents)
+                          statuses=[x.get('status') for x in env.state]
+                          if any(s in ('INVALID','ERROR') for s in statuses):
+                              raise RuntimeError(f'agent failure rep={rep} seed={seed} candidate_seat={candidate_seat}: {statuses}')
+                          if len(a115.records)<700 or len(a147.records)<700:
+                              raise RuntimeError(f'too few calls rep={rep} seed={seed} candidate_seat={candidate_seat}: v115={len(a115.records)} v147={len(a147.records)}')
+                          all_records['v115'].extend(a115.records); all_records['v147'].extend(a147.records)
+                          rows.append({
+                            'rep':rep,'seed':seed,'candidate_seat':candidate_seat,
+                            'v115':summarize(a115.records),'v147':summarize(a147.records),
+                            'statuses':statuses,'rewards':[x.get('reward') for x in env.state],
+                          })
+                      except Exception as e:
+                          errors.append({'rep':rep,'seed':seed,'candidate_seat':candidate_seat,'error':repr(e),'traceback':traceback.format_exc()})
+
+          s115=summarize(all_records['v115']); s147=summarize(all_records['v147'])
+          out={
+            'engine':'kaggle_environments==1.32.7','gc_enabled':gc.isenabled(),
+            'mode':'paired same-game timing; both agents instrumented; wall=perf_counter_ns; cpu=process_time_ns',
+            'seeds':SEEDS,'repetitions':REPS,'seat_swap':True,
+            'v115_sha256':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'v147_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'thresholds':{'p99_ms_lt':50.0,'max_ms_lt':200.0},
+            'v115':s115,'v147':s147,
+            'relative':{
+              'wall_p99_delta_ms':s147['wall']['p99_ms']-s115['wall']['p99_ms'],
+              'wall_max_delta_ms':s147['wall']['max_ms']-s115['wall']['max_ms'],
+              'cpu_p99_delta_ms':s147['cpu']['p99_ms']-s115['cpu']['p99_ms'],
+              'cpu_max_delta_ms':s147['cpu']['max_ms']-s115['cpu']['max_ms'],
+            },
+            'errors':errors,'rows':rows,
+          }
+          out['v115_wall_pass']=(s115['wall']['p99_ms']<50 and s115['wall']['max_ms']<200)
+          out['v147_wall_pass']=(s147['wall']['p99_ms']<50 and s147['wall']['max_ms']<200)
+          out['v115_cpu_pass']=(s115['cpu']['p99_ms']<50 and s115['cpu']['max_ms']<200)
+          out['v147_cpu_pass']=(s147['cpu']['p99_ms']<50 and s147['cpu']['max_ms']<200)
+          Path('results/v147_v115_runtime_ab.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:out[k] for k in ('v115','v147','relative','v115_wall_pass','v147_wall_pass','v115_cpu_pass','v147_cpu_pass','errors')},indent=2))
+          assert not errors, errors
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-v115-runtime-ab-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
