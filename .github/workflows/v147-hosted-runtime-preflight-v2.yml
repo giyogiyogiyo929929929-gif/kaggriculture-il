@@ -1,0 +1,199 @@
+name: v147 hosted runtime preflight v2
+
+on:
+  push:
+    branches: [eval-v115-v142-exposure-20260925]
+    paths:
+      - ".github/workflows/v147-hosted-runtime-preflight-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install and verify exact Kaggriculture engine
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          python - <<'PY'
+          import hashlib, importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          version=importlib.metadata.version('kaggle-environments')
+          got=hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()
+          print('kaggle-environments='+version)
+          print('kaggriculture.py='+str(kg.__file__))
+          print('kaggriculture.py sha256='+got)
+          assert version == '1.32.7', version
+          assert got == 'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e', got
+          PY
+
+      - name: Build and pin exact v115 v140 v147
+        run: |
+          set -euo pipefail
+          mkdir -p tmp results
+          test "$(git hash-object ci/build_v140_v92_k2_isolated.py)" = '5d9bb6d934a0f0b34934e368eec8bf9878fdda6f'
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v140_v92_k2_isolated.py tmp/v115.py tmp/v140.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python -m py_compile tmp/v115.py tmp/v140.py tmp/v147.py
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          expected={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v140.py':'8d96c789bec1b708f38716c96828e366f58fb0cdcc151a1a38c2fc4763a71139',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          out={}
+          for p,want in expected.items():
+              got=hashlib.sha256(Path(p).read_bytes()).hexdigest(); out[p]=got
+              print(p,got); assert got==want,(p,got,want)
+          Path('results/source_identity.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          PY
+
+      - name: Historical official-interpreter parity calibration
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.eval import play_match
+          expected={
+            (641,False):(83887.0,83887.0),(641,True):(83887.0,83887.0),
+            (642,False):(62145.0,62183.0),(642,True):(62145.0,62183.0),
+            (643,False):(89373.0,89373.0),(643,True):(89373.0,89373.0),
+          }
+          rows=[]
+          for seed in (641,642,643):
+              for swap in (False,True):
+                  r=play_match('tmp/v140.py','tmp/v115.py',seed,swap)
+                  got=tuple(float(x) for x in r['money']); want=expected[(seed,swap)]
+                  print(seed,swap,got,want); assert got==want,(seed,swap,got,want)
+                  rows.append({'seed':seed,'swap':swap,'v140':got[0],'v115':got[1],'candidate_minus_champion':got[0]-got[1]})
+          Path('results/historical_parity.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          PY
+
+      - name: Static and Kaggle-loader preflight
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          from scripts.preflight import check_imports, load_like_kaggle, call_like_kaggle, BROKEN_OBSERVATIONS
+          from scripts.analysis.audit_agent import audit_file
+          for name in ('v115','v147'):
+              chk=check_imports([Path('tmp')/f'{name}.py']); print(name,chk.line()); assert chk.ok,chk.detail
+          base=Counter((depth,what) for _,depth,_,what in audit_file('tmp/v115.py'))
+          cand=Counter((depth,what) for _,depth,_,what in audit_file('tmp/v147.py'))
+          new=cand-base; print('new candidate risky signatures',dict(new)); assert not new,new
+          out={}
+          for name in ('v115','v147'):
+              agent=load_like_kaggle(Path('tmp')/f'{name}.py'); rows=[]
+              assert getattr(agent,'__name__',None)=='agent'
+              for obs in BROKEN_OBSERVATIONS:
+                  try:
+                      a=call_like_kaggle(agent,obs,None)
+                      ok=isinstance(a,dict) and set(a)=={'farmer','hands','market'} and all(isinstance(a[k],list) for k in a)
+                      rows.append({'ok':ok,'error':None})
+                  except Exception as exc:
+                      rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+              out[name]=rows
+              assert all(r['ok'] for r in rows[:-1]),(name,rows)
+          assert out['v115'][-1] == out['v147'][-1],(out['v115'][-1],out['v147'][-1])
+          Path('results/loader_smoke.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          PY
+
+      - name: Serial runtime gate on burned seeds both seats
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,time,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle, call_like_kaggle
+          def measure(path,seed,swap):
+              agent=load_like_kaggle(Path(path)); timings=[]; errors=[]
+              def timed(obs,config=None):
+                  t=time.perf_counter()
+                  try: return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:
+                      errors.append(f'{type(exc).__name__}: {exc}')
+                      return {'farmer':['PASS'],'hands':[],'market':[]}
+                  finally: timings.append(time.perf_counter()-t)
+              env=make('kaggriculture',configuration={'seed':seed})
+              env.run(['starter',timed] if swap else [timed,'starter'])
+              ordered=sorted(timings); n=len(ordered); seat=1 if swap else 0
+              p99=ordered[min(n-1,int(n*0.99))] if n else 0.0
+              return {'seed':seed,'swap':swap,'seat':seat,'calls':n,
+                      'median_ms':statistics.median(ordered)*1000 if n else 0.0,
+                      'p99_ms':p99*1000,'worst_ms':max(ordered)*1000 if n else 0.0,
+                      'errors':errors,'status':env.state[seat].get('status')}
+          out={name:[measure(f'tmp/{name}.py',seed,swap) for seed in (641,642) for swap in (False,True)] for name in ('v115','v147')}
+          summary={}
+          for name,rows in out.items():
+              summary[name]={'games':len(rows),'median_of_game_medians_ms':statistics.median(r['median_ms'] for r in rows),
+                  'max_game_p99_ms':max(r['p99_ms'] for r in rows),'worst_turn_ms':max(r['worst_ms'] for r in rows),
+                  'exceptions':sum(len(r['errors']) for r in rows)}
+          summary['v147_minus_v115']={k:summary['v147'][k]-summary['v115'][k] for k in ('median_of_game_medians_ms','max_game_p99_ms','worst_turn_ms')}
+          payload={'engine':'kaggle_environments==1.32.7','runner':'github-hosted ubuntu-latest','opponent':'starter','seeds':[641,642],
+                   'both_seats':True,'serial':True,'rows':out,'summary':summary}
+          Path('results/runtime.json').write_text(json.dumps(payload,indent=2),encoding='utf-8'); print(json.dumps(payload,indent=2))
+          for name,rows in out.items():
+              for r in rows:
+                  assert not r['errors'],(name,r)
+                  assert r['status']=='DONE',(name,r)
+                  assert r['p99_ms'] < 50.0,(name,r)
+                  assert r['worst_ms'] < 200.0,(name,r)
+          PY
+
+      - name: Build candidate package without submitting
+        run: |
+          set -euo pipefail
+          mkdir -p results/package
+          cp tmp/v147.py results/package/main.py
+          tar -czf results/v147_submission.tar.gz -C results/package main.py
+          python - <<'PY'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          p=Path('results/v147_submission.tar.gz')
+          with tarfile.open(p,'r:gz') as t: names=t.getnames()
+          main_sha=hashlib.sha256(Path('results/package/main.py').read_bytes()).hexdigest()
+          meta={'tar_bytes':p.stat().st_size,'tar_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'members':names,'main_sha256':main_sha}
+          print(json.dumps(meta,indent=2)); Path('results/package_meta.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          assert names==['main.py'],names
+          assert p.stat().st_size < 100*1024*1024,p.stat().st_size
+          assert main_sha=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-hosted-runtime-preflight-v2
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
