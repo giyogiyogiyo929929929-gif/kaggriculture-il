@@ -1,0 +1,78 @@
+name: v147 v111 counterfactual score2820
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v147-v111-counterfactual-score2820.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact v147
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v147_v111_counterfactual_diag.py tmp\v147.py tmp\v147_cfdiag.py
+          python -m py_compile tmp\v147.py tmp\v147_cfdiag.py
+      - name: Run score2820 seed520104 ledger with counterfactual telemetry
+        run: |
+          python ci\diagnose_score2820_520104.py tmp\v147_cfdiag.py opponents\score_2820\main.py results\v111_counterfactual_520104.json
+          $code=@'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('results/v111_counterfactual_520104.json').read_text(encoding='utf-8'))
+          summary=[]
+          for g in d['games']:
+              tel=g['telemetry'].get('_V111_CF_REPORT',{})
+              rows=tel.get('rows',[])
+              step649=[r for r in rows if r.get('step')==649]
+              summary.append({'swap':g['swap'],'rewards':g['rewards'],'calls':tel.get('calls'), 'changes':tel.get('changes'),'errors':tel.get('errors'),'step649':step649})
+          Path('results/v111_counterfactual_summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          print(json.dumps(summary,indent=2))
+          assert all(x['errors']==0 for x in summary), summary
+          assert all(x['rewards'] in ([148746,148755],[148755,148746]) for x in summary), summary
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v147-v111-counterfactual-score2820
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
