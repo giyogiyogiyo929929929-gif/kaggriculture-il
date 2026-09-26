@@ -1,7 +1,7 @@
 # EXP-20260926-v150-runtime-noop-second-pass
 
 ## Status
-KEEP TESTING — focused equivalence passed; full burned equivalence queued.
+KEEP TESTING — focused and full burned action equivalence passed; final runtime and sealed-panel equivalence queued.
 
 ## Parent / champion
 - parent candidate: `v147_confirmed_v111_clone`
@@ -72,21 +72,47 @@ Interpretation:
 - The focused panel supports semantic equivalence and confirms a real reduction in v111 search work.
 - Median and p99 improve slightly; >50 ms calls also fall.
 - Absolute max remains dominated by rare GC/tail events and is not improved in this one run; v150 recorded a 1.62 s spike on seed 691 seat 0 despite an otherwise identical action trace. This prevents treating the focused timing sample as a formal runtime PASS.
-- Because paired tail diagnostics already showed large GC spikes in both v115 and v147, max must be reassessed with the established GC-aware paired protocol rather than inferred from one raw maximum.
+- Because paired tail diagnostics already showed large GC spikes in both v115 and v147, max must be reassessed with the established GC-on paired protocol rather than inferred from one raw maximum.
+
+## Full burned action-equivalence result
+Run `36249173738` completed successfully.
+
+Seeds: `681..692`, both seats, one comparison per seat = 24 games.
+
+Correctness:
+- complete v147/v150 action traces: identical in all 24 games
+- final rewards: identical in all 24 games
+- mismatches: 0
+- exceptions: 0
+
+Work reduction:
+- total `_V111_REPORT.evaluations`, v147: 29,058
+- total `_V111_REPORT.evaluations`, v150: 22,710
+- reduction: 6,348 evaluations = 21.8459632459%
+
+Per-seed behavior remained action-equivalent even where the amount of work removed varied substantially. Seed 687, for example, dropped from 3,180 to 1,967 v111 evaluations per seat while returning the exact same actions and rewards.
+
+Interpretation:
+- The broader burned panel strengthens the claim that v150 is a runtime-only implementation change rather than a strategic change.
+- This is still not sufficient by itself to inherit every v147 opponent/holdout result, because different opponents can induce different observations. A sealed-panel equivalence check and final runtime qualification are therefore queued.
 
 ## Validation plan
 1. Build exact v115 and v147 and verify their known SHA256 values. PASS.
 2. Build v150 and `py_compile` all three agents. PASS.
 3. Focused complete action-equivalence test. PASS.
 4. Focused runtime/work reduction. PASS for work reduction; formal runtime still unresolved due GC tail.
-5. Expand complete action equivalence to all burned seeds `681..692`, both seats. QUEUED.
-6. If complete equivalence holds, treat v150 as a runtime-only implementation of v147 for strategic results and run a fresh GC-on paired runtime qualification against v147/v115.
-7. Only after runtime qualification is satisfactory, consider replacing v147 with v150 as the promotion candidate. Formal champion remains v115 until all gates pass.
+5. Expand complete action equivalence to all burned seeds `681..692`, both seats. PASS.
+6. Verify complete v147/v150 action equivalence on the prior sealed panel `1701..1712`, both seats. QUEUED.
+7. Run fresh sequential GC-on runtime qualification for v150 with v115/v147 controls under the same instrumentation. QUEUED.
+8. If runtime is satisfactory, run/verify the important known-opponent regression gate for v150 before any PROMOTE.
+9. Formal champion remains v115 until all gates pass.
 
 ## Runs
 - duplicate-candidate diagnostic: `36245268147` — success
 - focused v150 equivalence/runtime: `36245566714` — success
-- full burned action equivalence: `36249173738` — queued
+- full burned action equivalence: `36249173738` — success
+- v150 final runtime qualification: `36252343922` — queued
+- v150 sealed action equivalence: `36252365551` — queued
 
 ## Decision
 KEEP TESTING.
