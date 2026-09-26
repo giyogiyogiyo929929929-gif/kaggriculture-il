@@ -1,0 +1,184 @@
+name: Incoming Uploaded Main Scout
+
+on:
+  push:
+    branches: [eval-incoming-main-20260926]
+    paths:
+      - ".github/workflows/incoming-upload-scout.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scout:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install "kaggle-environments==1.32.7"
+          if ($LASTEXITCODE -ne 0) { throw "engine install failed" }
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Reconstruct exact uploaded candidate and v121 champion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          New-Item -ItemType Directory -Force -Path incoming | Out-Null
+          $code = @'
+          from pathlib import Path
+          import base64, lzma, hashlib
+          names = [
+            'eval_payload/candidate_127ed.part0.b85',
+            'eval_payload/candidate_127ed.part1.b85',
+            'eval_payload/candidate_127ed.part2a.b85',
+            'eval_payload/candidate_127ed.part2b.b85',
+            'eval_payload/candidate_127ed.part3a.b85',
+            'eval_payload/candidate_127ed.part3b.b85',
+          ]
+          enc = ''.join(Path(n).read_text(encoding='ascii') for n in names).encode('ascii')
+          raw = lzma.decompress(base64.b85decode(enc))
+          p = Path('incoming/uploaded_main.py'); p.write_bytes(raw)
+          h = hashlib.sha256(raw).hexdigest()
+          print('candidate bytes', len(raw), 'sha256', h)
+          assert len(raw) == 500148
+          assert h == 'b16db5c98f10d063bf83782af55db8b12d2c5b2e5f3ec3a7a8f9896d04e030cd'
+          '@
+          $code | python -
+          python scripts/ci/rebuild_v130_v121_agents.py --out-dir eval_agents/v130
+          if ($LASTEXITCODE -ne 0) { throw "champion rebuild failed" }
+          python -c "import hashlib,pathlib; p=pathlib.Path('eval_agents/v130/v121_champion_same_turn_unwind.py'); h=hashlib.sha256(p.read_bytes()).hexdigest(); print('v121',h); assert h=='1a44487de886d59f612cfbd083cacadf872ad56d0db13604cbf8af0056c600c2'"
+
+      - name: Syntax import audit and structural comparison
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile incoming/uploaded_main.py
+          python scripts/analysis/audit_agent.py incoming/uploaded_main.py | Tee-Object -FilePath incoming/static_audit.txt
+          $code = @'
+          from pathlib import Path
+          import ast, hashlib, importlib.util, json, time
+          cand=Path('incoming/uploaded_main.py'); champ=Path('eval_agents/v130/v121_champion_same_turn_unwind.py')
+          def scan(p):
+              s=p.read_text(encoding='utf-8'); t=ast.parse(s)
+              funcs=[n.name for n in ast.walk(t) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]
+              imports=[]
+              for n in ast.walk(t):
+                  if isinstance(n,ast.Import): imports += [a.name for a in n.names]
+                  elif isinstance(n,ast.ImportFrom): imports.append(n.module or '')
+              keys=['sell_lead','front_run','budget_guard','room_guard','dead_stock','terminal_liquidation','race','copy','town','shed','SELL','BUY_PRODUCT','BUY_SEED']
+              return {'bytes':p.stat().st_size,'lines':s.count('\n')+1,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'functions':funcs,'imports':sorted(set(imports)),'keyword_counts':{k:s.lower().count(k.lower()) for k in keys}}
+          c=scan(cand); h=scan(champ)
+          cs=set(c['functions']); hs=set(h['functions'])
+          out={'candidate':c,'champion':h,'candidate_only_functions':sorted(cs-hs),'champion_only_functions':sorted(hs-cs),'shared_function_names':len(cs&hs)}
+          Path('incoming/static_compare.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k not in ('candidate_only_functions','champion_only_functions')},indent=2))
+          t=time.perf_counter(); spec=importlib.util.spec_from_file_location('incoming_candidate',cand); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          print('import_ms', (time.perf_counter()-t)*1000, 'agent', callable(getattr(m,'agent',None)), 'kaggle_agent', callable(getattr(m,'kaggle_agent',None)))
+          assert callable(getattr(m,'agent',None)) or callable(getattr(m,'kaggle_agent',None))
+          '@
+          $code | python - | Tee-Object -FilePath incoming/preflight.txt
+
+      - name: Direct champion H2H matched seeds with seat swap
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path results/direct | Out-Null
+          python scripts/ci/run_exact_pair.py --candidate incoming/uploaded_main.py --baseline eval_agents/v130/v121_champion_same_turn_unwind.py --seed-start 500001 --seed-count 12 --out results/direct/pairs.json
+          if ($LASTEXITCODE -ne 0) { throw "direct H2H failed" }
+          $code = @'
+          import json,statistics,math
+          from pathlib import Path
+          rows=json.load(open('results/direct/pairs.json',encoding='utf-8'))
+          ds=[float(r['candidate_minus_baseline']) for r in rows if r.get('ok')]
+          rt=[x for r in rows for x in r.get('candidate_runtime_ms',[])]
+          def pct(xs,p):
+              xs=sorted(xs); i=(len(xs)-1)*p; a=int(i); b=min(a+1,len(xs)-1); f=i-a; return xs[a]*(1-f)+xs[b]*f
+          n=len(ds); se=statistics.stdev(ds)/math.sqrt(n) if n>1 else 0
+          out={'n':n,'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),'mean_candidate_minus_champion':statistics.fmean(ds),'se':se,'mean_minus_2se':statistics.fmean(ds)-2*se,'worst_regression':min(ds),'best_improvement':max(ds),'runtime_ms':{'median':statistics.median(rt),'p95':pct(rt,.95),'p99':pct(rt,.99),'max':max(rt)},'exceptions':sum(r.get('candidate_exceptions',0) for r in rows),'rows':[{'seed':r['seed'],'candidate_minus_champion':r['candidate_minus_baseline'],'normal_rewards':r['normal']['rewards'],'swapped_rewards':r['swapped']['rewards'],'normal_statuses':r['normal']['statuses'],'swapped_statuses':r['swapped']['statuses']} for r in rows]}
+          Path('results/direct/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - name: Differential opponent panels
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Run-Panel([string]$id, [string]$opp, [int]$seed, [int]$count) {
+            $dir = Join-Path results $id
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            python scripts/ci/run_exact_pair.py --candidate incoming/uploaded_main.py --baseline $opp --seed-start $seed --seed-count $count --out "$dir/candidate.json"
+            if ($LASTEXITCODE -ne 0) { throw "candidate run failed: $id" }
+            python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline $opp --seed-start $seed --seed-count $count --out "$dir/champion.json"
+            if ($LASTEXITCODE -ne 0) { throw "champion run failed: $id" }
+            python eval_assets/v130/compare_candidate_champion.py --candidate-json "$dir/candidate.json" --champion-json "$dir/champion.json" --opponent $opp --out "$dir/summary.json"
+            if ($LASTEXITCODE -ne 0) { throw "compare failed: $id" }
+          }
+          Run-Panel bl21 opponents/bl_v21 500101 6
+          Run-Panel bl16 opponents/bl_v16rc2 500101 6
+          Run-Panel frontier opponents/frontier_prvsiyan 500101 6
+          Run-Panel farming-a opponents/farming_v2 500101 6
+          Run-Panel farming-b opponents/farming_v2_b 500101 6
+          Run-Panel first-line opponents/first_in_line 500101 6
+          Run-Panel starter starter 500101 6
+          Run-Panel weak opponents/dz_more_wheat 500101 6
+
+      - name: Aggregate differential candidate_minus_champion
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import glob,json,math,statistics
+          from pathlib import Path
+          ss=[json.load(open(p,encoding='utf-8')) for p in sorted(glob.glob('results/*/summary.json')) if 'direct' not in p]
+          rows=[(s,r) for s in ss for r in s.get('rows',[])]
+          ds=[float(r['candidate_minus_champion']) for s,r in rows]
+          n=len(ds); mean=statistics.fmean(ds) if ds else 0; se=statistics.stdev(ds)/math.sqrt(n) if n>1 else 0
+          flat=[]
+          for s,r in rows:
+              flat.append({'opponent':s.get('opponent'),'seed':r.get('seed'),'candidate_minus_champion':r.get('candidate_minus_champion'),'seat0_diff':r.get('seat0_diff'),'seat1_diff':r.get('seat1_diff'),'ok':r.get('ok')})
+          out={'candidate':'incoming_uploaded_main','candidate_sha256':'b16db5c98f10d063bf83782af55db8b12d2c5b2e5f3ec3a7a8f9896d04e030cd','champion':'v121_champion_same_turn_unwind','engine':'1.32.7','paired_rows':n,'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,'worst_regression':min(ds) if ds else None,'best_improvement':max(ds) if ds else None,'technical_ok':all(s.get('all_ok') for s in ss),'rows':flat}
+          Path('results/scout_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - name: Serial runtime NFR check
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path results/runtime | Out-Null
+          python scripts/ci/run_exact_pair.py --candidate incoming/uploaded_main.py --baseline starter --seed-start 500301 --seed-count 5 --out results/runtime/candidate.json
+          if ($LASTEXITCODE -ne 0) { throw "runtime candidate failed" }
+          python scripts/ci/run_exact_pair.py --candidate eval_agents/v130/v121_champion_same_turn_unwind.py --baseline starter --seed-start 500301 --seed-count 5 --out results/runtime/champion.json
+          if ($LASTEXITCODE -ne 0) { throw "runtime champion failed" }
+          $code = @'
+          import json,statistics
+          from pathlib import Path
+          def pct(xs,p):
+              xs=sorted(xs); i=(len(xs)-1)*p; a=int(i); b=min(a+1,len(xs)-1); f=i-a; return xs[a]*(1-f)+xs[b]*f
+          def one(path):
+              rows=json.load(open(path,encoding='utf-8')); xs=[x for r in rows for x in r.get('candidate_runtime_ms',[])]
+              return {'n':len(xs),'median':statistics.median(xs),'p95':pct(xs,.95),'p99':pct(xs,.99),'max':max(xs),'exceptions':sum(r.get('candidate_exceptions',0) for r in rows)}
+          out={'candidate':one('results/runtime/candidate.json'),'champion':one('results/runtime/champion.json')}
+          out['candidate']['nfr_ok']=out['candidate']['p99']<50 and out['candidate']['max']<200 and out['candidate']['exceptions']==0
+          Path('results/runtime/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incoming-upload-scout
+          path: |
+            incoming/static_audit.txt
+            incoming/static_compare.json
+            incoming/preflight.txt
+            results/
+          retention-days: 30
