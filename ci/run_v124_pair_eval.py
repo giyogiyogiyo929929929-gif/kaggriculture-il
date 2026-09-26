@@ -4,8 +4,13 @@ import argparse
 import json
 import math
 import statistics
+import sys
 import time
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from kaggle_environments import make
 from scripts.preflight import call_like_kaggle, load_like_kaggle, turn_time_stats
