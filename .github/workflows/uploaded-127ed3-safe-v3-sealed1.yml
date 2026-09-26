@@ -1,0 +1,102 @@
+name: uploaded 127ed3 safety-v3 sealed1
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-safe-v3-sealed1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sealed:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          suffix=b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          safe=raw+suffix; Path('tmp/safe_v3.py').write_bytes(safe)
+          assert hashlib.sha256(safe).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\v147.py
+      - name: Precommitted fresh sealed 12 seeds both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          seeds=[645491,839835,927489,524295,654541,709211,640183,546018,709378,901935,574041,685514]
+          rows=[]; games=[]
+          # evaluate() only supports contiguous blocks, so evaluate each frozen seed independently.
+          for seed in seeds:
+              s=evaluate('tmp/safe_v3.py','tmp/v147.py',pairs=1,jobs=1,seed_start=seed)
+              ds=[]
+              for g in sorted(s['matches_detail'],key=lambda x:bool(x['swap'])):
+                  d=float(g['money'][0])-float(g['money'][1]); ds.append(d)
+                  games.append({'seed':seed,'swap':bool(g['swap']),'candidate_minus_champion':d})
+              v=statistics.mean(ds)
+              rows.append({'seed':seed,'seat_deltas':ds,'pair_mean_delta':v,'outcome':'W' if v>0 else 'L' if v<0 else 'D',
+                           'candidate_exceptions':s['exceptions']['a'],'champion_exceptions':s['exceptions']['b']})
+              print('SEALED_PAIR',json.dumps(rows[-1]))
+          vals=[r['pair_mean_delta'] for r in rows]; mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'label':'PRECOMMITTED_FRESH_SEALED_1','candidate_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df',
+               'champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','engine':'kaggle-environments==1.32.7','seeds':seeds,
+               'pair_wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean_pair_delta':mean,'median_pair_delta':statistics.median(vals),
+               'se':se,'mean_minus_2se':mean-2*se,'worst_pair_delta':min(vals),'best_pair_delta':max(vals),
+               'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),
+               'candidate_exceptions':sum(r['candidate_exceptions'] for r in rows),'champion_exceptions':sum(r['champion_exceptions'] for r in rows),'pairs':rows}
+          print('SEALED_SUMMARY',json.dumps({k:v for k,v in out.items() if k!='pairs'},indent=2))
+          Path('results/sealed1.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert out['candidate_exceptions']==0 and out['champion_exceptions']==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-safe-v3-sealed1
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
