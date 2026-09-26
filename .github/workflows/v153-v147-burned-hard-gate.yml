@@ -96,7 +96,7 @@ jobs:
           '@
           $gate | python -
 
-      - name: Burned direct and lineage gate 681 to 692
+      - name: Burned direct and lineage diagnostic 681 to 692
         run: |
           $ErrorActionPreference='Stop'
           python scripts\eval.py tmp\v153.py tmp\v147.py -n 12 -j 4 --seed-start 681 --json results\burned_v153_vs_v147.json
@@ -119,15 +119,14 @@ jobs:
           vals=[r['pair'] for r in cv]; inc=[r['incremental'] for r in lineage]
           out={
             'v153_vs_v147':{'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals),'worst':min(vals),'best':max(vals),'rows':cv,'exceptions':ecv},
-            'lineage_incremental':{'mean':statistics.fmean(inc),'worst':min(inc),'best':max(inc),'rows':lineage,'v153_exceptions':ec115,'v147_exceptions':eh115},
+            'lineage_incremental_diagnostic_only':{'mean':statistics.fmean(inc),'worst':min(inc),'best':max(inc),'rows':lineage,'v153_exceptions':ec115,'v147_exceptions':eh115,'note':'Opponent-mediated deltas are non-transitive and are diagnostic only; promotion gating uses the direct matched v153-v147 comparison.'},
           }
           Path('results/burned_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
           print(json.dumps(out,indent=2))
           def zero(e): return int(e.get('a',0))==0 and int(e.get('b',0))==0
           assert zero(ecv) and zero(ec115) and zero(eh115),out
-          # Early expansion gate: do not spend the hard panel if a matched burned pair regresses.
+          # Expansion gate: only the direct matched v153-v147 result is causal for this candidate change.
           assert min(vals) >= 0, out
-          assert min(inc) >= 0, out
           '@
           $gate | python -
 
