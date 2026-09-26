@@ -1,15 +1,33 @@
 from __future__ import annotations
-import copy, importlib.util, json, math, statistics, time, hashlib
+import copy, importlib.util, json, math, statistics, sys, time, hashlib
 from pathlib import Path
 from kaggle_environments import make
 
 ROOT = Path(__file__).resolve().parent
 
 def load(path, tag):
+    path = Path(path)
     spec = importlib.util.spec_from_file_location(tag, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'cannot load {path}')
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod, mod.agent
+    sys.modules[tag] = mod
+    parent = str(path.parent)
+    sys.path.insert(0, parent)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        try:
+            sys.path.remove(parent)
+        except ValueError:
+            pass
+    fn = None
+    for value in vars(mod).values():
+        if callable(value):
+            fn = value
+    if fn is None:
+        raise RuntimeError(f'no callable entrypoint in {path}')
+    return mod, fn
 
 class Timed:
     def __init__(self, fn):
@@ -19,7 +37,8 @@ class Timed:
     def __call__(self, obs, config=None):
         t = time.perf_counter()
         try:
-            n = self.fn.__code__.co_argcount
+            code = getattr(self.fn, '__code__', None)
+            n = code.co_argcount if code is not None else 2
             return self.fn(*[obs, config][:n])
         except Exception:
             self.errors += 1
@@ -28,7 +47,7 @@ class Timed:
             self.ms.append((time.perf_counter() - t) * 1000)
 
 def game(a, b, seed, swap=False, timed=False):
-    ma, fa = load(Path(a), f'a{seed}{swap}{time.time_ns()}')
+    _, fa = load(Path(a), f'a{seed}{swap}{time.time_ns()}')
     built = str(b) in {'starter', 'pass', 'random'}
     if built:
         fb = str(b)
@@ -45,7 +64,7 @@ def game(a, b, seed, swap=False, timed=False):
         'a': ar,
         'b': br,
         'delta': ar - br,
-        'telemetry': copy.deepcopy(getattr(ma.agent, 'telemetry', {})),
+        'telemetry': copy.deepcopy(getattr(fa, 'telemetry', {})),
         'ms': ta.ms if timed else [],
         'errors': ta.errors,
     }
@@ -107,6 +126,7 @@ def main():
     v117 = ROOT / 'v117_wheat_post_town_delay1.py'
     rep = {
         'engine': '1.32.7',
+        'loader': 'Kaggle-compatible last-callable with sibling import path',
         'sign': 'candidate_minus_champion = candidate - champion',
         'champion': 'v112_wheat_lead3_lowdemand',
         'candidate': 'v117_wheat_post_town_delay1',
