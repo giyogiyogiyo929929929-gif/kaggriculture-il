@@ -35,6 +35,24 @@ Then only that leading block is stable-sorted by descending self-impact exposure
 
 The `>=5` condition represents a dense multi-product liquidation/race rather than ordinary small sale blocks; it also keeps the focused hard-cell intervention narrow.
 
+## Historical overlap / safety-boundary audit
+
+This is related to, but is not a repeat of, the already-adopted Order Book Layer D from EXP-20260922-52.
+
+Layer D was a successful market-order mechanism: on its 18-opponent regression all 18 opponent means improved, total wins moved from 73-17 to 81-9, and it became the v27 base lineage. However, that implementation deliberately excluded SELL orders for an item that was also bought with `BUY_PRODUCT` in the same turn (the historical "wash SELL" safety boundary).
+
+The exact current v147 `_v111_reorder` retains the same important restriction: it first forms the set of items bought anywhere in the order list and excludes SELLs of those items from reorder candidates. Therefore the step649 FERTILIZER SELL is structurally unreachable by current v111 because the same turn contains `BUY_PRODUCT FERTILIZER 2`.
+
+v152 opens only a narrower part of that boundary:
+
+- it operates only inside the *leading contiguous SELL block*;
+- it stops at the first non-SELL order;
+- therefore it never moves a SELL across its later `BUY_PRODUCT` barrier;
+- the SELL-before-own-BUY relation is preserved exactly;
+- quantities and the BUY order itself are unchanged.
+
+So v152 is not a broad "allow wash SELL reordering" experiment. It tests whether SELL-vs-SELL ordering inside a dense pre-BUY block can safely use executable self-impact exposure. Because it touches a region that older Layer D intentionally kept fixed, a hard-cell win is not enough: burned direct regression and wash-item telemetry are mandatory before any sealed test.
+
 ## Causal source cell
 
 Formal ledger run `36245506969`, opponent `score_2820`, seed520104, both seats.
@@ -96,10 +114,11 @@ The workflow:
 Do not spend unused sealed seeds from this focused result alone. If v152 converts or materially improves the -9 loss with zero errors, next gates are:
 
 1. burned direct v147 seeds681..692, both seats;
-2. existing hard-opponent panel cells 520101..520104, both seats;
-3. telemetry on every changed outcome/margin row;
-4. stress;
-5. only then an unused sealed range;
-6. runtime final.
+2. explicitly inspect every v152 activation where a reordered SELL item is also bought later that turn, using gross SELL revenue minus BUY_PRODUCT cost rather than gross sales alone;
+3. existing hard-opponent panel cells 520101..520104, both seats;
+4. telemetry on every changed outcome/margin row;
+5. stress;
+6. only then an unused sealed range;
+7. runtime final.
 
 If the focused result is neutral or regressive, reject v152 and use the recorded counterexample rather than threshold sweeping.
