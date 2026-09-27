@@ -1,0 +1,167 @@
+name: v157 runtime-v150 on v153 hard opponent exact equivalence
+
+on:
+  push:
+    branches: [candidate-runtime-v150-on-v153-20260927]
+    paths:
+      - ".github/workflows/v157-runtime-v150-on-v153-hard-opponent-equivalence-selfhosted.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hard-equivalence:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v115 v147 v153 v157
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python ci\build_v157_runtime_v150_on_v153.py tmp\v153.py tmp\v157.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v153.py tmp\v157.py
+          @'
+          import hashlib,json
+          from pathlib import Path
+          exp={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'tmp/v153.py':'128836e8e945d9b5b8c6776dc68cd45f4c21775713ebd3bd50655cd2f711ebfd',
+          }
+          got={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ('tmp/v115.py','tmp/v147.py','tmp/v153.py','tmp/v157.py')}
+          for p,h in exp.items(): assert got[p]==h,(p,got[p],h)
+          Path('results/build_sha.json').write_text(json.dumps(got,indent=2),encoding='utf-8')
+          print(json.dumps(got,indent=2))
+          '@ | python -
+
+      - name: Eight-opponent exact action reward trajectory equivalence
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import importlib.util,json,sys,traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS=[520101,520102,520103,520104]
+          OPPONENTS={
+            'peak_2950':'opponents/peak_2950/main.py',
+            'salem_2900':'opponents/salem_2900/main.py',
+            'score_2820':'opponents/score_2820/main.py',
+            'jaxa_2802':'opponents/jaxa_2802/main.py',
+            'thomas_router_95':'opponents/thomas_router_95/main.py',
+            'tetsutani_ms':'opponents/tetsutani_ms/main.py',
+            'melon_squeeze':'opponents/melon_squeeze/main.py',
+            'shop_router_v7':'opponents/shop_router_v7/main.py',
+          }
+          uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v157hard_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              if spec is None or spec.loader is None: raise RuntimeError(f'cannot load {p}')
+              m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              vals=list(m.__dict__.values())
+              fn=vals[-1] if vals and callable(vals[-1]) else getattr(m,'agent',None)
+              if not callable(fn):
+                  fn=getattr(m,'agent',None)
+              if not callable(fn): raise RuntimeError(f'no callable agent in {p}')
+              return m,fn
+
+          class Cap:
+              def __init__(self,fn): self.fn=fn; self.actions=[]
+              def __call__(self,obs,cfg=None):
+                  out=self.fn(obs,cfg); self.actions.append(out); return out
+
+          def run(own_path,opp_path,seed,seat):
+              own_m,own_fn=load(own_path); _,opp_fn=load(opp_path)
+              own=Cap(own_fn); opp=Cap(opp_fn)
+              agents=[own,opp] if seat==0 else [opp,own]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              status=[x.get('status') for x in env.state]
+              rewards=[x.get('reward') for x in env.state]
+              if status!=['DONE','DONE']: raise RuntimeError((own_path,opp_path,seed,seat,status))
+              # Store both sides in seat order so we prove the entire action trajectory, not only final cash.
+              seat_actions=[own.actions,opp.actions] if seat==0 else [opp.actions,own.actions]
+              return seat_actions,rewards,int(dict(getattr(own_m,'_V111_REPORT',{})).get('evaluations',0))
+
+          rows=[]; mismatches=[]; errors=[]; e153=e157=0
+          for name,opp_path in OPPONENTS.items():
+            if not Path(opp_path).exists():
+              errors.append({'opponent':name,'error':f'missing path {opp_path}'})
+              continue
+            for seed in SEEDS:
+              for seat in (0,1):
+                try:
+                  a,ra,ea=run('tmp/v153.py',opp_path,seed,seat)
+                  b,rb,eb=run('tmp/v157.py',opp_path,seed,seat)
+                  e153+=ea; e157+=eb
+                  same_a=(a==b); same_r=(ra==rb)
+                  first=None
+                  if not same_a:
+                    for sidx,(xs,ys) in enumerate(zip(a,b)):
+                      for step,(x,y) in enumerate(zip(xs,ys)):
+                        if x!=y: first={'seat_index':sidx,'action_index':step,'v153':x,'v157':y}; break
+                      if first: break
+                    mismatches.append({'kind':'action','opponent':name,'seed':seed,'seat':seat,'first':first})
+                  if not same_r:
+                    mismatches.append({'kind':'reward','opponent':name,'seed':seed,'seat':seat,'v153':ra,'v157':rb})
+                  rows.append({'opponent':name,'seed':seed,'seat':seat,'same_actions':same_a,'same_rewards':same_r,'eval153':ea,'eval157':eb})
+                except Exception as e:
+                  errors.append({'opponent':name,'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+
+          out={
+            'champion':'v153','candidate':'v157_runtime_v150_on_v153',
+            'seeds':SEEDS,'opponents':OPPONENTS,'expected_cases':len(OPPONENTS)*len(SEEDS)*2,
+            'completed_cases':len(rows),'action_reward_trajectory_equivalent':not mismatches and not errors,
+            'mismatches':mismatches,'errors':errors,'v153_evaluations':e153,'v157_evaluations':e157,
+            'evaluation_reduction_fraction':((e153-e157)/e153 if e153 else 0.0),'rows':rows,
+          }
+          Path('results/hard_equivalence.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert not errors, errors
+          assert len(rows)==out['expected_cases'],(len(rows),out['expected_cases'])
+          assert not mismatches,mismatches
+          assert e157 < e153,(e153,e157)
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v157-hard-opponent-exact-equivalence-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
