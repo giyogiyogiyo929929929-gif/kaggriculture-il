@@ -1,0 +1,124 @@
+name: v154 selected cell diagnostic
+
+on:
+  pull_request:
+    branches: [eval-v154-v151-dense-self-exposure-port-20260927]
+    paths: [".github/workflows/v154-selected-cell-diagnostic.yml", "ci/trigger-v154-selected-cell-diagnostic.txt"]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v151
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          python -m py_compile tmp\v151.py
+          @'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v151.py').read_bytes()).hexdigest()
+          assert got=='54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31',got
+          print(got)
+          '@ | python -
+      - name: Capture changed-event features on consumed cells
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,sys
+          from pathlib import Path
+          from kaggle_environments import make
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+
+          CASES=[
+            ('positive_score_2820','opponents/score_2820/main.py',[520104]),
+            ('negative_peak_2950','opponents/peak_2950/main.py',[520101,520102,520103,520104]),
+            ('negative_tetsutani','opponents/tetsutani_ms/main.py',[520101,520102,520103,520104]),
+            ('burned_positive','tmp/v151.py',[682,684,685,687,688,689,690,692]),
+          ]
+
+          def mk_diag():
+            parent=C.load('tmp/v151.py')
+            G=parent.__globals__
+            params0=G['_R37_MARKET_PARAMS']; price=G['_r37_market_price']; projected=G['projected_shed']; FarmView=G['FarmView']
+            events=[]
+            def exposure(obs,o,stock):
+              if len(o)<3 or o[0]!='SELL': return 0.0
+              item=o[1]; q=min(max(0,int(o[2])),max(0,int(stock.get(item,0))))
+              if q<=0 or item not in params0: return 0.0
+              inv=int(obs['market']['inventory'].get(item,0)); params={k:dict(v) for k,v in params0.items()}
+              for k,patch in obs['market'].get('params',{}).items():
+                if k in params: params[k].update(patch)
+              now=sum(price(item,inv+j,params) for j in range(q)); later=sum(price(item,inv+q+j,params) for j in range(q))
+              return float(now-later)
+            def agent(obs,cfg=None):
+              action=parent(obs,cfg)
+              if obs is None: return action
+              step=int(obs.get('step',-1)); orders=[list(o) for o in (action.get('market') or [])]
+              if not (288<=step<694) or not orders or not orders[0] or orders[0][0]!='SELL': return action
+              end=0
+              while end<len(orders) and orders[end] and orders[end][0]=='SELL': end+=1
+              block=orders[:end]
+              if len(block)<5 or len({o[1] for o in block})!=len(block): return action
+              stock=projected(action,FarmView(obs)); scored=[(exposure(obs,o,stock),i,o) for i,o in enumerate(block)]
+              reordered=[x[2] for x in sorted(scored,key=lambda x:(-x[0],x[1]))]
+              if reordered!=block:
+                inv={o[1]:int(obs['market']['inventory'].get(o[1],0)) for o in block}
+                events.append({'step':step,'original':block,'reordered':reordered,'scores':[{'item':x[2][1],'qty':x[2][2],'exposure':x[0],'index':x[1],'inventory':inv[x[2][1]]} for x in scored]})
+                orders[:end]=reordered; action=dict(action); action['market']=orders
+              return action
+            return agent,events
+
+          rows=[]
+          for label,opp,seeds in CASES:
+            for seed in seeds:
+              for swap in (False,True):
+                agent,events=mk_diag(); opponent=C.load(opp)
+                agents=[C.wrap(agent),C.wrap(opponent)]
+                if swap: agents.reverse()
+                env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                seat=1 if swap else 0
+                margin=float(env.state[seat]['reward'])-float(env.state[1-seat]['reward'])
+                rows.append({'case':label,'opponent':opp,'seed':seed,'swap':swap,'margin':margin,'events':events})
+          out={'rows':rows}
+          Path('results/v154_selected_cell_diagnostic.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-selected-cell-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
