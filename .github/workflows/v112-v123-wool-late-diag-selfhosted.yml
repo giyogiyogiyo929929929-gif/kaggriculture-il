@@ -1,0 +1,38 @@
+name: v112-v123 late wool diagnostic
+on:
+  push:
+    branches: [eval/v112-v123-wool-late-probe-20260927]
+    paths:
+      - '.github/workflows/v112-v123-wool-late-diag-selfhosted.yml'
+      - 'experiments/v112_v116_milk_micro/run_v123_wool_late_diag.py'
+concurrency:
+  group: v112-v123-wool-late-diag
+  cancel-in-progress: true
+jobs:
+  diag:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install engine and reconstruct v112
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          Set-Location experiments\v112_v116_milk_micro
+          python build_sources.py
+          python -m py_compile run_v123_wool_late_diag.py
+      - name: Inspect late WOOL states
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v123_wool_late_diag.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v112-v123-wool-late-diag
+          path: experiments/v112_v116_milk_micro/v123_wool_late_diag.json
