@@ -1,0 +1,116 @@
+name: v153 v147 hard panel 520101 520104
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v153-v147-hard-panel-520101-520104.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hard-panel:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine and reconstruct agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results,results\hard_panel | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python -m py_compile tmp\v147.py tmp\v153.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          assert got=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',got
+          print('v147_sha256='+got)
+          print('v153_sha256='+hashlib.sha256(Path('tmp/v153.py').read_bytes()).hexdigest())
+          '@
+          $check | python -
+      - name: Evaluate hard opponents seeds 520101 520104 both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          $code=@'
+          import json, subprocess, sys, statistics, math
+          from pathlib import Path
+
+          opponents = {
+              'peak_2950':'opponents/peak_2950/main.py',
+              'salem_2900':'opponents/salem_2900/main.py',
+              'score_2820':'opponents/score_2820/main.py',
+              'jaxa_2802':'opponents/jaxa_2802/main.py',
+              'thomas_router_95':'opponents/thomas_router_95/main.py',
+              'tetsutani_ms':'opponents/tetsutani_ms/main.py',
+              'melon_squeeze':'opponents/melon_squeeze/main.py',
+              'shop_router_v7':'opponents/shop_router_v7/main.py',
+          }
+          root=Path('results/hard_panel')
+          all_rows=[]; summaries=[]; total_ce=0; total_he=0
+          for name,opp in opponents.items():
+              out=root/f'{name}.json'
+              cmd=[sys.executable,'ci/eval_candidate_vs_champion_panel.py','--candidate','tmp/v153.py','--champion','tmp/v147.py','--opponent',opp,'--seed-start','520101','--seed-count','4','--jobs','2','--out',str(out)]
+              print('RUN',name,' '.join(cmd),flush=True)
+              subprocess.run(cmd,check=True)
+              d=json.loads(out.read_text(encoding='utf-8'))
+              total_ce += int(d['candidate_exceptions']); total_he += int(d['champion_exceptions'])
+              summaries.append({k:d[k] for k in ('opponent','wins','losses','ties','candidate_minus_champion_mean','candidate_minus_champion_se','worst','best','seat0_mean','seat1_mean','margin_delta_mean','candidate_exceptions','champion_exceptions')})
+              for r in d['rows']:
+                  all_rows.append({'opponent':name,**r})
+          vals=[float(r['candidate_minus_champion_money']) for r in all_rows]
+          wins=sum(v>0 for v in vals); losses=sum(v<0 for v in vals); ties=sum(v==0 for v in vals)
+          se=(statistics.stdev(vals)/(len(vals)**0.5)) if len(vals)>1 else 0.0
+          out={
+              'metric':'candidate_minus_champion_money = candidate - champion, pair averaged across seats',
+              'candidate':'v153','champion':'v147','engine':'kaggle_environments==1.32.7',
+              'seeds':[520101,520102,520103,520104], 'opponents':list(opponents),
+              'pairs':len(vals),'wins':wins,'losses':losses,'ties':ties,
+              'mean':statistics.mean(vals),'se':se,'mean_minus_2se':statistics.mean(vals)-2*se,
+              'worst':min(vals),'best':max(vals),
+              'candidate_exceptions':total_ce,'champion_exceptions':total_he,
+              'per_opponent':summaries,'rows':all_rows,
+          }
+          Path('results/v153_hard_panel_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          if total_ce != 0: raise SystemExit('candidate exceptions')
+          if min(vals) < 0: print('WARNING: hard-panel regression present',flush=True)
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-v147-hard-panel-520101-520104
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
