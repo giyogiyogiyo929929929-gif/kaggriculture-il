@@ -1,0 +1,77 @@
+name: uploaded 127ed3 CARROT2 feed0 cloud dev
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-cloud-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and feed0 child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'; if ($LASTEXITCODE -ne 0) { throw 'engine install failed' }
+          python -m pip install jsonschema requests; if ($LASTEXITCODE -ne 0) { throw 'deps install failed' }
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py; if ($LASTEXITCODE -ne 0) { throw 'parent reconstruction failed' }
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py; if ($LASTEXITCODE -ne 0) { throw 'candidate build failed' }
+          @'
+          import hashlib,importlib.metadata,json
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          p=Path('tmp/safe_v3.py').read_bytes(); c=Path('tmp/ca_feed0.py').read_bytes()
+          assert hashlib.sha256(p).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          meta={'parent_sha256':hashlib.sha256(p).hexdigest(),'candidate_sha256':hashlib.sha256(c).hexdigest(),'candidate_bytes':len(c)}
+          Path('results/build.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          print(json.dumps(meta,indent=2))
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py; if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+      - name: Burned ten-seed direct-parent matched evaluation
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          seeds=[641,350003,101,211,347,509,733,911,1201,1601]
+          rows=[]; exc_c=exc_p=0
+          for seed in seeds:
+              s=evaluate('tmp/ca_feed0.py','tmp/safe_v3.py',pairs=1,jobs=1,seed_start=seed)
+              exc_c+=s['exceptions']['a']; exc_p+=s['exceptions']['b']
+              games=sorted(s['matches_detail'],key=lambda x:bool(x['swap']))
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in games]
+              pair=statistics.mean(vals)
+              rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D'})
+              print('SEED',seed,vals,pair)
+          vals=[r['pair_mean_delta'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          build=json.loads(Path('results/build.json').read_text(encoding='utf-8'))
+          out={'candidate':'uploaded_127ed3_ca_feed0','candidate_sha256':build['candidate_sha256'],'parent':'uploaded_127ed3_safety_v3','parent_sha256':build['parent_sha256'],'environment':'github-hosted windows-latest tactical dev; exact formal engine/source verified; self-hosted confirmation separately queued','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'rows':rows}
+          Path('results/ca_feed0_cloud_dev.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert exc_c==0 and exc_p==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-cloud-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
