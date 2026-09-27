@@ -62,6 +62,29 @@ Use the same panel as v120 for direct comparability.
 
 Primary outputs are overlap rates, not score.
 
+## Pre-probe hotspot audit from v120 artifact
+
+Before running v120b, the captured v120 raw event stream was aggregated across the 80 external games (10 opponents × 4 seeds × 2 seats). The event list in v120 was capped, so this audit is useful for hotspot selection but is not treated as an exhaustive event count.
+
+Several clean-signal steps were present for all 10 opponents and all 80 games in the captured stream:
+
+- WOOL: steps 151, 294, 343;
+- MELON: steps 250, 251, 252, 253, 254, 256;
+- MILK: step 340, with 339/341 also common;
+- STRAWBERRY: steps 404, 428, 430, plus 518 (but 518 often occurs after price collapse).
+
+Median post-signal prices at representative ubiquitous hotspots:
+
+- WOOL@151: 199 (~99.5% of nominal base 200);
+- WOOL@294: 151 (~75.5% of base);
+- WOOL@343: 183 (~91.5% of base);
+- MELON@250: 266 (~106.4% of base), falling deterministically across the 250–256 sequence to 226 (~90.4%);
+- MILK@339: 169 (~105.6% of base), @340: 137 (~85.6%), @341: 152 median in the captured cross-opponent stream;
+- STRAWBERRY@404/428/430: median roughly 170.5/170.5/164, all still materially above nominal base 120;
+- STRAWBERRY@518: median 1, therefore unsuitable as a generic reactive trigger despite universal detection.
+
+This confirms that the detector sees both economically actionable early/mid-season pressure and useless post-collapse noise. v120b must therefore retain explicit price-state telemetry rather than treating all clean events equally.
+
 ## Decision rule
 
 v120b itself cannot be promoted.
@@ -74,6 +97,10 @@ If most clean signals occur after price collapse, with empty shed, or far from a
 
 Any v121 change must remain 1–3 major changes and preserve existing premium order unless the overlap evidence supports a specific timing modification.
 
+## Public-reference cross-check
+
+Current public research also contains a `Kaggriculture V35 — Reactive Sales & Sheep Expansion` notebook explicitly organized around public-response sales and evaluated against independent strong opponents / reacting worlds. This is treated only as directional support for reactive-sales research. Its code is not copied into this lineage; v121 must be justified by the local v120/v120b telemetry and canonical H2H/external evaluation.
+
 ## Files
 
 - `experiments/v112_v116_milk_micro/v120b_suffix.pyfrag`
@@ -81,6 +108,12 @@ Any v121 change must remain 1–3 major changes and preserve existing premium or
 - `experiments/v112_v116_milk_micro/build_v120b.py`
 - `experiments/v112_v116_milk_micro/run_v120b_probe.py`
 - `.github/workflows/v112-v120b-overlap-probe-selfhosted.yml`
+
+## Run
+
+- workflow run: `36295388838`
+- job: `108553169251`
+- initial status: queued behind another self-hosted evaluation
 
 ## Decision
 
