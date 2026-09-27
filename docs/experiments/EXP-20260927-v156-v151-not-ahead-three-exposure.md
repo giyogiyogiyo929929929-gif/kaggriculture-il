@@ -2,7 +2,7 @@
 
 ## Status
 
-FOCUSED PASS / BROAD QUALIFICATION NEXT. Formal champion remains `v151_none_observation_guard`.
+STRICT BURNED/HARD PASS / PREFLIGHT+TELEMETRY NEXT. Formal champion remains `v151_none_observation_guard`.
 
 No fresh sealed seeds consumed. No Kaggle submission.
 
@@ -59,6 +59,44 @@ Focused consumed cells, both seats:
 
 This fixes the exact-v151 v155 `tetsutani_ms / 520104 = -4` regression while retaining the intended score_2820 loss-to-win cell.
 
+## Strict burned / hard qualification
+
+Run `36302471481`: SUCCESS. Artifact `v156-v151-strict-burned-hard`.
+
+Burned direct seeds `681..692`, both seats:
+
+- matched pairs: `8W / 0L / 4T`;
+- mean candidate_minus_champion: `+28.1667`;
+- worst: `0`;
+- best: `+94`;
+- exceptions: `0`;
+- seed 691 had opposite raw seat deltas `-54 / +54`, giving matched-pair delta `0`; seat swap therefore cancels the seat effect as intended.
+
+Hard 8 opponents x seeds `520101..520104`, both seats:
+
+- outcome transitions: `W->W 62`, `L->W 2`;
+- outcome regressions: `0`;
+- outcome improvements: `2`;
+- mean candidate_minus_champion: `+1.875`;
+- worst: `0`;
+- best: `+20`;
+- exceptions: `0`.
+
+Per-opponent matched cash delta:
+
+- `jaxa_2802`: mean `+5`, worst `0`, best `+20`;
+- `melon_squeeze`: all `0`;
+- `peak_2950`: all `0`;
+- `salem_2900`: all `0`;
+- `score_2820`: mean `+5`, worst `0`, best `+20`;
+- `shop_router_v7`: mean `+5`, worst `0`, best `+20`;
+- `tetsutani_ms`: all `0`;
+- `thomas_router_95`: all `0`.
+
+Both improvements are `score_2820 / 520104`, both seats: champion margin `-9` -> candidate margin `+34`, candidate_minus_champion cash `+20`.
+
+This is the key difference from v154: the intended loss-to-win cell remains, while the hard-panel cash worst improves from `-19` to `0` under the unchanged strict gate.
+
 ## Evaluation order / gates
 
 Completed:
@@ -66,23 +104,22 @@ Completed:
 1. exact v151 reconstruction + SHA assertion — PASS;
 2. py_compile / `None` safety — PASS;
 3. focused consumed cells — PASS;
-4. focused strict gate: score improvement >0, zero exceptions, peak/tetsutani cash worst >=0 — PASS.
+4. focused strict gate — PASS;
+5. burned 681..692 with seat swap, matched worst >=0, exceptions0 — PASS;
+6. full hard 8-opponent panel with seat swap, zero outcome regressions, at least one improvement, cash worst >=0, exceptions0 — PASS.
 
 Next:
 
-5. burned 681..692 with seat swap, require matched worst >=0 and exceptions0;
-6. full hard 8-opponent panel seeds 520101..520104 with seat swap, require zero outcome regressions, at least one outcome improvement, cash worst >=0, exceptions0;
-7. internal telemetry / malformed preflight;
+7. internal telemetry / malformed preflight — run `36305115867` queued at time of this update;
 8. preregistered repeated-control runtime characterization, followed later by a strict final runtime gate;
 9. only after pre-sealed gates qualify, reserve a new SHA-derived fresh sealed block for v156. Do not reuse v154's reserved `894322..894333` as v156 fresh evidence;
 10. sealed, important-opponent/climb-band regression, final package/preflight, then PROMOTE/REJECT.
 
 Prepared but not yet counted as evidence:
 
-- `.github/workflows/v156-v151-burned-hard.yml`
 - `.github/workflows/v156-v151-preflight-telemetry.yml`
 - `.github/workflows/v156-v151-runtime-characterization.yml`
 
 ## Decision
 
-KEEP TESTING. Focused evidence is clean but insufficient for PROMOTE. Formal champion remains v151.
+KEEP TESTING. v156 has now passed focused and strict consumed-seed burned/hard gates with zero hard cash regression and two reproducible loss-to-win outcomes. Formal champion remains v151 until preflight, runtime, fresh sealed and final regression gates pass.
