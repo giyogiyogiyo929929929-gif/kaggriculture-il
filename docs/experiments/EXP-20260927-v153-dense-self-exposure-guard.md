@@ -2,7 +2,7 @@
 
 ## Status
 
-**FOCUSED PASS / BURNED DIRECT PASS / HARD PANEL MIXED-POSITIVE / NOT PROMOTED.** Formal champion remains v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
+**FOCUSED PASS / BURNED DIRECT PASS / HARD PANEL MIXED-POSITIVE / DIAGNOSTIC COMPLETE / NOT PROMOTED.** Formal champion remains v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
 
 ## Parent / scope
 
@@ -13,6 +13,7 @@
 - focused workflow run: `36259740294`
 - burned direct workflow run: `36259855401`
 - hard panel workflow run: `36281727401`
+- hard-cell diagnostic successful rerun: `36290900542`
 
 v153 preserves the v152 tactical mechanism exactly and adds one bugfix only: if the first market entry is an empty order `[]`, return the parent action before evaluating `orders[0][0]`.
 
@@ -116,20 +117,52 @@ Opponent summaries (`candidate_minus_champion_money`):
 - `melon_squeeze`: mean `+5.75`, worst `0`, best `+23`.
 - `shop_router_v7`: mean `+4.5`, worst `-2`, best `+20`.
 
-Because peak_2950 shows repeated small regressions and a worst `-19`, do not spend a fresh sealed range yet. First diagnose the v153 activation/reorder steps on the peak regressions and contrast them with the successful score_2820/520104 cell. In particular inspect SELL ordering, any same-turn BUY_PRODUCT item, gross SELL revenue minus purchase cost, market inventory/price, and whether the reorder is changing cash only or also causing later state divergence.
+## Hard-cell causal diagnostic
 
-## Next gate
+Initial diagnostic run `36283611261` failed only because the diagnostic script passed `flush=True` to `json.dumps` instead of `print`; this was an instrumentation bug, not an agent failure. The corrected rerun `36290900542` completed successfully.
 
-1. telemetry/ledger on `peak_2950` seeds 520102..520104 (especially 520104) and positive control `score_2820/520104`;
-2. verify no pathological wash-item net-revenue mechanism;
-3. stress / broader burned panel if the causal rule remains coherent;
-4. only then declare an unused sealed range;
-5. runtime/preflight final before any PROMOTE.
+Observed changed turns and immediate/final candidate-money effects:
+
+- `peak_2950 / 520101`: changed at 649 and 673. Step649 gives `+19`, step673 gives `-7`, final `+12`.
+- `peak_2950 / 520102`: changed at 457, immediate/final `-2`.
+- `peak_2950 / 520103`: changed at 577, immediate/final `-6`.
+- `peak_2950 / 520104`: changed at 649, immediate/final `-19`.
+- `score_2820 / 520104`: changed at 649, immediate/final `+20`.
+- `tetsutani_ms / 520104`: changed at 649, immediate/final `-4`.
+
+The important source contrast is step649. v153 emits the same leading order against these opponents:
+
+`FERTILIZER, MILK, WOOL, WHEAT, EGG`
+
+while v147 emits:
+
+`MILK, WOOL, FERTILIZER, WHEAT, EGG`.
+
+The sign changes with the opponent order:
+
+- `score_2820`: opponent starts `FERTILIZER, WOOL, WHEAT, EGG, ... MILK ...`; FERTILIZER-first is beneficial and converts the final loss to a win.
+- `peak_2950`: opponent starts `MILK, WHEAT, WOOL, FERTILIZER, EGG, ...`; moving our MILK behind FERTILIZER is harmful (`-19`).
+- `tetsutani_ms`: opponent starts `WHEAT, WOOL, EGG, MILK, FERTILIZER, ...`; the same reorder is mildly harmful (`-4`).
+
+Thus the v153 self-impact score is causally incomplete: it estimates own executable price exposure but not which item the rival is likely to race first. This is not a terminal-liquidation effect; the changed-turn cash swing persists to final money in these cells.
+
+A useful state distinction also appears in the diagnosed cells. At the harmful `peak_2950` changes, v153 is already ahead in current cash (e.g. +141 at 520104 step649, and much larger leads on 520101-520103). At the successful `score_2820/520104` step649 it is behind by 178. Direct v153-v147 games begin the first tactical divergence from tied/equal strategy state. This motivates a separate safety candidate rather than changing the v153 exposure formula.
+
+## Next candidate
+
+v154 is created separately with one tactical delta relative to v153: **skip the dense self-impact reorder when current own cash is already greater than rival cash; tied or trailing states remain eligible.**
+
+Rationale: the competition is decided by win/loss at turn720, so taking an order-race risk while already ahead has lower value than preserving the same intervention for tied/comeback states. This should remove the repeated peak_2950 regressions while preserving the `score_2820/520104` loss-to-win cell and the first direct tied race. This is a hypothesis, not yet promotion evidence.
+
+- builder: `ci/build_v154_v147_dense_self_exposure_not_ahead.py`
+- focused/direct workflow: `.github/workflows/v154-v147-not-ahead-focused-direct.yml`
+- run: `36294926392` (queued at creation)
 
 ## Decision discipline
 
 - v152: tactically successful but implementation has an internal exception path; do not promote.
-- v153: **KEEP TESTING**; direct regression is strong and hard panel creates a real loss-to-win conversion, but peak_2950 regression needs causal review before sealed.
+- v153: **KEEP TESTING**; direct regression is strong and the causal mechanism is understood, but the unconditional self-impact reorder has avoidable ahead-state regressions.
+- v154: **TESTING**, intended to reduce those regressions without sacrificing the loss-to-win mechanism.
 - champion remains exact v147.
 - no Kaggle submission.
 - no new sealed seeds spent.
