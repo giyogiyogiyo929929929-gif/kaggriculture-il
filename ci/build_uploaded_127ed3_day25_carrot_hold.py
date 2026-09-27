@@ -1,12 +1,20 @@
 from pathlib import Path
+import base64
+import gzip
 import hashlib
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from ci.build_uploaded_127ed3_safety_v3 import build as build_parent
+from ci.build_uploaded_127ed3_safety_v3 import (
+    PART_DIR,
+    PART_NAMES,
+    RAW_SHA256,
+    SAFE_V3_SHA256,
+    WRAPPER,
+)
 
-PARENT_SHA256 = "87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df"
+PARENT_SHA256 = SAFE_V3_SHA256
 
 SUFFIX = r'''
 
@@ -44,19 +52,20 @@ agent.telemetry = getattr(_DAY25_CARROT_PARENT, "telemetry", None)
 def build(output: Path) -> str:
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    parent_path = output.with_suffix(output.suffix + ".parent.tmp")
-    try:
-        parent_sha = build_parent(parent_path)
-        parent = parent_path.read_bytes()
-        got_parent = hashlib.sha256(parent).hexdigest()
-        assert parent_sha == PARENT_SHA256, parent_sha
-        assert got_parent == PARENT_SHA256, got_parent
-        child = parent + SUFFIX.encode("utf-8")
-        output.write_bytes(child)
-        return hashlib.sha256(child).hexdigest()
-    finally:
-        if parent_path.exists():
-            parent_path.unlink()
+
+    # Keep reconstruction identical to the formal safety-v3 builder: only part00..part11.
+    packed_b64 = "".join((PART_DIR / name).read_text(encoding="ascii") for name in PART_NAMES)
+    raw = gzip.decompress(base64.b64decode(packed_b64))
+    got_raw = hashlib.sha256(raw).hexdigest()
+    assert got_raw == RAW_SHA256, got_raw
+
+    parent = raw + WRAPPER
+    got_parent = hashlib.sha256(parent).hexdigest()
+    assert got_parent == PARENT_SHA256, got_parent
+
+    child = parent + SUFFIX.encode("utf-8")
+    output.write_bytes(child)
+    return hashlib.sha256(child).hexdigest()
 
 
 if __name__ == "__main__":
