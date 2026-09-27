@@ -1,0 +1,80 @@
+name: uploaded 127ed3 DAWNPX no-hour0 burned dev
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-dp-nohour0-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and no-hour0 child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'; if ($LASTEXITCODE -ne 0) { throw 'engine install failed' }
+          python -m pip install jsonschema requests; if ($LASTEXITCODE -ne 0) { throw 'deps install failed' }
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py; if ($LASTEXITCODE -ne 0) { throw 'parent reconstruction failed' }
+          @'
+          import hashlib, importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments') == '1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest() == 'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          parent=Path('tmp/safe_v3.py').read_bytes()
+          assert hashlib.sha256(parent).hexdigest() == '87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          old=b'_DP_HOURS = (0, 1, 2)'; new=b'_DP_HOURS = (1, 2)'
+          assert parent.count(old)==1
+          child=parent.replace(old,new,1)
+          Path('tmp/dp_nohour0.py').write_bytes(child)
+          got=hashlib.sha256(child).hexdigest()
+          assert got == 'ff5932a9cb7ceb2f6db9d1f052083fdb442e7270ac70048ce078a93fec819116', got
+          print('candidate_sha256='+got)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'candidate reconstruction/hash failed' }
+          python -m py_compile tmp\safe_v3.py tmp\dp_nohour0.py; if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+      - name: Burned ten-seed direct-parent matched evaluation
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          seeds=[641,350003,101,211,347,509,733,911,1201,1601]
+          rows=[]; exc_c=exc_p=0
+          for seed in seeds:
+              s=evaluate('tmp/dp_nohour0.py','tmp/safe_v3.py',pairs=1,jobs=1,seed_start=seed)
+              exc_c+=s['exceptions']['a']; exc_p+=s['exceptions']['b']
+              games=sorted(s['matches_detail'],key=lambda x:bool(x['swap']))
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in games]
+              pair=statistics.mean(vals)
+              rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D'})
+          vals=[r['pair_mean_delta'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'candidate':'dp_nohour0','candidate_sha256':'ff5932a9cb7ceb2f6db9d1f052083fdb442e7270ac70048ce078a93fec819116','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','hypothesis':'DAWNPX hour-0 sales occur immediately before step%4 shop demand and step%24 town-centre demand; keep hours 1-2 but stop the demand-front-running hour-0 pre-sale.','change':'_DP_HOURS (0,1,2) -> (1,2) only.','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'rows':rows}
+          Path('results/dp_nohour0_dev.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert exc_c==0 and exc_p==0
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'DAWNPX no-hour0 evaluation failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-dp-nohour0-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
