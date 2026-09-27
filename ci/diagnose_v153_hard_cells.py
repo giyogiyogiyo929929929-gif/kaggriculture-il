@@ -151,5 +151,5 @@ if __name__ == "__main__":
                 "eligible_steps": row["eligible_steps"],
                 "changed_steps": row["changed_steps"],
                 "report": row["candidate_final_report"],
-            }, flush=True))
+            }), flush=True)
     Path(out).write_text(json.dumps({"cases": results}, indent=2), encoding="utf-8")
