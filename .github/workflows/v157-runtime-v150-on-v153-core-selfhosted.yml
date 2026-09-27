@@ -1,0 +1,267 @@
+name: v157 runtime-v150 on v153 core qualification
+
+on:
+  push:
+    branches: [candidate-runtime-v150-on-v153-20260927]
+    paths:
+      - ".github/workflows/v157-runtime-v150-on-v153-core-selfhosted.yml"
+      - "ci/build_v157_runtime_v150_on_v153.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v115 v147 v153 v157
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python ci\build_v157_runtime_v150_on_v153.py tmp\v153.py tmp\v157.py
+          python -m py_compile tmp\v115.py tmp\v147.py tmp\v153.py tmp\v157.py
+          @'
+          import hashlib, json
+          from pathlib import Path
+          expected={
+            'tmp/v115.py':'c6b9986f6cbdf8663ed33096f55e93ef665bd560d55bf9baffbe4a5f8c74fff2',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'tmp/v153.py':'128836e8e945d9b5b8c6776dc68cd45f4c21775713ebd3bd50655cd2f711ebfd',
+          }
+          got={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ('tmp/v115.py','tmp/v147.py','tmp/v153.py','tmp/v157.py')}
+          for p,h in expected.items(): assert got[p]==h,(p,got[p],h)
+          Path('results/v157_build_sha.json').write_text(json.dumps(got,indent=2),encoding='utf-8')
+          print(json.dumps(got,indent=2))
+          '@ | python -
+
+      - name: Static minimal-diff and synthetic no-op certificate
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          old="if st['confirmed'] and not st['rejected'] and _v105_standard(configuration) and _v44y_clone_gate(observation):"
+          new="if parent_changed and st['confirmed'] and not st['rejected'] and _v105_standard(configuration) and _v44y_clone_gate(observation):"
+          marker="\n# v157: runtime-v150 rebased onto exact v153; skip redundant second pass only when parent_changed is false.\nkaggle_submission_agent_v157 = agent\n"
+          a=Path('tmp/v153.py').read_text(encoding='utf-8')
+          b=Path('tmp/v157.py').read_text(encoding='utf-8')
+          assert a.count(old)==1
+          assert a.count(new)==0
+          assert b.count(old)==0
+          assert b.count(new)==1
+          assert b == a.replace(old,new,1)+marker
+          split='_V153_PARENT = agent'
+          assert split in a and split in b
+          # v153 tactical wrapper is byte-for-byte unchanged; only the parent implementation before it differs.
+          assert a.split(split,1)[1] == b[:-len(marker)].split(split,1)[1]
+          truth=[]
+          for parent_changed in (False,True):
+            for confirmed in (False,True):
+              for rejected in (False,True):
+                for standard in (False,True):
+                  for clone in (False,True):
+                    old_gate=confirmed and not rejected and standard and clone
+                    new_gate=parent_changed and old_gate
+                    assert (not parent_changed and new_gate is False) or parent_changed
+                    if parent_changed: assert new_gate==old_gate
+                    truth.append({'parent_changed':parent_changed,'confirmed':confirmed,'rejected':rejected,'standard':standard,'clone':clone,'old':old_gate,'new':new_gate})
+          out={'minimal_diff':True,'wrapper_identical':True,'truth_table_rows':len(truth),'certificate':'new second pass is disabled only when parent_changed is false; when true the old gate is preserved exactly'}
+          Path('results/v157_static_synthetic.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@ | python -
+
+      - name: Known 1701-1712 exact action reward equivalence and evaluation count
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import importlib.util, json, sys, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+          SEEDS=list(range(1701,1713)); uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v157known_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          class Cap:
+              def __init__(self,fn): self.fn=fn; self.actions=[]
+              def __call__(self,obs,cfg=None):
+                  out=self.fn(obs,cfg); self.actions.append(out); return out
+          def run(path,seed,seat):
+              m=load(path); opp=load('tmp/v115.py').agent; cap=Cap(m.agent)
+              agents=[cap,opp] if seat==0 else [opp,cap]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              st=[x.get('status') for x in env.state]; rw=[x.get('reward') for x in env.state]
+              if st!=['DONE','DONE']: raise RuntimeError((path,seed,seat,st))
+              return cap.actions,rw,dict(getattr(m,'_V111_REPORT',{})),dict(getattr(m,'_V153_REPORT',{}))
+          rows=[]; mismatches=[]; errors=[]; e153=e157=0
+          for seed in SEEDS:
+            for seat in (0,1):
+              try:
+                a,ra,ta,wa=run('tmp/v153.py',seed,seat); b,rb,tb,wb=run('tmp/v157.py',seed,seat)
+                same_a=a==b; same_r=ra==rb
+                if not same_a:
+                    first=next((i for i,(x,y) in enumerate(zip(a,b)) if x!=y),None)
+                    mismatches.append({'kind':'action','seed':seed,'seat':seat,'first_action_mismatch':first,'len153':len(a),'len157':len(b)})
+                if not same_r: mismatches.append({'kind':'reward','seed':seed,'seat':seat,'reward153':ra,'reward157':rb})
+                ea=int(ta.get('evaluations',0)); eb=int(tb.get('evaluations',0)); e153+=ea; e157+=eb
+                rows.append({'seed':seed,'seat':seat,'same_actions':same_a,'same_rewards':same_r,'eval153':ea,'eval157':eb,'v153_wrapper153':wa,'v153_wrapper157':wb})
+              except Exception as e:
+                errors.append({'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          out={'seeds':SEEDS,'games':len(rows),'action_reward_equivalent':not mismatches and not errors,'mismatches':mismatches,'errors':errors,
+               'v153_evaluations':e153,'v157_evaluations':e157,'evaluation_reduction_fraction':((e153-e157)/e153 if e153 else 0.0),'rows':rows}
+          Path('results/v157_known_equivalence.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert not errors, errors
+          assert not mismatches, mismatches
+          assert e157 < e153, (e153,e157)
+          '@ | python -
+
+      - name: Fresh precommitted exact equivalence
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import importlib.util, json, sys, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+          # Fixed before any v157 result was observed. Do not edit after evaluation starts.
+          SEEDS=[1679516880,1601397008,1524631999,1947146524,1819413953,1833973026,1812244450,1868626904,1959354523,1688674763,1642139688,1720967262]
+          uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v157fresh_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          class Cap:
+              def __init__(self,fn): self.fn=fn; self.actions=[]
+              def __call__(self,obs,cfg=None): out=self.fn(obs,cfg); self.actions.append(out); return out
+          def run(path,seed,seat):
+              m=load(path); opp=load('tmp/v115.py').agent; cap=Cap(m.agent)
+              agents=[cap,opp] if seat==0 else [opp,cap]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              st=[x.get('status') for x in env.state]; rw=[x.get('reward') for x in env.state]
+              if st!=['DONE','DONE']: raise RuntimeError((path,seed,seat,st))
+              return cap.actions,rw,dict(getattr(m,'_V111_REPORT',{}))
+          rows=[]; mismatches=[]; errors=[]; e153=e157=0
+          for seed in SEEDS:
+            for seat in (0,1):
+              try:
+                a,ra,ta=run('tmp/v153.py',seed,seat); b,rb,tb=run('tmp/v157.py',seed,seat)
+                same_a=a==b; same_r=ra==rb
+                if not same_a:
+                    first=next((i for i,(x,y) in enumerate(zip(a,b)) if x!=y),None)
+                    mismatches.append({'kind':'action','seed':seed,'seat':seat,'first_action_mismatch':first})
+                if not same_r: mismatches.append({'kind':'reward','seed':seed,'seat':seat,'reward153':ra,'reward157':rb})
+                ea=int(ta.get('evaluations',0)); eb=int(tb.get('evaluations',0)); e153+=ea; e157+=eb
+                rows.append({'seed':seed,'seat':seat,'same_actions':same_a,'same_rewards':same_r,'eval153':ea,'eval157':eb})
+              except Exception as e:
+                errors.append({'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          out={'seed_commitment':'SHA256-derived before first v157 result','seeds':SEEDS,'games':len(rows),'action_reward_equivalent':not mismatches and not errors,
+               'mismatches':mismatches,'errors':errors,'v153_evaluations':e153,'v157_evaluations':e157,
+               'evaluation_reduction_fraction':((e153-e157)/e153 if e153 else 0.0),'rows':rows}
+          Path('results/v157_fresh_equivalence.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert not errors, errors
+          assert not mismatches, mismatches
+          assert e157 < e153, (e153,e157)
+          '@ | python -
+
+      - name: Sequential GC-on paired runtime qualification
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+          SEEDS=[681,682,689,691,692]
+          PATHS={'v153':'tmp/v153.py','v157':'tmp/v157.py'}
+          uid=0
+          def load(path):
+              global uid; uid+=1
+              p=Path(path).resolve(); name=f'_v157rt_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); m=importlib.util.module_from_spec(spec); sys.modules[name]=m
+              sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(m)
+              finally: sys.path.remove(str(p.parent))
+              return m
+          def q(vals,p):
+              s=sorted(vals); return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+          class Timed:
+              def __init__(self,fn,label,seed,seat): self.fn=fn; self.label=label; self.seed=seed; self.seat=seat; self.rows=[]
+              def __call__(self,obs,cfg=None):
+                  step=int(obs.get('step',0)); w0=time.perf_counter_ns(); c0=time.process_time_ns(); out=self.fn(obs,cfg)
+                  self.rows.append({'label':self.label,'seed':self.seed,'seat':self.seat,'step':step,'wall_ms':(time.perf_counter_ns()-w0)/1e6,'cpu_ms':(time.process_time_ns()-c0)/1e6})
+                  return out
+          def run(label,path,seed,seat):
+              m=load(path); opp=load('tmp/v115.py').agent; t=Timed(m.agent,label,seed,seat)
+              agents=[t,opp] if seat==0 else [opp,t]
+              env=make('kaggriculture',configuration={'seed':seed},debug=True); env.run(agents)
+              st=[x.get('status') for x in env.state]
+              if st!=['DONE','DONE']: raise RuntimeError((label,seed,seat,st))
+              return t.rows
+          allrows=[]; errors=[]
+          assert gc.isenabled()
+          for seed in SEEDS:
+            for seat in (0,1):
+              for label,path in PATHS.items():
+                try: allrows.extend(run(label,path,seed,seat))
+                except Exception as e: errors.append({'label':label,'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          def stats(rows):
+              w=[r['wall_ms'] for r in rows]; c=[r['cpu_ms'] for r in rows]
+              return {'calls':len(w),'median_ms':statistics.median(w),'p95_ms':q(w,.95),'p99_ms':q(w,.99),'max_ms':max(w),
+                      'cpu_p99_ms':q(c,.99),'cpu_max_ms':max(c),'over_50':sum(x>50 for x in w),'over_200':sum(x>200 for x in w)}
+          summary={k:stats([r for r in allrows if r['label']==k]) for k in PATHS}
+          summary['v157']['formal_pass']=summary['v157']['p99_ms']<50.0 and summary['v157']['max_ms']<200.0 and not errors
+          out={'engine':'kaggle_environments==1.32.7','mode':'sequential single-process; GC enabled; perf_counter_ns + process_time_ns',
+               'seeds':SEEDS,'seat_swap':True,'thresholds':{'p99_ms_lt':50.0,'max_ms_lt':200.0},'errors':errors,'summary':summary}
+          Path('results/v157_runtime.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert not errors, errors
+          assert summary['v157']['formal_pass'], summary['v157']
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v157-runtime-v150-on-v153-core
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
