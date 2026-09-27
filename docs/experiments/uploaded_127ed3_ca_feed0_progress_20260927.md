@@ -12,9 +12,9 @@ Status: **KEEP TESTING — NOT PROMOTED**
 - Formal engine: `kaggle-environments==1.32.7`
 - Difference convention: `candidate_minus_champion = candidate - champion`
 
-## Burned dev
+## Burned evidence
 
-Run `36291633075`, artifact `10923825327`.
+### Burned dev — run `36291633075`
 
 10 distinct seeds, both seats:
 
@@ -28,9 +28,7 @@ Run `36291633075`, artifact `10923825327`.
 
 Focal deltas: seed641 `+193`, seed350003 `+147`, seed733 `0`, seed911 `0`.
 
-## Burned stress
-
-Run `36294326359`, artifact `10923721766`.
+### Burned stress — run `36294326359`
 
 Seeds `621–632`, both seats:
 
@@ -51,11 +49,7 @@ Combined burned 22 distinct seeds:
 - worst = `-16`
 - best = `+255`
 
-## First fresh sealed
-
-Precommit document: `uploaded_127ed3_ca_feed0_sealed_precommit_20260927.md`.
-
-Run `36294919199`, artifact `10923970552`.
+## First fresh sealed — PASS after direct verification
 
 Precommitted seeds:
 
@@ -63,24 +57,31 @@ Precommitted seeds:
 
 Seed-list SHA256: `7fcdac52798e5bcb00fe13d108c9324de5ab89f7ce909a0d9f17417e005bc456`.
 
-Pair deltas in seed order:
+Original run `36294919199` produced pair deltas:
 
-`0, 0, 0, 0, 0, 0, +118, 0, 0, +258, -38, 0`
+`0,0,0,0,0,0,+118,0,0,+258,-38,0`
 
 - W/L/D = `2 / 1 / 9`
 - mean = `+28.1667`
-- median = `0`
 - SE = `23.4216`
 - mean - 2SE = `-18.6766`
 - worst = `-38`
 - best = `+258`
+- exceptions = `0`
+
+Its workflow failure was caused by the known scalar-status serialization bug.
+
+Direct verifier run `36295374931`, artifact `10925024481`, then reproduced **every expected seat delta exactly** and confirmed:
+
 - candidate exceptions = `0`
 - parent exceptions = `0`
-- all 24 seat-games reached 720 turns
+- non-DONE = `0`
+- every seat-game = `720` turns
+- every direct `env.state` status = `DONE`
 
-The workflow conclusion was `failure` because `scripts/eval.py` serializes scalar status `"DONE"` as `list("DONE") == ["D","O","N","E"]`; the money/exceptions/full-length evidence itself is valid. A direct final-state verifier is queued as run `36295374931` and must reproduce all 12 expected pair deltas and direct `env.state` DONE statuses before the first sealed gate is considered formally clean.
+Therefore the first sealed gate is formally **PASS**. See `uploaded_127ed3_ca_feed0_sealed_VERIFY_20260927.md`.
 
-## Aggregate performance evidence so far
+## Aggregate direct-parent evidence through first sealed
 
 Across 34 distinct seeds (22 burned + 12 first sealed):
 
@@ -91,55 +92,69 @@ Across 34 distinct seeds (22 burned + 12 first sealed):
 - worst = `-38`
 - best = `+258`
 
-This is positive promotion evidence but is not sufficient alone.
+This is positive evidence but is not sufficient by itself for promotion.
 
-## Known/public opponent gate
+## Known/public opponent gate — PASS with margin concern
 
-Formal current run: `36295410170`.
+Run `36295410170`, artifact `10924830836`.
 
-Opponents:
+Opponents: `starter`, `beat_v48`, `bl_v20`, `bl_v21`, `farming_v2`, `frontier_prvsiyan`.
 
-- `starter`
-- `beat_v48`
-- `bl_v20`
-- `bl_v21`
-- `farming_v2`
-- `frontier_prvsiyan`
+Blocks: `621–624` and `641–644`, both seats.
 
-Blocks: burned `621–624` and formal-known `641–644`, both seats.
+- candidate = `96W / 0L / 0D`
+- champion = `96W / 0L / 0D`
+- outcome regressions = **0 / 96**
 
-Historical formal safety-v3 artifact from run `36250594997` confirms safety-v3 was `48W/0L/0D` in each block (96/96 seat-games total) against these opponents. The current feed0 workflow reruns both feed0 and safety-v3, so it executes 192 games total. Promotion gate requires zero outcome regressions relative to safety-v3.
+Competition-primary gate therefore passes. However formal-known starter margins compress sharply: mean `-8906.5`, worst `-19279` candidate-minus-champion. This is retained as a robustness concern rather than ignored. See `uploaded_127ed3_ca_feed0_known_regression_20260927.md`.
 
-Status at this log creation: **in progress**.
+## Causal explanation gate — PASS
 
-## Causal explanation gate
+Run `36295996084`, artifact `10924761416` completed successfully with zero exceptions and full 720-turn DONE games.
 
-Queued run `36295996084` records candidate-vs-parent action divergence under the same observation. Current hypothesis is that the one-day CARROT2 feed reserve can over-protect current WHEAT shed while under-crediting near-term standing WHEAT harvest, blocking profitable WHEAT-to-CARROT conversion. The trace must establish the decision chain rather than relying on firing-count correlation.
+The workflow evaluates feed0 and an independently loaded safety-v3 shadow on the **same observation**. The first behavioral divergences are the intended reserve-blocked WHEAT-to-CARROT substitutions:
 
-## Second fresh sealed
+- seed641: step323, final `+193`;
+- seed350003: step656, final `+147`;
+- seed629: step500, final `+255`;
+- small negative cases 347/625/628 also start from the same extra CARROT substitution.
 
-Precommit document: `uploaded_127ed3_ca_feed0_sealed2_precommit_20260927.md`.
+At first divergence the shadow parent has incremented `ca_feed_block` while feed0 performs the additional swap. This supports the intended causal mechanism, while also showing that unconditional reserve removal can create both gains and small losses. See `uploaded_127ed3_ca_feed0_divergence_trace_20260927.md`.
 
-Fixed seeds:
+## Second fresh sealed — RELEASED / QUEUED
+
+Precommitted seeds:
 
 `323743,992353,766816,468935,311561,814751,325596,507226,602943,874235,479622,296115`
 
-Compact-list SHA256: `da7aeb107fa8dcf4501e196f813aa9ea5ce75059fc4a8d7dd2821d1286cf33b9`.
+Seed-list SHA256: `da7aeb107fa8dcf4501e196f813aa9ea5ce75059fc4a8d7dd2821d1286cf33b9`.
 
-Dormant workflow: `.github/workflows/uploaded-127ed3-ca-feed0-second-sealed.yml`.
+Both release prerequisites are now PASS:
 
-It must not be triggered until both conditions hold:
+1. known/public-opponent zero outcome regression;
+2. first sealed direct completion verification.
 
-1. known/public-opponent outcome regression gate passes with zero material regression;
-2. first sealed direct completion verifier confirms the status bug and reproduces the expected results.
+Trigger commit: `fd50d0707ff2c5b2b50f0d01f5644956ae7ff2c2`.
+
+Run: `36300290715` — queued.
 
 ## Final technical gates
 
-- Dedicated runtime run `36295797394`: queued.
-- Final submission preflight run `36295816696`: queued.
+- Runtime run `36295797394`: queued.
+- Final preflight run `36295816696`: queued.
 
-Runtime fixes candidate/engine/source hashes and requires p99 `< 50 ms` and worst turn `< 200 ms`. Final preflight checks exact reconstruction, static/import audit, Kaggle loader selection, malformed-observation fallback, both-seat 720-turn smoke, and a `main.py`-only submission archive.
+Runtime requires p99 `< 50 ms` and worst turn `< 200 ms`; preflight checks exact reconstruction, static/import audit, Kaggle loader, malformed observations, both-seat 720-turn smoke, and `main.py`-only archive.
+
+The self-hosted runner is currently occupied by unrelated run `36300134144` on another branch, so these feed0 jobs are waiting rather than failing.
+
+## Narrower follow-up candidate
+
+Because feed0 has large W→W margin compression against starter, `uploaded_127ed3_ca_harvestcredit_v1` is being screened separately on burned dev only. It retains `_CA_FEED_DAYS=1` and relaxes the reserve only when route-scheduled near-term WHEAT harvests keep feed inventory solvent.
+
+Corrected candidate SHA256: `ea296402b43b2e389e2f9cf8a23e27f92434b5b25212c3095f720840d9a91eb0`.
+
+Corrected burned-dev run `36300251792` is queued. No stress/sealed seeds are consumed for this candidate unless burned dev justifies continuation.
 
 ## Promotion decision
 
-**KEEP TESTING.** Do not update `docs/CHAMPION.md` and do not submit to Kaggle until the known-opponent gate, first sealed verifier, second sealed, causal explanation, runtime, and final preflight are all reviewed. Kaggle submission remains a separate user decision after promotion-quality evidence is complete.
+**KEEP TESTING.** Do not update `docs/CHAMPION.md` and do not submit to Kaggle until second sealed, runtime, and final preflight are reviewed. `harvestcredit_v1` is a separate challenger and does not change the formal champion or feed0 gate status.
