@@ -1,0 +1,129 @@
+name: v156 v151 public diversity
+
+on:
+  pull_request:
+    branches: [eval-v156-v151-not-ahead-three-exposure-20260927]
+    paths: [".ci/triggers/v156-public-diversity", ".github/workflows/v156-v151-public-diversity.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v151 and v156
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\\Program Files\\Git\\usr\\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\\v27_orderbook_layer_d\\main.py tmp\\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\\r\\n',b'\\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\\ci\\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\\n# Force Kaggle-compatible last-callable selection.\\nkaggle_submission_agent_v77 = agent\\n')
+          '@ | python -
+          Move-Item tmp\\main.py tmp\\v77.py
+          python ci\\reconstruct_exact_v115.py tmp\\v77.py tmp\\v115.py
+          python ci\\build_v147_confirmed_v111_clone.py tmp\\v115.py tmp\\v147.py
+          python ci\\build_v150_skip_noop_second_pass.py tmp\\v147.py tmp\\v150.py
+          python ci\\build_v151_none_observation_guard.py tmp\\v150.py tmp\\v151.py
+          python ci\\build_v156_v151_not_ahead_three_exposure.py tmp\\v151.py tmp\\v156.py
+          python -m py_compile tmp\\v151.py tmp\\v156.py
+          @'
+          import hashlib
+          from pathlib import Path
+          exp={'tmp/v151.py':'54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31','tmp/v156.py':'14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb'}
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@ | python -
+
+      - name: Fetch and audit pinned Seyamalam v21
+        run: |
+          $ErrorActionPreference='Stop'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/Seyamalam/Kaggriculture/8b8c421eb10634c756583ce10c75189f50c83a72/main.py' -OutFile 'tmp\\seya_v21.py'
+          @'
+          import ast,hashlib
+          from pathlib import Path
+          p=Path('tmp/seya_v21.py'); data=p.read_bytes(); blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\\0'+data).hexdigest()
+          assert blob=='fb34082a6b38e30f8088bfe8d7bf732e533f6318',blob
+          tree=ast.parse(data.decode('utf-8')); imports=set(); dangerous=[]
+          for n in ast.walk(tree):
+              if isinstance(n,ast.Import): imports.update(a.name.split('.')[0] for a in n.names)
+              elif isinstance(n,ast.ImportFrom) and n.module: imports.add(n.module.split('.')[0])
+              elif isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id in {'eval','exec','compile','__import__','open'}: dangerous.append(n.func.id)
+          assert imports<={'__future__','base64','json','math','zlib'},imports
+          assert not dangerous,dangerous
+          '@ | python -
+          python -m py_compile tmp\\seya_v21.py
+
+      - name: Consumed public diversity seeds 621 to 624
+        run: |
+          $ErrorActionPreference='Stop'
+          $specs=@(
+            @('starter','starter'),
+            @('beat_v48','opponents\\beat_v48\\main.py'),
+            @('bl_v20','opponents\\bl_v20\\main.py'),
+            @('bl_v21','opponents\\bl_v21\\main.py'),
+            @('farming_v2','opponents\\farming_v2\\main.py'),
+            @('frontier_prvsiyan','opponents\\frontier_prvsiyan\\main.py'),
+            @('seya_v21','tmp\\seya_v21.py')
+          )
+          foreach($s in $specs){
+            python ci\\eval_candidate_vs_champion_panel.py --candidate tmp\\v156.py --champion tmp\\v151.py --opponent $s[1] --seed-start 621 --seed-count 4 --jobs 2 --out ("results\\"+$s[0]+".json")
+            if($LASTEXITCODE -ne 0){throw "panel failed: $($s[0])"}
+          }
+
+      - name: Aggregate and require no regression
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import glob,json,statistics
+          from pathlib import Path
+          panels=[]; vals=[]; cand_exc=0; champ_exc=0; regressions=0; improvements=0
+          def sign(x): return 1 if x>0 else -1 if x<0 else 0
+          for p in sorted(glob.glob('results/*.json')):
+              if p.endswith('summary.json'): continue
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              local=[]; lr=li=0
+              for r in d.get('rows',[]):
+                  v=float(r['candidate_minus_champion_money']); vals.append(v); local.append(v)
+                  seats=r.get('seats',[])
+                  if len(seats)>=2:
+                      cm=statistics.fmean(float(s['candidate_margin']) for s in seats)
+                      hm=statistics.fmean(float(s['champion_margin']) for s in seats)
+                      if sign(cm)<sign(hm): lr+=1; regressions+=1
+                      elif sign(cm)>sign(hm): li+=1; improvements+=1
+              ce=int(d.get('candidate_exceptions',0)); he=int(d.get('champion_exceptions',0)); cand_exc+=ce; champ_exc+=he
+              panels.append({'opponent':Path(p).stem,'pairs':len(local),'wins':sum(v>0 for v in local),'losses':sum(v<0 for v in local),'ties':sum(v==0 for v in local),'mean':statistics.fmean(local) if local else 0.0,'worst':min(local) if local else None,'best':max(local) if local else None,'outcome_regressions':lr,'outcome_improvements':li,'candidate_exceptions':ce,'champion_exceptions':he})
+          out={'candidate':'v156','candidate_sha256':'14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb','champion':'v151','champion_sha256':'54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31','engine':'kaggle_environments==1.32.7','metric':'candidate_minus_champion = candidate - champion','seeds':[621,622,623,624],'pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'outcome_regressions':regressions,'outcome_improvements':improvements,'candidate_exceptions':cand_exc,'champion_exceptions':champ_exc,'panels':panels}
+          out['regression_free']=(out['losses']==0 and regressions==0 and cand_exc==0 and champ_exc==0 and (out['worst'] is None or out['worst']>=0))
+          Path('results/v156_public_diversity_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert out['regression_free'],out
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v156-v151-public-diversity
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
