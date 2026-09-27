@@ -1,0 +1,189 @@
+# v122_wool_lowrisk_front1: when a clean external WOOL inventory increase is
+# observed while WOOL is already being fully sold at a high price, move that
+# WOOL SELL forward across exactly one immediately preceding WHEAT SELL.
+# Parent=v112. No quantity/timing change; premium-to-premium order is preserved.
+_V122_PARENT = agent
+_V122_ITEM = "WOOL"
+_V122_MIN_STEP = 400
+_V122_MAX_STEP = 520
+_V122_MIN_PRICE = 210.0
+_V122_MAX_MARKET_INV = 10000.0
+_V122_MIN_SIGNAL_DELTA = 3.0
+_V122_STATE = {
+    0: {"prev_step": -1, "inventory": None, "own_sell": 0},
+    1: {"prev_step": -1, "inventory": None, "own_sell": 0},
+}
+_V122_REPORT = {
+    "reorders": 0,
+    "units": 0,
+    "moved_slots": 0,
+    "signal_blocks": 0,
+    "price_blocks": 0,
+    "inventory_blocks": 0,
+    "shed_blocks": 0,
+    "buy_blocks": 0,
+    "current_sell_blocks": 0,
+    "shape_blocks": 0,
+    "errors": 0,
+    "steps": [],
+}
+
+def _v122_parent(obs, config=None):
+    n = getattr(getattr(_V122_PARENT, "__code__", None), "co_argcount", 1)
+    return _V122_PARENT(*[obs, config][:n])
+
+def _v122_num(mapping, key, default=0.0):
+    try:
+        v = _get(mapping, key, default)
+        return float(default if v is None else v)
+    except Exception:
+        return float(default)
+
+def _v122_market_inventory(obs):
+    market = _get(obs, "market", {}) or {}
+    inv = _get(market, "inventory", {}) or {}
+    return _v122_num(inv, _V122_ITEM, 0.0)
+
+def _v122_price(obs):
+    market = _get(obs, "market", {}) or {}
+    prices = _get(market, "prices", {}) or {}
+    return _v122_num(prices, _V122_ITEM, 0.0)
+
+def _v122_shed(obs):
+    private = _get(obs, "private", {}) or {}
+    shed = _get(private, "shed", {}) or {}
+    return max(0.0, _v122_num(shed, _V122_ITEM, 0.0))
+
+def _v122_copy_action(action):
+    if not isinstance(action, dict):
+        return action
+    out = dict(action)
+    out["market"] = [list(o) if isinstance(o, (list, tuple)) else o for o in (action.get("market") or [])]
+    return out
+
+def _v122_actual_sell(action):
+    total = 0
+    if not isinstance(action, dict):
+        return total
+    for o in (action.get("market") or []):
+        try:
+            if len(o) >= 3 and o[0] == "SELL" and o[1] == _V122_ITEM:
+                total += max(0, int(o[2]))
+        except Exception:
+            continue
+    return total
+
+def _v122_has_buy(action):
+    if not isinstance(action, dict):
+        return False
+    for o in (action.get("market") or []):
+        try:
+            if len(o) >= 1 and str(o[0]).startswith("BUY"):
+                return True
+        except Exception:
+            continue
+    return False
+
+def _v122_reorder(action):
+    out = _v122_copy_action(action)
+    if not isinstance(out, dict):
+        return action, 0, 0
+    market = list(out.get("market") or [])
+    idx = []
+    for i, o in enumerate(market):
+        try:
+            if len(o) >= 3 and o[0] == "SELL" and o[1] == _V122_ITEM and int(o[2]) > 0:
+                idx.append(i)
+        except Exception:
+            continue
+    if len(idx) != 1:
+        return action, 0, 0
+    i = idx[0]
+    if i <= 0:
+        return action, 0, 0
+    prev = market[i - 1]
+    try:
+        ok = len(prev) >= 3 and prev[0] == "SELL" and prev[1] == "WHEAT" and int(prev[2]) > 0
+    except Exception:
+        ok = False
+    if not ok:
+        return action, 0, 0
+    if i >= 2:
+        p2 = market[i - 2]
+        try:
+            if len(p2) >= 3 and p2[0] == "SELL" and p2[1] in ("WHEAT", "EGG", "FERTILIZER"):
+                return action, 0, 0
+        except Exception:
+            pass
+    order = market.pop(i)
+    market.insert(i - 1, order)
+    out["market"] = market
+    return out, int(order[2]), 1
+
+def _v122_reset(st):
+    st.update({"prev_step": -1, "inventory": None, "own_sell": 0})
+
+def _v122_finish(st, step, inventory, action):
+    st["prev_step"] = step
+    st["inventory"] = float(inventory)
+    st["own_sell"] = int(_v122_actual_sell(action))
+    return action
+
+def agent(obs, config=None):
+    action = None
+    try:
+        try:
+            seat = int(_seat(obs))
+        except Exception:
+            seat = 0
+        st = _V122_STATE.setdefault(seat, {"prev_step": -1, "inventory": None, "own_sell": 0})
+        step = int(_get(obs, "step", 0) or 0)
+        if step <= int(st.get("prev_step", -1)):
+            _v122_reset(st)
+        now_inv = _v122_market_inventory(obs)
+        prev_inv = st.get("inventory", None)
+        own_prev_sell = max(0, int(st.get("own_sell", 0) or 0))
+        action = _v122_parent(obs, config)
+        if step < _V122_MIN_STEP or step > _V122_MAX_STEP or prev_inv is None or own_prev_sell > 0:
+            return _v122_finish(st, step, now_inv, action)
+        delta = now_inv - float(prev_inv)
+        if delta < _V122_MIN_SIGNAL_DELTA:
+            _V122_REPORT["signal_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        price = _v122_price(obs)
+        if price < _V122_MIN_PRICE:
+            _V122_REPORT["price_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        if now_inv >= _V122_MAX_MARKET_INV:
+            _V122_REPORT["inventory_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        if _v122_has_buy(action):
+            _V122_REPORT["buy_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        current_q = _v122_actual_sell(action)
+        if current_q <= 0:
+            _V122_REPORT["current_sell_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        shed = _v122_shed(obs)
+        if abs(shed - float(current_q)) > 0.01:
+            _V122_REPORT["shed_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        out, moved_q, moved = _v122_reorder(action)
+        if moved != 1:
+            _V122_REPORT["shape_blocks"] += 1
+            return _v122_finish(st, step, now_inv, action)
+        _V122_REPORT["reorders"] += 1
+        _V122_REPORT["units"] += moved_q
+        _V122_REPORT["moved_slots"] += moved
+        if len(_V122_REPORT["steps"]) < 64:
+            _V122_REPORT["steps"].append({"step": step, "delta": delta, "price": price, "market_inventory": now_inv, "shed": shed, "wool_sell": current_q, "moved_slots": moved})
+        return _v122_finish(st, step, now_inv, out)
+    except Exception:
+        _V122_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        return _v122_parent(obs, config)
+
+agent.telemetry = dict(getattr(_V122_PARENT, "telemetry", {}) or {})
+agent.telemetry["wool_lowrisk_front1"] = _V122_REPORT
+agent.__version__ = "v122_wool_lowrisk_front1"
