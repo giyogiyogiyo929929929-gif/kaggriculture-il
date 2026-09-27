@@ -4,6 +4,9 @@ on:
   push:
     branches: [eval-v154-v151-dense-self-exposure-port-20260927]
     paths: [".github/workflows/v154-v151-dense-self-exposure-focused.yml"]
+  pull_request:
+    branches: [eval-v147-resume-selfhosted-20260926]
+    paths: [".github/workflows/v154-v151-dense-self-exposure-focused.yml", "ci/build_v154_v151_dense_self_exposure.py"]
   workflow_dispatch:
 
 permissions:
