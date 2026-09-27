@@ -44,6 +44,15 @@ This makes the tactical change quantity-conserving:
 - all other market-order ordering is preserved;
 - if the target parent's actual SELL is unexpectedly too small, debt is deferred to the next future static STRAWBERRY SELL rather than silently increasing lifetime quantity.
 
+Independent static audit run `36301822441` completed successfully and reconstructed exact `v112`. It confirmed the relevant schedule directly:
+
+- step 577: `SELL STRAWBERRY 8`;
+- step 599: `SELL STRAWBERRY 22`;
+- step 601: `SELL STRAWBERRY 4`;
+- step 615: `SELL STRAWBERRY 10`.
+
+Therefore the normal v121 activation at 577 selects step 599 as the first >=8-unit repayment target inside the 48-turn horizon.
+
 ## Changes
 
 Single major tactical change:
@@ -109,6 +118,18 @@ Primary decision variables:
 - exact activation count and repayment count;
 - zero errors and zero repay shortfalls.
 
+## Seed concentration risk
+
+Current STRAWBERRY executable-overlap evidence is concentrated on seed `309003`; in the existing v120b panel the high-price executable STRAWBERRY overlap did not establish multi-seed support. Consequently targeted replay success alone is insufficient. Fresh external seeds `313001–313004` must show reproducible activation/economic value before promotion can be considered. If fresh external activation is zero, treat v121 as seed-overfit rather than loosening the STRAWBERRY thresholds by default.
+
+## Infrastructure note
+
+Focused run `36303186952` reached the synthetic/static gate. `v121 synthetic checks: PASS` completed, but source reconstruction failed because the expected v116 SHA had been changed to omit its final `c`. The run itself reconstructed:
+
+`v116_milk_micro_lead1.py = 7a040533a8086b19435a9a0df592d5189d301c3fb457410adf7291314577fc1c`
+
+The independent schedule audit reconstructed the same SHA, so the trailing-`c` value is verified. `build_sources.py` was restored accordingly in commit `7c274878813b07fe526cb6bba70158ad33e899eb`. This failure is infrastructure-only and is not candidate evidence.
+
 ## Decision rule after focused run
 
 Immediate **REJECT** if any of the following occurs:
@@ -137,9 +158,12 @@ Even if targeted money improves, do not PROMOTE from this run. Fresh external se
 - `experiments/v112_v116_milk_micro/run_v121_focused.py`
 - `.github/workflows/v112-v121-focused-selfhosted.yml`
 
-## Run
+## Runs
 
-Focused self-hosted run: `36302445916` — initially queued.
+- `36302445916`: superseded/cancelled before execution by a newer focused run.
+- `36303186952`: synthetic PASS; infrastructure-only SHA expectation failure before H2H.
+- `36303268698`: corrected focused rerun from verified SHA head; queued at last check.
+- `36301822441`: independent STRAWBERRY schedule audit; SUCCESS.
 
 ## Decision
 
