@@ -1,0 +1,84 @@
+name: v156 v151 repeated runtime characterization
+
+on:
+  pull_request:
+    branches: [eval-v156-v151-not-ahead-three-exposure-20260927]
+    paths: ["ci/trigger-v156-runtime-characterization.txt"]
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Reconstruct exact v151 and v156
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'; python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if($LASTEXITCODE -ne 0){throw 'patch failed'}; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          python ci\build_v156_v151_not_ahead_three_exposure.py tmp\v151.py tmp\v156.py
+          python -m py_compile tmp\v151.py tmp\v156.py
+      - name: Three-repetition alternating-order characterization
+        run: |
+          @'
+          import gc,json,statistics,sys,time
+          from pathlib import Path
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+          seeds=[520101,520102,520103,520104]; opponent='opponents/score_2820/main.py'
+          def bench(path):
+              gc.collect(); gc.enable(); mine=C.load(path); inner=C.wrap(mine); wall=[]; cpu=[]; errors=[]
+              def timed(o,c=None):
+                  w=time.perf_counter(); p=time.process_time()
+                  try: return inner(o,c)
+                  except Exception as e: errors.append(repr(e)); raise
+                  finally: wall.append(time.perf_counter()-w); cpu.append(time.process_time()-p)
+              for seed in seeds:
+                  C.play(timed,opponent,seed,swap=False); C.play(timed,opponent,seed,swap=True)
+              def stats(xs):
+                  y=sorted(xs); n=len(y); q=lambda p:y[min(n-1,int(n*p))]*1000
+                  return {'calls':n,'median_ms':statistics.median(y)*1000,'p95_ms':q(.95),'p99_ms':q(.99),'max_ms':y[-1]*1000,'gt_200ms':sum(x>.2 for x in y)}
+              return {'wall':stats(wall),'cpu':stats(cpu),'errors':len(errors)}
+          reps=[]
+          for rep in range(3):
+              order=['v151','v156'] if rep%2==0 else ['v156','v151']; r={'rep':rep+1,'order':order}
+              for name in order: r[name]=bench('tmp/'+name+'.py')
+              reps.append(r)
+          cand_p99=[r['v156']['wall']['p99_ms'] for r in reps]; cand_max=[r['v156']['wall']['max_ms'] for r in reps]; ctrl_max=[r['v151']['wall']['max_ms'] for r in reps]
+          out={'mode':'three_repetitions_alternating_order_gc_enabled','seeds':seeds,'opponent':'score_2820','reps':reps,'summary':{'v156_p99_max_across_reps':max(cand_p99),'v156_raw_max_ms':cand_max,'v151_raw_max_ms':ctrl_max,'v156_formal_max_pass_count':sum(x<200 for x in cand_max),'v151_formal_max_pass_count':sum(x<200 for x in ctrl_max)}}
+          Path('results/runtime_characterization.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          assert all(r['v151']['errors']==0 and r['v156']['errors']==0 for r in reps),out
+          assert all(x<50 for x in cand_p99),out
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v156-v151-runtime-characterization
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
