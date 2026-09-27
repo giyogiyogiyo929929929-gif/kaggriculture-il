@@ -1,0 +1,76 @@
+name: uploaded 127ed3 day25 CARROT hold burned dev
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-day25-carrot-hold-dev.yml'
+      - 'ci/build_uploaded_127ed3_day25_carrot_hold.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_day25_carrot_hold.py tmp\day25_carrot_hold.py
+          @'
+          import hashlib,importlib.metadata,json
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          p=Path('tmp/safe_v3.py').read_bytes(); c=Path('tmp/day25_carrot_hold.py').read_bytes()
+          assert hashlib.sha256(p).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(c).hexdigest()=='96bc8be3cd0159c6c3536ee28a6dd19769cb1b0015c1861c6bf0f1841c283459'
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          Path('results/build.json').write_text(json.dumps({'parent_sha256':hashlib.sha256(p).hexdigest(),'candidate_sha256':hashlib.sha256(c).hexdigest()},indent=2),encoding='utf-8')
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\day25_carrot_hold.py
+      - name: Burned ten-seed direct-parent matched evaluation
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          seeds=[641,350003,101,211,347,509,733,911,1201,1601]; rows=[]; exc_c=exc_p=0; non_done=0
+          for seed in seeds:
+              s=evaluate('tmp/day25_carrot_hold.py','tmp/safe_v3.py',pairs=1,jobs=1,seed_start=seed)
+              exc_c+=s['exceptions']['a']; exc_p+=s['exceptions']['b']
+              games=sorted(s['matches_detail'],key=lambda x:bool(x['swap']))
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in games]
+              for g in games:
+                  st=g.get('statuses') or []
+                  if isinstance(st,str): st=[st]
+                  if any(x!='DONE' for x in st): non_done+=1
+              pair=statistics.mean(vals); rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D','steps':[g['steps'] for g in games]})
+          vals=[r['pair_mean_delta'] for r in rows]; mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'candidate':'uploaded_127ed3_day25_carrot_hold','candidate_sha256':'96bc8be3cd0159c6c3536ee28a6dd19769cb1b0015c1861c6bf0f1841c283459','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'non_done':non_done,'rows':rows}
+          Path('results/day25_carrot_hold_dev.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert exc_c==0 and exc_p==0 and non_done==0
+          assert all(all(x==720 for x in r['steps']) for r in rows)
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-day25-carrot-hold-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
