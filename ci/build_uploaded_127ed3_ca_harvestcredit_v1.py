@@ -3,7 +3,7 @@ import hashlib
 import sys
 
 PARENT_SHA256 = "87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df"
-CANDIDATE_SHA256 = "9cd3e3233262449ca8609c0941193710f687f8e7d64a70b5948eb2e782626588"
+CANDIDATE_SHA256 = "56736e406f6cc023b0b720bd1b7aee556ed7aba4caa92a9ba427336cb047a95f"
 
 
 def replace_once(src: bytes, old: bytes, new: bytes, label: str) -> bytes:
