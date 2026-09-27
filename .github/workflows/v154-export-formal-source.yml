@@ -1,0 +1,64 @@
+name: v154 export formal source
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-export-formal-source.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact formal v154
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          New-Item -ItemType Directory -Force -Path tmp | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v154_v147_dense_self_exposure_not_ahead.py tmp\v147.py tmp\v154.py
+          python -m py_compile tmp\v154.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          for p,w in [('tmp/v147.py','8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'),('tmp/v154.py','7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e')]:
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v154-formal-source
+          path: |
+            tmp/v147.py
+            tmp/v154.py
+          if-no-files-found: error
+          retention-days: 30
