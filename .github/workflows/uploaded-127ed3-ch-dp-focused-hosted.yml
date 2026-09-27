@@ -1,0 +1,84 @@
+name: uploaded 127ed3 CH-DP focused hosted diagnostic
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ch-dp-focused-hosted.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and build diagnostic children
+        run: |
+          set -euxo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python ci/build_uploaded_127ed3_safety_v3.py tmp/safe_v3.py
+          python - <<'PY'
+          import hashlib, importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments') == '1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest() == 'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          parent=Path('tmp/safe_v3.py').read_bytes()
+          assert hashlib.sha256(parent).hexdigest() == '87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          ch_old=b'_CH_SHED = 100'; ch_new=b'_CH_SHED = 0  # diagnostic ablation: disable CAPHARV swaps'
+          dp_old=b'_DP_HOURS = (0, 1, 2)'; dp_new=b'_DP_HOURS = ()  # diagnostic ablation'
+          assert parent.count(ch_old)==1 and parent.count(dp_old)==1
+          ch=parent.replace(ch_old,ch_new,1); dp=parent.replace(dp_old,dp_new,1)
+          Path('tmp/ch_off.py').write_bytes(ch); Path('tmp/dp_off.py').write_bytes(dp)
+          assert hashlib.sha256(ch).hexdigest() == 'f771c1b323eda8ee9f972f522b5489c9a448ac15a88611a0b29beb10a68f0cc7'
+          assert hashlib.sha256(dp).hexdigest() == 'f1384b23502d992e6c93628d24b689d54fecfcc67cb8df420fdb9a463fe814f1'
+          PY
+          python -m py_compile tmp/safe_v3.py tmp/ch_off.py tmp/dp_off.py
+      - name: Four-seed causal screen
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import json,math,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          seeds=[641,350003,733,911]
+          def compare(candidate,label):
+              rows=[]; ea=eb=0
+              for seed in seeds:
+                  s=evaluate(candidate,'tmp/safe_v3.py',pairs=1,jobs=1,seed_start=seed)
+                  ea+=s['exceptions']['a']; eb+=s['exceptions']['b']
+                  games=sorted(s['matches_detail'],key=lambda x:bool(x['swap']))
+                  vals=[float(g['money'][0])-float(g['money'][1]) for g in games]
+                  pair=statistics.mean(vals)
+                  rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D'})
+              vals=[r['pair_mean_delta'] for r in rows]
+              mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+              return {'label':label,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'candidate_exceptions':ea,'parent_exceptions':eb,'rows':rows}
+          out={
+            'purpose':'focused diagnostic only; formal decision requires self-hosted full burned block',
+            'parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df',
+            'seeds':seeds,
+            'ch_off':compare('tmp/ch_off.py','CH_off_minus_safety_v3'),
+            'dp_off':compare('tmp/dp_off.py','DP_off_minus_safety_v3'),
+          }
+          Path('results/ch_dp_focused.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert out['ch_off']['candidate_exceptions']==0 and out['ch_off']['parent_exceptions']==0
+          assert out['dp_off']['candidate_exceptions']==0 and out['dp_off']['parent_exceptions']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ch-dp-focused-hosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
