@@ -5,6 +5,7 @@ on:
     branches: [eval-uploaded-127ed3-20260926]
     paths:
       - '.github/workflows/uploaded-127ed3-ca-swapcap24-dev.yml'
+      - 'ci/build_uploaded_127ed3_safety_v3.py'
   workflow_dispatch:
 
 permissions:
