@@ -1,0 +1,96 @@
+name: v156 final package preflight r2
+
+on:
+  pull_request:
+    branches: [eval-v156-v151-not-ahead-three-exposure-20260927]
+    paths: ["ci/trigger-v156-final-package-r2.txt"]
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v156 source
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results,results\v156 | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          if ($LASTEXITCODE -ne 0) { throw 'v115 reconstruction failed' }
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          if ($LASTEXITCODE -ne 0) { throw 'v147 build failed' }
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          if ($LASTEXITCODE -ne 0) { throw 'v150 build failed' }
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          if ($LASTEXITCODE -ne 0) { throw 'v151 build failed' }
+          python ci\build_v156_v151_not_ahead_three_exposure.py tmp\v151.py tmp\v156.py
+          if ($LASTEXITCODE -ne 0) { throw 'v156 build failed' }
+          python -m py_compile tmp\v156.py
+          @'
+          import hashlib,json
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v156.py').read_bytes()).hexdigest()
+          exp='14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb'
+          assert got==exp,(got,exp)
+          Path('results/v156/main.py').write_bytes(Path('tmp/v156.py').read_bytes())
+          Path('results/v156/build.json').write_text(json.dumps({'sha256':got,'bytes':Path('tmp/v156.py').stat().st_size},indent=2),encoding='utf-8')
+          print('v156_sha256='+got)
+          '@ | python -
+      - name: Kaggle-compatible preflight and package
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\preflight.py --main results\v156\main.py --entry agent --build --output results\v156\submission.tar.gz --json results\v156\preflight.json
+          if ($LASTEXITCODE -ne 0) { throw 'v156 preflight failed' }
+      - name: Verify package identity
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          root=Path('results/v156'); main=root/'main.py'; tar=root/'submission.tar.gz'
+          main_sha=hashlib.sha256(main.read_bytes()).hexdigest(); tar_sha=hashlib.sha256(tar.read_bytes()).hexdigest()
+          assert main_sha=='14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb',main_sha
+          with tarfile.open(tar,'r:gz') as tf:
+              names=tf.getnames(); assert names==['main.py'],names
+              packed=tf.extractfile('main.py').read()
+          assert hashlib.sha256(packed).hexdigest()==main_sha
+          out={'main_sha256':main_sha,'archive_sha256':tar_sha,'archive_bytes':tar.stat().st_size,'archive_members':names,'packed_main_matches_source':True,'kaggle_submission_performed':False}
+          (root/'manifest.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v156-final-package-preflight-r2
+          path: results/v156/
+          if-no-files-found: error
+          retention-days: 30
