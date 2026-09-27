@@ -1,0 +1,161 @@
+name: uploaded 127ed3 feed0 d25 carrot hold v1 final gates
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-d25-carrot-hold-v1-final-gates.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-gates:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results,results\package | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          python ci\build_uploaded_127ed3_ca_feed0_d25_carrot_hold_v1.py tmp\ca_feed0.py tmp\d25.py
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          expected={
+            'tmp/safe_v3.py':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df',
+            'tmp/ca_feed0.py':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44',
+            'tmp/d25.py':'2aab62a693bd3a357ad87649b8ba90a79b512d383a7694b07bbcdbe0deef48c8',
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+          }
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          for p,h in expected.items(): assert hashlib.sha256(Path(p).read_bytes()).hexdigest()==h,(p,hashlib.sha256(Path(p).read_bytes()).hexdigest())
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py tmp\d25.py tmp\v147.py
+      - name: Static audit and Kaggle loader safety
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          from scripts.preflight import check_imports,load_like_kaggle,call_like_kaggle,BROKEN_OBSERVATIONS
+          from scripts.analysis.audit_agent import audit_file
+          for name in ('ca_feed0','d25'):
+              chk=check_imports([Path('tmp')/f'{name}.py']); print(name,chk.line()); assert chk.ok,chk.detail
+          base=Counter((depth,what) for _,depth,_,what in audit_file('tmp/ca_feed0.py'))
+          cand=Counter((depth,what) for _,depth,_,what in audit_file('tmp/d25.py'))
+          new=cand-base; print('candidate_new_risky_signatures',dict(new)); assert not new,new
+          agent=load_like_kaggle(Path('tmp/d25.py')); assert getattr(agent,'__name__',None)=='agent'
+          rows=[]
+          for obs in BROKEN_OBSERVATIONS:
+              try:
+                  action=call_like_kaggle(agent,obs,None)
+                  ok=isinstance(action,dict) and set(action)=={'farmer','hands','market'} and all(isinstance(action[k],list) for k in action)
+                  rows.append({'ok':ok,'error':None,'action':action})
+              except Exception as exc: rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+          assert all(r['ok'] for r in rows),rows
+          Path('results/loader_audit.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+      - name: Official-engine full 720-turn smoke both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          agent=load_like_kaggle(Path('tmp/d25.py')); rows=[]
+          for swap in (False,True):
+              errors=[]
+              def wrapped(obs,config=None):
+                  try:return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:
+                      errors.append(f'{type(exc).__name__}: {exc}'); return {'farmer':['PASS'],'hands':[],'market':[]}
+              env=make('kaggriculture',configuration={'seed':641}); env.run(['starter',wrapped] if swap else [wrapped,'starter'])
+              seat=1 if swap else 0
+              row={'seed':641,'swap':swap,'seat':seat,'status':env.state[seat].get('status'),'steps':len(env.steps),'errors':errors}
+              assert row['status']=='DONE' and row['steps']==720 and not errors,row; rows.append(row)
+          Path('results/smoke.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+      - name: Single-process runtime gate
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:PYTHONIOENCODING='utf-8'
+          @'
+          import gc,json,statistics,sys,time
+          from pathlib import Path
+          from kaggle_environments import make
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+          LIMIT_P99_MS=50.0; LIMIT_WORST_MS=200.0; seeds=[71,75]
+          def measure(opponent,label):
+              ts=[]
+              for seed in seeds:
+                  for swap in (False,True):
+                      mine=C.load('tmp/d25.py'); inner=C.wrap(mine)
+                      def timed(o,c=None):
+                          t=time.perf_counter(); a=inner(o,c); ts.append(time.perf_counter()-t); return a
+                      opp=opponent if opponent=='starter' else C.wrap(C.load(opponent))
+                      gc.collect(); env=make('kaggriculture',configuration={'seed':seed})
+                      env.run([opp,timed] if swap else [timed,opp])
+                      assert len(env.steps)==720 and all(st.get('status')=='DONE' for st in env.state)
+              ts.sort(); p99=ts[min(len(ts)-1,int(len(ts)*0.99))]*1000.0; worst=ts[-1]*1000.0; median=statistics.median(ts)*1000.0
+              return {'label':label,'seeds':seeds,'both_seats':True,'n':len(ts),'median_ms':median,'p99_ms':p99,'worst_ms':worst,'pass':p99<LIMIT_P99_MS and worst<LIMIT_WORST_MS}
+          rows=[measure('starter','starter'),measure('tmp/v147.py','v147')]
+          out={'candidate':'uploaded_127ed3_ca_feed0_d25_carrot_hold_v1','candidate_sha256':'2aab62a693bd3a357ad87649b8ba90a79b512d383a7694b07bbcdbe0deef48c8','engine':'1.32.7','limits':{'p99_ms_lt':LIMIT_P99_MS,'worst_ms_lt':LIMIT_WORST_MS},'rows':rows,'pass':all(r['pass'] for r in rows)}
+          print('RUNTIME_GATE',json.dumps(out,indent=2)); Path('results/runtime_gate.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); assert out['pass'],out
+          '@ | python -
+      - name: Build and verify candidate archive
+        run: |
+          $ErrorActionPreference='Stop'
+          Copy-Item tmp\d25.py results\package\main.py
+          @'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          main=Path('results/package/main.py'); archive=Path('results/uploaded_127ed3_ca_feed0_d25_carrot_hold_v1.tar.gz')
+          expected='2aab62a693bd3a357ad87649b8ba90a79b512d383a7694b07bbcdbe0deef48c8'
+          assert hashlib.sha256(main.read_bytes()).hexdigest()==expected
+          with tarfile.open(archive,'w:gz') as t:t.add(main,arcname='main.py')
+          with tarfile.open(archive,'r:gz') as t:
+              names=t.getnames(); extracted=t.extractfile('main.py').read()
+          assert names==['main.py'] and hashlib.sha256(extracted).hexdigest()==expected and archive.stat().st_size<100*1024*1024
+          meta={'candidate':'uploaded_127ed3_ca_feed0_d25_carrot_hold_v1','parent':'uploaded_127ed3_ca_feed0','parent_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','main_sha256':expected,'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'archive_bytes':archive.stat().st_size,'members':names,'engine':'kaggle_environments==1.32.7','engine_kaggriculture_sha256':'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'}
+          Path('results/package_meta.json').write_text(json.dumps(meta,indent=2),encoding='utf-8'); print(json.dumps(meta,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-d25-carrot-hold-v1-final-gates
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
