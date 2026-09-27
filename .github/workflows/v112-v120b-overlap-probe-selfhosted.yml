@@ -1,0 +1,67 @@
+name: v112-v120b clean signal overlap probe
+
+on:
+  push:
+    branches: [eval/v112-v120b-overlap-probe-20260927]
+    paths:
+      - ".github/workflows/v112-v120b-overlap-probe-selfhosted.yml"
+      - "experiments/v112_v116_milk_micro/v120b_suffix.pyfrag"
+      - "experiments/v112_v116_milk_micro/test_v120b_probe_synthetic.py"
+      - "experiments/v112_v116_milk_micro/build_v120b.py"
+      - "experiments/v112_v116_milk_micro/run_v120b_probe.py"
+  workflow_dispatch:
+
+concurrency:
+  group: v112-v120b-overlap-probe-current-lineage
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact Kaggriculture engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Focused synthetic and exact source reconstruction
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python test_v120b_probe_synthetic.py
+          if ($LASTEXITCODE -ne 0) { throw 'v120b synthetic checks failed' }
+          python build_v120b.py
+          if ($LASTEXITCODE -ne 0) { throw 'v120b source reconstruction failed' }
+          python -m py_compile v120b_clean_signal_overlap_probe.py run_v120b_probe.py
+          if ($LASTEXITCODE -ne 0) { throw 'v120b py_compile failed' }
+
+      - name: Clone semantic gate and overlap telemetry probe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v120b_probe.py
+          if ($LASTEXITCODE -ne 0) { throw 'v120b probe failed' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v120b-clean-signal-overlap-probe
+          path: |
+            experiments/v112_v116_milk_micro/v120b_probe.json
+            experiments/v112_v116_milk_micro/v120b_probe_summary.json
+          if-no-files-found: warn
+          retention-days: 30
