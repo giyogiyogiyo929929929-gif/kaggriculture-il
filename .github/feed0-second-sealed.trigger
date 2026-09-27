@@ -1,0 +1,4 @@
+released_after_gates=2026-09-27
+known_opponent_run=36295410170
+first_sealed_verifier_run=36295374931
+seed_list_sha256=da7aeb107fa8dcf4501e196f813aa9ea5ce75059fc4a8d7dd2821d1286cf33b9
