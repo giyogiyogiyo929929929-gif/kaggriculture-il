@@ -2,11 +2,11 @@
 
 ## Status
 
-**KEEP TESTING — canonical self-hosted evaluation queued**
+**REJECT — no canonical activation**
 
 Formal champion remains `v112_wheat_lead3_lowdemand`.
 
-`v118_premium_scarce_sell_front` is a sibling of v116/v117 and is built directly on v112. It is not stacked with unpromoted sibling mechanisms. v117 has now been REJECTED for zero canonical activation.
+`v118_premium_scarce_sell_front` is a sibling of v116/v117 and was built directly on v112. It was not stacked with unpromoted sibling mechanisms. v117 was separately REJECTED for zero canonical activation.
 
 ## Hypothesis
 
@@ -31,28 +31,26 @@ Safety gates:
 
 The candidate preserves market order count, every item quantity, action turn, and relative order of every non-moved order. Mixed BUY/SELL actions are blocked.
 
-## Telemetry
-
-`agent.telemetry["premium_scarce_sell_front"]` records:
-
-- `reorders`, `units`, `moved_positions`
-- per-item counts: `strawberry`, `melon`, `milk`, `wool`
-- `non_sell_blocks`, `multi_premium_blocks`, `already_front_blocks`
-- `scarcity_blocks`, `unsafe_prefix_blocks`, `front_race_blocks`
-- `errors`
-- activation `steps`
-
 ## Static / synthetic
 
 `test_v118_suffix_synthetic.py` covers scarce MILK and STRAWBERRY reorder cases plus already-front, non-scarce, multiple-premium, unsafe prefix, racing WHEAT prefix, mixed BUY/SELL, and zero-inventory scarcity.
 
 Result: `v118 synthetic checks: PASS`.
 
-The zero-inventory case also caught and fixed a truthiness bug that would otherwise have treated `inventory=0` as missing and suppressed an extreme-scarcity activation.
+The zero-inventory case caught and fixed a truthiness bug that would otherwise have treated `inventory=0` as missing and suppressed an extreme-scarcity activation.
 
-## Canonical evaluation plan
+## Canonical evaluation
+
+Workflow: `.github/workflows/v112-v118-selfhosted.yml`.
+
+Run: `36281995854` on self-hosted runner `CIYOI`.
 
 Engine: `kaggle_environments==1.32.7`.
+
+Source SHA-256:
+
+- v112: `1c6e00ff0bd46b16189b1f6a93ce5e498ff8ffb5b0acb33591cdd247cd8b4771`
+- v118: `25bb79c32a5fdc3e40f21436233f1993a60e7a0a6c55ca827f1e643fb3ce49e5`
 
 Sign: `candidate_minus_champion = candidate - champion`.
 
@@ -60,56 +58,75 @@ Same-seed + seat-swap throughout.
 
 ### Champion H2H
 
-- validation: seeds 300001–300012
-- sealed: 301001–301004
-- stress: 302001–302008
-- starter regression: seeds 1–5 for v118 and v112
-- runtime: seed 800502
+- validation 300001–300012: **0W 0L 12D**, mean `0.0`, worst `0.0`, best `0.0`
+- sealed 301001–301004: **0W 0L 4D**, mean `0.0`, worst `0.0`, best `0.0`
+- stress 302001–302008: **0W 0L 8D**, mean `0.0`, worst `0.0`, best `0.0`
+- starter seeds 1–5: v118 and v112 both **5W 0L 0D**, identical pair differences
 
-Immediate safety gate after exact H2H:
+All 24 champion matched seeds were exactly identical to v112.
 
-- telemetry errors > 0 → REJECT
-- runtime callback errors > 0 → REJECT
-- validation `reorders == 0` → REJECT as no activation
+### Runtime
 
-### Bronze external panel
+Runtime pair seed `800502`:
 
-If the activation gate passes, seeds 303001–303004 are seat-swapped against:
+- callbacks: `1438`
+- median: `0.751750 ms`
+- p99: `1.882200 ms`
+- max: `2.538900 ms`
+- callback errors: `0`
 
-- v49
-- v50
-- metav4_v13
-- k256_h2_q_v1
-- market_rhythm
-- story_of_seasons
-- thomas_router_93
-- tetsutani_dpts_b
-- jaxa_2802
-- ready_stock
+Runtime is comfortably inside the project gate.
 
-Primary bronze-policy signal is outcome regression/improvement, then candidate-minus-champion money delta and worst regression.
+### Telemetry
 
-## Execution infrastructure
+Validation:
 
-Dedicated workflow: `.github/workflows/v112-v118-selfhosted.yml`.
+- `reorders=0`, `units=0`, `moved_positions=0`
+- `non_sell_blocks=1436`
+- `multi_premium_blocks=202`
+- `already_front_blocks=238`
+- `scarcity_blocks=34`
+- `front_race_blocks=4`
+- `errors=0`
 
-It runs on `[self-hosted, Windows, X64]` and is path-filtered to v118/build-source files, so unrelated documentation changes and v117 files do not waste CIYOI time. Sequence:
+Sealed:
 
-1. install/verify `kaggle-environments==1.32.7`;
-2. v118 synthetic;
-3. byte-stable source reconstruction;
-4. py_compile;
-5. exact v118-v112 matched H2H;
-6. activation/safety gate;
-7. bronze external panel if the gate survives;
-8. always produce summary/artifact.
+- `reorders=0`
+- `non_sell_blocks=484`
+- `multi_premium_blocks=68`
+- `already_front_blocks=90`
+- `scarcity_blocks=4`
+- `front_race_blocks=2`
+- `errors=0`
 
-Workflow creation commit: `1cd12e4ee746ad53444b21680e466edc757527d3`.
+Stress:
 
-Current run: GitHub Actions `36281995854`, run #1, currently queued on the self-hosted runner.
+- `reorders=0`
+- `non_sell_blocks=958`
+- `multi_premium_blocks=130`
+- `already_front_blocks=174`
+- `scarcity_blocks=18`
+- `front_race_blocks=4`
+- `errors=0`
+
+The activation gate reported:
+
+`{'validation_reorders': 0, 'total_reorders': 0, 'errors': 0, 'runtime_errors': 0}`
+
+and terminated with `REJECT_GATE: no validation activation`.
+
+The bronze external panel was therefore correctly skipped. No external score claim is made for v118.
+
+## Interpretation
+
+The mechanism is syntactically and operationally safe, but its conjunction of gates never occurs in the tested canonical distribution. The strongest blockers are the mixed/non-SELL-action gate, multiple-premium SELL gate, and premium-already-front condition. This means the candidate is not evidence that same-turn premium ordering is ineffective; it is evidence that this exact narrow trigger is too restrictive to test the mechanism in realistic play.
+
+A direct repetition of v118 is not useful. A follow-up premium-ordering candidate should change the activation model rather than merely add more seeds. The most defensible next variant is to handle multiple premium SELLs by ranking them from public inventory/price race state while preserving the complete action multiset and keeping BUY-containing actions blocked.
 
 ## Decision
 
-**KEEP TESTING — DO NOT PROMOTE.**
+**REJECT — no activation.**
 
-No score claim is made until canonical v118 telemetry and matched results exist. Formal champion remains `v112_wheat_lead3_lowdemand`.
+Reason: zero canonical reorders across validation, sealed, and stress. No exception, timeout, runtime regression, or repayment issue occurred.
+
+Formal champion remains `v112_wheat_lead3_lowdemand`.
