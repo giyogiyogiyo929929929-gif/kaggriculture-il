@@ -1,5 +1,6 @@
 from pathlib import Path
 import base64
+import gzip
 import hashlib
 import sys
 
@@ -18,7 +19,8 @@ def main() -> None:
     if not parts:
         raise SystemExit(f"no uploaded raw chunks found under {PART_DIR}")
 
-    raw = b"".join(base64.b64decode(p.read_text(encoding="ascii")) for p in parts)
+    packed_b64 = "".join(p.read_text(encoding="ascii") for p in parts)
+    raw = gzip.decompress(base64.b64decode(packed_b64))
     raw_sha = hashlib.sha256(raw).hexdigest()
     if raw_sha != RAW_SHA256:
         raise SystemExit(f"raw parent sha mismatch: {raw_sha}")
