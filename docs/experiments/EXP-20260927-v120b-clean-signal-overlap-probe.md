@@ -2,38 +2,31 @@
 
 ## Status
 
-**TELEMETRY PROBE — NOT PROMOTION ELIGIBLE**
+**PROBE COMPLETE — ACTIONABLE WINDOWS FOUND — NOT PROMOTION ELIGIBLE**
 
 Formal champion remains `v112_wheat_lead3_lowdemand`.
 
-Parent evidence: v120 established that `clean positive` premium market-inventory events separate v112-clone self-play from all 10 external opponents. v120b does not change actions; it measures whether those signals overlap an executable and safe SELL opportunity.
+v120 established that `clean positive` premium market-inventory events separate v112-clone self-play from all 10 external opponents. v120b is action-identical to v112 and measures whether those signals overlap executable and safe SELL opportunities.
 
 ## Hypothesis
 
-A clean signal is useful only if the current v112 state can actually respond. Before creating tactical v121, measure whether a clean signal at step `t` coincides with:
+A clean signal is useful only if the current v112 state can actually respond. For a clean signal at step `t`, measure:
 
 - positive same-item quantity in private shed;
 - a v112 parent SELL at `t`;
 - a native/static same-item SELL at `t+1`, `t+2`, or `t+3`;
-- no current BUY/cash dependency;
-- price still above 100% or 75% of nominal base.
+- current BUY/cash dependency;
+- current price state.
 
-This isolates feasible intervention windows without repeating the harmful blind premium reordering from v119 or the zero-activation MELON lead from v114.
+The purpose is to avoid repeating v119's harmful blind premium reordering and v114's zero-activation MELON lead.
 
 ## Changes
 
-Telemetry-only wrapper over exact v112. The exact parent action object is returned unchanged.
+Telemetry-only wrapper over exact v112. It returns the exact parent action object unchanged.
 
 Tracked items: `STRAWBERRY`, `MELON`, `MILK`, `WOOL`.
 
-For each clean signal (`inventory_delta > 0` and our previous-turn SELL quantity for that item is zero), record:
-
-- current shed quantity;
-- actual parent same-turn SELL quantity;
-- static SELL quantity at horizons +1/+2/+3;
-- whether current parent action contains a BUY;
-- market inventory and price before/after;
-- price-above-base and price-above-75%-base counts.
+For each clean signal (`inventory_delta > 0` and our previous-turn SELL quantity for that item is zero), the probe records current shed quantity, actual same-turn parent SELL, static same-item SELL at +1/+2/+3, current BUY presence, and market inventory/price.
 
 ## Environment
 
@@ -41,78 +34,166 @@ For each clean signal (`inventory_delta > 0` and our previous-turn SELL quantity
 - canonical engine: `kaggle_environments==1.32.7`
 - champion: `v112_wheat_lead3_lowdemand`
 - probe: `v120b_clean_signal_overlap_probe`
+- self-hosted runner: `CIYOI`, Windows X64
+- workflow run: `36295388838`
+- job: `108553169251`
+- workflow commit: `cfa444c11b62ba054cd04581b70883c5e942331b`
+- v120b built SHA256: `a3a9bfc16793d959ae58151d219a4429240396ddc347b72c19acfb7d7c4fabac`
+- exact v112 SHA256: `1c6e00ff0bd46b16189b1f6a93ce5e498ff8ffb5b0acb33591cdd247cd8b4771`
 
-## Evaluation
+Artifact:
 
-Use the same panel as v120 for direct comparability.
+- name: `v112-v120b-clean-signal-overlap-probe`
+- artifact ID: `10924253932`
+- artifact ZIP SHA256: `6618d5e092ef57c087fa0ce72c3b26638ab2cecbb1af85676748689b6c1728eb`
+
+## Canonical execution
+
+Synthetic/source reconstruction/py_compile all passed.
 
 ### Clone semantic gate
 
-- seeds 308001–308004
-- v120b vs v112
-- seat swap
-- every pair diff must be exactly zero
-- telemetry errors must be zero
+Seeds 308001–308004, v120b vs v112, both seats.
+
+Pair diffs:
+
+- 308001: 0.0
+- 308002: 0.0
+- 308003: 0.0
+- 308004: 0.0
+
+Telemetry errors: 0.
+
+Decision: **PASS**. v120b remained action-identical to v112.
 
 ### External overlap panel
 
-- seeds 309001–309004
-- seat swap
-- opponents: v49, v50, metav4_v13, k256_h2_q_v1, market_rhythm, story_of_seasons, thomas_router_93, tetsutani_dpts_b, jaxa_2802, ready_stock
+Seeds 309001–309004, both seats, against:
 
-Primary outputs are overlap rates, not score.
+- v49
+- v50
+- metav4_v13
+- k256_h2_q_v1
+- market_rhythm
+- story_of_seasons
+- thomas_router_93
+- tetsutani_dpts_b
+- jaxa_2802
+- ready_stock
 
-## Pre-probe hotspot audit from v120 artifact
+Across 80 external games, aggregate clean/overlap counts were:
 
-Before running v120b, the captured v120 raw event stream was aggregated across the 80 external games (10 opponents × 4 seeds × 2 seats). The event list in v120 was capped, so this audit is useful for hotspot selection but is not treated as an exhaustive event count.
+| metric | STRAWBERRY | MELON | MILK | WOOL |
+|---|---:|---:|---:|---:|
+| clean events | 2298 | 480 | 2292 | 2054 |
+| shed > 0 | 838 | 0 | 428 | 152 |
+| same-item SELL now | 220 | 80 | 124 | 52 |
+| future SELL h1 | 178 | 0 | 122 | 28 |
+| future SELL h2 | 334 | 160 | 202 | 40 |
+| future SELL h3 | 230 | 160 | 268 | 102 |
+| any SELL h0..h3 | 702 | 240 | 484 | 192 |
+| shed > 0 and SELL h0..h3 | 226 | 0 | 102 | 40 |
+| price >= nominal base | 798 | 80 | 388 | 720 |
+| price >= 75% nominal base | 932 | 480 | 658 | 1260 |
 
-Several clean-signal steps were present for all 10 opponents and all 80 games in the captured stream:
+All clean events in this panel were current-turn BUY-free, so BUY/cash dependency was not the limiting factor.
 
-- WOOL: steps 151, 294, 343;
-- MELON: steps 250, 251, 252, 253, 254, 256;
-- MILK: step 340, with 339/341 also common;
-- STRAWBERRY: steps 404, 428, 430, plus 518 (but 518 often occurs after price collapse).
+Using the conservative feasibility filter:
 
-Median post-signal prices at representative ubiquitous hotspots:
+`clean signal + shed>0 + same-item SELL within h0..h3 + no BUY + price>=75% nominal base`
 
-- WOOL@151: 199 (~99.5% of nominal base 200);
-- WOOL@294: 151 (~75.5% of base);
-- WOOL@343: 183 (~91.5% of base);
-- MELON@250: 266 (~106.4% of base), falling deterministically across the 250–256 sequence to 226 (~90.4%);
-- MILK@339: 169 (~105.6% of base), @340: 137 (~85.6%);
-- STRAWBERRY@404/428/430: median roughly 170.5/170.5/164, all still materially above nominal base 120;
-- STRAWBERRY@518: median 1, therefore unsuitable as a generic reactive trigger despite universal detection.
+there were 70 events:
 
-This confirms that the detector sees both economically actionable early/mid-season pressure and useless post-collapse noise. v120b must therefore retain explicit price-state telemetry rather than treating all clean events equally.
+- STRAWBERRY: 32
+- MELON: 0
+- MILK: 4
+- WOOL: 34
 
-### Partial SELL-window inference from v120 event stream
+First SELL distance among these feasible events:
 
-The v120 event record also contains `own_prev_sell`. When a clean signal at `t` is followed by another recorded event for the same item at `t+h+1`, a positive `own_prev_sell` there proves that v112 executed a same-item SELL at `t+h`. This is only a partial inference because the event list is capped and a later observation may not itself be recorded.
+- STRAWBERRY: h0=20, h1=8, h2=4
+- MILK: h0=4
+- WOOL: h0=28, h2=6
 
-Within the captured stream, the ubiquitous clean hotspots above generally showed no proven v112 SELL within h0..h3. A few narrower high-price overlaps did appear:
+## Findings
 
-- MILK@358 -> proven 6-unit v112 SELL at step 360 (h2) in 16 captured games, concentrated in v49/v50/tetsutani_dpts_b; median signal price ~154 versus nominal 160;
-- STRAWBERRY@453 -> proven 14-unit SELL at step 456 (h3) in 12 captured games; median signal price ~145 versus nominal 120;
-- WOOL@456 -> proven 8-unit same-turn SELL in 2 captured games; median signal price ~214 versus nominal 200;
-- STRAWBERRY@577 -> proven 8-unit same-turn SELL in 6 captured games; median signal price ~153.
+### MELON: reject immediate-response axis
 
-MILK@358 is therefore a concrete provisional v121 hypothesis: if v120b confirms shed stock is already executable at the signal step, a narrowly gated two-turn reactive lead could front-run the observed external sell pressure without affecting clone self-play. It must not be implemented if shed stock is absent or BUY/parent-state conflicts dominate.
+MELON generated 480 external clean events, but `shed>0` occurred **zero times**. This directly explains why the earlier shed-only MELON lead candidate v114 did not activate.
 
-## Decision rule
+Do not repeat a simple MELON immediate SELL/lead experiment without a different stock-generation mechanism.
 
-v120b itself cannot be promoted.
+### Correction to the provisional MILK@358 hypothesis
 
-Create tactical v121 only if at least one item shows a repeatable external-only clean signal with a meaningful number of events satisfying a narrow feasible window, preferably:
+The pre-probe v120 audit suggested `MILK@358 -> SELL@360` as a possible two-turn reactive lead. v120b invalidates that direct hypothesis:
 
-`clean signal + shed>0 + same-item SELL within h0..h3 + no BUY dependency + price not already collapsed`.
+- v49/v50/tetsutani cases at step 358 had no executable MILK shed stock;
+- comparable jaxa cases also lacked stock before the later SELL;
+- cases with six MILK available were already at the native same-turn SELL state.
 
-If most clean signals occur after price collapse, with empty shed, or far from any SELL window, do not force a tactical response from this axis.
+Therefore do **not** create a MILK@358 lead candidate.
 
-Any v121 change must remain 1–3 major changes and preserve existing premium order unless the overlap evidence supports a specific timing modification.
+### Strong overlap but no timing room: WOOL@432
+
+A recurring hotspot is WOOL around step 432:
+
+- observed across multiple independent opponents and both seats;
+- shed approximately 24;
+- price roughly 200–232, median around 227;
+- parent already sells the same 24 WOOL in the same turn;
+- no BUY dependency.
+
+This is evidence that the race detector is economically meaningful, but it does not expose a safe timing lead because v112 is already liquidating the available stock. Reordering the same-turn premium SELL is not preferred because v119 showed that blind premium reordering can be strongly harmful.
+
+### Best next tactical window: STRAWBERRY around step 577
+
+The clearest under-liquidated high-price window found in the overlap telemetry is STRAWBERRY around step 577:
+
+- clean external race signal;
+- observed in a narrower subset of external opponents/seeds rather than clone self-play;
+- shed about 32;
+- current parent SELL about 8;
+- price about 153, well above nominal base 120;
+- no BUY dependency;
+- no same-item static SELL within the immediate +1..+3 window in the observed cases.
+
+Unlike WOOL@432, v112 has materially more executable stock than it currently sells. This makes the state suitable for a narrowly gated quantity/timing experiment.
+
+Before changing total lifetime quantity, inspect the later STRAWBERRY schedule beyond h3. Prefer moving a bounded amount from a later known SELL into the clean-signal turn, then subtracting exactly that amount from the later SELL. This preserves total sold quantity and isolates timing as the causal change.
+
+### Secondary narrow window: WOOL around step 598
+
+A smaller secondary window exists around WOOL@598:
+
+- shed about 2;
+- price around 169 (~84.5% of nominal base);
+- a larger native WOOL SELL appears roughly two turns later in the observed cases.
+
+A two-unit lead with exact repayment is technically testable, but it is lower priority because it appears in fewer opponents and has small economic magnitude.
+
+## External-strength context
+
+Because v120b is action-identical to v112, its external scores are still the champion's external scores. The 40 matched seed-opponent pairs remained all losses, consistent with v120. The probe therefore does not improve performance itself; it identifies states for a later opponent-reactive candidate.
+
+## Next experiment
+
+Before creating v121:
+
+1. inspect the static/later STRAWBERRY SELL schedule after the step-577 window;
+2. identify the nearest later SELL from which 4–8 units can be borrowed without colliding with existing premium-preemption repayment;
+3. build one narrow sibling candidate on exact v112:
+   - trigger only on the clean public-market signal;
+   - require executable STRAWBERRY shed stock above the current parent SELL;
+   - require a strong price floor, preferably `price >= nominal base` or tighter;
+   - require no current BUY dependency;
+   - advance only a bounded quantity from a known later STRAWBERRY SELL and repay exactly;
+   - preserve order of all other market orders.
+
+Do not combine this with WOOL or MILK changes in the same candidate.
 
 ## Public-reference cross-check
 
-Current public research also contains a `Kaggriculture V35 — Reactive Sales & Sheep Expansion` notebook explicitly organized around public-response sales and evaluated against independent strong opponents / reacting worlds. This is treated only as directional support for reactive-sales research. Its code is not copied into this lineage; v121 must be justified by the local v120/v120b telemetry and canonical H2H/external evaluation.
+Current public research also contains a reactive-sales line evaluated against independent strong/reacting opponents. It is treated only as directional support. No public code is copied into this lineage; any tactical v121 must be justified by the local v120/v120b telemetry and canonical evaluation.
 
 ## Files
 
@@ -122,12 +203,6 @@ Current public research also contains a `Kaggriculture V35 — Reactive Sales & 
 - `experiments/v112_v116_milk_micro/run_v120b_probe.py`
 - `.github/workflows/v112-v120b-overlap-probe-selfhosted.yml`
 
-## Run
-
-- workflow run: `36295388838`
-- job: `108553169251`
-- initial status: queued behind another self-hosted evaluation
-
 ## Decision
 
-**Probe in progress. Formal champion remains v112.**
+**PROBE SUCCESS. ACTIONABLE WINDOWS FOUND. v120b itself is not promotion eligible. Formal champion remains `v112_wheat_lead3_lowdemand`. Next step is a schedule audit for a narrowly gated STRAWBERRY reactive lead candidate.**
