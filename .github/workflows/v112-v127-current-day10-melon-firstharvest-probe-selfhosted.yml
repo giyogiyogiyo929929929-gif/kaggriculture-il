@@ -1,0 +1,40 @@
+name: v112-v127 current day10 melon first-harvest probe
+on:
+  push:
+    branches: [eval/v112-v127-day10-melon-firstharvest-probe-20260927]
+    paths:
+      - '.github/workflows/v112-v127-current-day10-melon-firstharvest-probe-selfhosted.yml'
+      - 'experiments/v112_v116_milk_micro/run_v127_current_day10_melon_firstharvest_probe.py'
+concurrency:
+  group: v112-v127-current-day10-melon-firstharvest-probe
+  cancel-in-progress: true
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install engine and reconstruct exact v112
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          Set-Location experiments\v112_v116_milk_micro
+          python build_sources.py
+          python -m py_compile run_v127_current_day10_melon_firstharvest_probe.py
+      - name: Trace first MELON harvest and early-return route
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v127_current_day10_melon_firstharvest_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v127-current-day10-melon-firstharvest-probe
+          path: experiments/v112_v116_milk_micro/v127_current_day10_melon_firstharvest_probe.json
+          retention-days: 30
