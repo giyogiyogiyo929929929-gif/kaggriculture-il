@@ -1,0 +1,98 @@
+name: v154 v151 dense self exposure ghhosted
+
+on:
+  pull_request:
+    branches: [eval-v154-v151-dense-self-exposure-port-20260927]
+    paths: [".ci/triggers/v154-gh-focused", ".github/workflows/v154-v151-dense-self-exposure-ghhosted.yml", "ci/build_v154_v151_dense_self_exposure.py"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v151 and build v154
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v150_skip_noop_second_pass.py tmp/v147.py tmp/v150.py
+          python ci/build_v151_none_observation_guard.py tmp/v150.py tmp/v151.py
+          python ci/build_v154_v151_dense_self_exposure.py tmp/v151.py tmp/v154.py
+          python -m py_compile tmp/v151.py tmp/v154.py
+          python - <<'PY'
+          import hashlib, importlib.util
+          from pathlib import Path
+          expected='54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31'
+          got=hashlib.sha256(Path('tmp/v151.py').read_bytes()).hexdigest()
+          assert got==expected,(got,expected)
+          print('v151_sha256='+got)
+          print('v154_sha256='+hashlib.sha256(Path('tmp/v154.py').read_bytes()).hexdigest())
+          spec=importlib.util.spec_from_file_location('v154mod','tmp/v154.py')
+          m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          a=m.kaggle_submission_agent_v154(None,None)
+          assert a=={'farmer':['PASS'],'hands':[],'market':[]},a
+          assert m._V154_REPORT['errors']==0,m._V154_REPORT
+          print('none_observation_preserved=PASS')
+          PY
+      - name: Focused score2820 seed520104 both seats
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ci/eval_candidate_vs_champion_panel.py --candidate tmp/v154.py --champion tmp/v151.py --opponent opponents/score_2820/main.py --seed-start 520104 --seed-count 1 --jobs 1 --out results/v154_vs_v151_score2820_520104.json
+      - name: Focused telemetry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+          out=[]
+          for swap in (False,True):
+              mine=C.load('tmp/v154.py')
+              tele=getattr(mine,'telemetry',None)
+              if isinstance(tele,dict):
+                  for k in list(tele): tele[k]=0
+              rewards=C.play(C.wrap(mine),'opponents/score_2820/main.py',520104,swap=swap)
+              out.append({'swap':swap,'rewards':rewards,'telemetry':dict(getattr(mine,'telemetry',{}))})
+          Path('results/v154_focused_telemetry.json').write_text(json.dumps(out,indent=2,default=str),encoding='utf-8')
+          print(json.dumps(out,indent=2,default=str))
+          for row in out:
+              t=row['telemetry']
+              assert int(t.get('errors',-1))==0,row
+              assert int(t.get('eligible',-1))==3,row
+              assert int(t.get('changed',-1))==1,row
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-v151-dense-self-exposure-ghhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
