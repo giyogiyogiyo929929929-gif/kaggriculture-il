@@ -35,6 +35,23 @@ v153 was built on exact v147, so these results are hypothesis support only:
 - champion margin -9 -> candidate margin +34; candidate-minus-champion final cash +20 per seat; margin improvement +43;
 - runtime stress run 36260008638: v153 5,752 calls, median 2.6585 ms, p99 13.2385 ms, max 199.1765 ms, errors 0. The v147 control in the same run had max 210.2851 ms, consistent with previously observed raw-max/GC noise.
 
+### Causal cell detail from retained v152 focused artifact
+
+The retained precursor artifact from run `36250312541` makes the market-order mechanism concrete. This is historical v152/v153-family evidence, not v154 qualification evidence.
+
+At seed `520104`, step `649`, in both seats:
+
+- before the market action the candidate was behind by 178 cash;
+- market inventory included MILK `9888`, with observed MILK price `252`;
+- candidate action placed `SELL MILK 9` second in the leading SELL block:
+  `FERTILIZER 18 -> MILK 9 -> WOOL 7 -> WHEAT 6 -> EGG 2 -> BUY_PRODUCT FERTILIZER 2 -> ...`;
+- `score_2820` used the same relevant sale quantities but delayed `MILK 9` until after `BUY_PRODUCT FERTILIZER 2`:
+  `FERTILIZER 18 -> WOOL 7 -> WHEAT 6 -> EGG 2 -> BUY_PRODUCT FERTILIZER 2 -> MILK 9 -> ...`;
+- immediately after that market step, the candidate deficit narrowed from `-178` to `-157`, a +21 relative-cash swing in both seats;
+- v152 telemetry for this match had `eligible=3`, `changed=1`, with the only changed step being 649 and estimated self-impact delta 57.
+
+This supports a specific interpretation: the useful change is an order-index race on scarce/high-priced MILK, not extra inventory, extra SELL quantity, or a farm-production change. The final v153 hard-cell improvement (+20 candidate cash, margin -9 -> +34) is consistent with that immediate +21 market swing plus later one-dollar cascade/noise. Do not generalize this to every dense block until v154 telemetry/replay confirms the same activation on exact v151.
+
 ## v154 evaluation plan
 
 1. Reconstruct exact v151 and assert champion SHA.
@@ -50,6 +67,13 @@ v153 was built on exact v147, so these results are hypothesis support only:
 ## Orchestration
 
 Focused run: `36284148569` (triggered via temporary evaluation-only child PR because connector-created branch commits do not themselves trigger the workflow). The child PR must not be merged.
+
+A GitHub-hosted fallback run `36284282397` failed before any executable job step was created (`runner_id=0`, empty step list). Treat it as provisioning/infrastructure evidence only, not candidate failure.
+
+Prepared but intentionally not triggered before the focused gate passes:
+
+- `.github/workflows/v154-v151-burned-hard-gate.yml`
+- `.github/workflows/v154-v151-runtime-stress.yml`
 
 ## Decision rule
 
