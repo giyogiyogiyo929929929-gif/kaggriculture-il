@@ -1,0 +1,82 @@
+name: uploaded 127ed3 feed0 earlythin v1 hosted screen
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-earlythin-v1-hosted-screen.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and build exact agents
+        run: |
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python ci/build_uploaded_127ed3_safety_v3.py tmp/safe_v3.py
+          python ci/build_uploaded_127ed3_ca_feed0.py tmp/safe_v3.py tmp/feed0.py
+          python ci/build_uploaded_127ed3_ca_feed0_earlythin_v1.py tmp/feed0.py tmp/candidate.py
+          python - <<'PY'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          assert hashlib.sha256(Path('tmp/feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          assert hashlib.sha256(Path('tmp/candidate.py').read_bytes()).hexdigest()=='e172cc82ff049766b9013a0a973817359d04349946544b1ba2091b552dc07c82'
+          PY
+      - name: Focused known-seed screen
+        run: |
+          python - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          candidate=Path('tmp/candidate.py'); champion=Path('tmp/feed0.py'); previous=Path('tmp/safe_v3.py')
+          starter_seeds=[641,642,643,644]
+          burned=[641,350003,101,211,347,509,733,911,1201,1601]
+          def run(path,opp,seed,seat):
+              a=load_like_kaggle(path); ae=[0]
+              def aw(o,c=None):
+                  try:return call_like_kaggle(a,o,c)
+                  except Exception: ae[0]+=1; return {'farmer':['PASS'],'hands':[],'market':[]}
+              if isinstance(opp,Path):
+                  b=load_like_kaggle(opp); be=[0]
+                  def bw(o,c=None):
+                      try:return call_like_kaggle(b,o,c)
+                      except Exception: be[0]+=1; return {'farmer':['PASS'],'hands':[],'market':[]}
+              else: bw=opp; be=[0]
+              env=make('kaggriculture',configuration={'seed':seed}); env.run([aw,bw] if seat==0 else [bw,aw])
+              assert [s.get('status') for s in env.state]==['DONE','DONE'] and len(env.steps)==720 and ae[0]==0 and be[0]==0
+              r=[float(s.get('reward',0)) for s in env.state]
+              return r[seat]-r[1-seat]
+          out={'starter':[],'burned':[]}
+          for seed in starter_seeds:
+              vals={}
+              for label,path in [('candidate',candidate),('champion',champion),('previous',previous)]: vals[label]=statistics.mean(run(path,'starter',seed,s) for s in (0,1))
+              out['starter'].append({'seed':seed,**vals,'candidate_minus_champion':vals['candidate']-vals['champion'],'candidate_minus_previous':vals['candidate']-vals['previous']})
+          ds=[]
+          for seed in burned:
+              d=statistics.mean(run(candidate,champion,seed,s) for s in (0,1)); ds.append(d); out['burned'].append({'seed':seed,'delta':d})
+          se=statistics.stdev(ds)/(len(ds)**0.5) if len(ds)>1 else 0.0
+          out['burned_summary']={'wins':sum(x>0 for x in ds),'losses':sum(x<0 for x in ds),'draws':sum(x==0 for x in ds),'mean':statistics.mean(ds),'mean_minus_2se':statistics.mean(ds)-2*se,'worst':min(ds),'best':max(ds)}
+          print(json.dumps(out,indent=2)); Path('results/hosted_screen.json').write_text(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-earlythin-v1-hosted-screen
+          path: results/
+          if-no-files-found: warn
+          retention-days: 7
