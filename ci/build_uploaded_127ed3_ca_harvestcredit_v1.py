@@ -3,7 +3,7 @@ import hashlib
 import sys
 
 PARENT_SHA256 = "87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df"
-CANDIDATE_SHA256 = "56736e406f6cc023b0b720bd1b7aee556ed7aba4caa92a9ba427336cb047a95f"
+CANDIDATE_SHA256 = "ea296402b43b2e389e2f9cf8a23e27f92434b5b25212c3095f720840d9a91eb0"
 
 
 def replace_once(src: bytes, old: bytes, new: bytes, label: str) -> bytes:
@@ -21,23 +21,27 @@ def main() -> None:
     if got != PARENT_SHA256:
         raise SystemExit(f"parent sha mismatch: {got}")
 
-    old_report = b'''_CA_REPORT = {"ca_swaps": 0, "ca_rescues": 0, "ca_harvested": 0, "ca_sold": 0, "ca_seed_bought": 0,
+    newline = b"\r\n" if b"\r\n" in parent else b"\n"
+    def block(x: bytes) -> bytes:
+        return x.replace(b"\n", newline)
+
+    old_report = block(b'''_CA_REPORT = {"ca_swaps": 0, "ca_rescues": 0, "ca_harvested": 0, "ca_sold": 0, "ca_seed_bought": 0,
               "ca_wheat_seed_saved": 0, "ca_carrot_seed_saved": 0, "ca_feed_block": 0, "ca_errors": 0,
-              "ca_min_wheat": 999}'''
-    new_report = b'''_CA_REPORT = {"ca_swaps": 0, "ca_rescues": 0, "ca_harvested": 0, "ca_sold": 0, "ca_seed_bought": 0,
+              "ca_min_wheat": 999}''')
+    new_report = block(b'''_CA_REPORT = {"ca_swaps": 0, "ca_rescues": 0, "ca_harvested": 0, "ca_sold": 0, "ca_seed_bought": 0,
               "ca_wheat_seed_saved": 0, "ca_carrot_seed_saved": 0, "ca_feed_block": 0,
-              "ca_feed_harvest_credit": 0, "ca_errors": 0, "ca_min_wheat": 999}'''
+              "ca_feed_harvest_credit": 0, "ca_errors": 0, "ca_min_wheat": 999}''')
     child = replace_once(parent, old_report, new_report, "report")
 
-    old_need = b'''def _ca_feed_need(seat, step, days):
+    old_need = block(b'''def _ca_feed_need(seat, step, days):
     need = 0
     for t in range(step, min(719, step + 24 * days) + 1):
         act = _ca_tape(seat, t)
         units = [act.get("farmer") or ["PASS"]] + list(act.get("hands") or [])
         need += sum(1 for c in units if c and c[0] == "FEED")
     return need
-'''
-    new_need = b'''def _ca_feed_need(seat, step, days):
+''')
+    new_need = block(b'''def _ca_feed_need(seat, step, days):
     need = 0
     for t in range(step, min(719, step + 24 * days) + 1):
         act = _ca_tape(seat, t)
@@ -83,23 +87,23 @@ def _ca_wheat_feed_safe(obs, action, seat, step, days):
         stock -= feeds
         stock += harvests.get(t, 0)
     return True
-'''
+''')
     child = replace_once(child, old_need, new_need, "feed helper")
 
-    old_reset = b'''                _CA_REPORT.update(ca_swaps=0, ca_rescues=0, ca_harvested=0, ca_sold=0, ca_seed_bought=0,
+    old_reset = block(b'''                _CA_REPORT.update(ca_swaps=0, ca_rescues=0, ca_harvested=0, ca_sold=0, ca_seed_bought=0,
                                   ca_wheat_seed_saved=0, ca_carrot_seed_saved=0, ca_feed_block=0,
-                                  ca_errors=0, ca_min_wheat=999)'''
-    new_reset = b'''                _CA_REPORT.update(ca_swaps=0, ca_rescues=0, ca_harvested=0, ca_sold=0, ca_seed_bought=0,
+                                  ca_errors=0, ca_min_wheat=999)''')
+    new_reset = block(b'''                _CA_REPORT.update(ca_swaps=0, ca_rescues=0, ca_harvested=0, ca_sold=0, ca_seed_bought=0,
                                   ca_wheat_seed_saved=0, ca_carrot_seed_saved=0, ca_feed_block=0,
-                                  ca_feed_harvest_credit=0, ca_errors=0, ca_min_wheat=999)'''
+                                  ca_feed_harvest_credit=0, ca_errors=0, ca_min_wheat=999)''')
     child = replace_once(child, old_reset, new_reset, "report reset")
 
-    old_gate = b'''                if wheat_ok is None:
+    old_gate = block(b'''                if wheat_ok is None:
                     wheat_ok = _ca_wheat_total(observation) >= _ca_feed_need(seat, step, _CA_FEED_DAYS)
                 if not wheat_ok:
                     _CA_REPORT["ca_feed_block"] += 1
-                    break'''
-    new_gate = b'''                if wheat_ok is None:
+                    break''')
+    new_gate = block(b'''                if wheat_ok is None:
                     wheat_now = _ca_wheat_total(observation)
                     wheat_need = _ca_feed_need(seat, step, _CA_FEED_DAYS)
                     wheat_ok = wheat_now >= wheat_need
@@ -109,7 +113,7 @@ def _ca_wheat_feed_safe(obs, action, seat, step, days):
                             _CA_REPORT["ca_feed_harvest_credit"] += 1
                 if not wheat_ok:
                     _CA_REPORT["ca_feed_block"] += 1
-                    break'''
+                    break''')
     child = replace_once(child, old_gate, new_gate, "feed gate")
 
     child_sha = hashlib.sha256(child).hexdigest()
