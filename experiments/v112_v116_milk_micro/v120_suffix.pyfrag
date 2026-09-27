@@ -1,0 +1,120 @@
+# v120_public_market_race_probe: telemetry-only wrapper over v112.
+# It must return the parent action unchanged. Public market inventory deltas are
+# compared with our previous SELL quantity. Positive residual inventory is a
+# conservative lower bound on opponent sell pressure because Town consumption
+# and our BUYs move inventory in the opposite direction.
+_V120_PARENT = agent
+_V120_ITEMS = ("STRAWBERRY", "MELON", "MILK", "WOOL")
+_V120_STATE = {"prev_step": -1, "inventory": {}, "prices": {}, "own_sell": {}}
+_V120_REPORT = {
+    "transitions": 0,
+    "positive_events": {k: 0 for k in _V120_ITEMS},
+    "positive_units": {k: 0.0 for k in _V120_ITEMS},
+    "clean_positive_events": {k: 0 for k in _V120_ITEMS},
+    "clean_positive_units": {k: 0.0 for k in _V120_ITEMS},
+    "excess_events": {k: 0 for k in _V120_ITEMS},
+    "excess_units": {k: 0.0 for k in _V120_ITEMS},
+    "joint_excess_price_drop": {k: 0 for k in _V120_ITEMS},
+    "negative_events": {k: 0 for k in _V120_ITEMS},
+    "errors": 0,
+    "events": [],
+}
+
+def _v120_parent(obs, config=None):
+    n = getattr(getattr(_V120_PARENT, "__code__", None), "co_argcount", 1)
+    return _V120_PARENT(*[obs, config][:n])
+
+def _v120_num(mapping, key, default=0.0):
+    try:
+        v = _get(mapping, key, default)
+        return float(default if v is None else v)
+    except Exception:
+        return float(default)
+
+def _v120_maps(obs):
+    market = _get(obs, "market", {}) or {}
+    return _get(market, "inventory", {}) or {}, _get(market, "prices", {}) or {}
+
+def _v120_own_sell(action):
+    out = {k: 0.0 for k in _V120_ITEMS}
+    if not isinstance(action, dict):
+        return out
+    for order in (action.get("market") or []):
+        try:
+            if len(order) >= 3 and order[0] == "SELL" and order[1] in out:
+                out[order[1]] += max(0.0, float(order[2]))
+        except Exception:
+            continue
+    return out
+
+def _v120_reset(step):
+    _V120_STATE["prev_step"] = step
+    _V120_STATE["inventory"] = {}
+    _V120_STATE["prices"] = {}
+    _V120_STATE["own_sell"] = {k: 0.0 for k in _V120_ITEMS}
+
+def agent(obs, config=None):
+    action = None
+    try:
+        step = int(_get(obs, "step", 0) or 0)
+        if step <= int(_V120_STATE.get("prev_step", -1)):
+            _v120_reset(step)
+        inv, prices = _v120_maps(obs)
+        prev_inv = _V120_STATE.get("inventory") or {}
+        prev_prices = _V120_STATE.get("prices") or {}
+        own_sell = _V120_STATE.get("own_sell") or {}
+
+        if prev_inv and step > int(_V120_STATE.get("prev_step", -1)):
+            _V120_REPORT["transitions"] += 1
+            for item in _V120_ITEMS:
+                old_inv = _v120_num(prev_inv, item, 0.0)
+                now_inv = _v120_num(inv, item, old_inv)
+                delta = now_inv - old_inv
+                sold = max(0.0, float(own_sell.get(item, 0.0) or 0.0))
+                old_price = _v120_num(prev_prices, item, 0.0)
+                now_price = _v120_num(prices, item, old_price)
+                excess = max(0.0, delta - sold)
+
+                if delta > 0:
+                    _V120_REPORT["positive_events"][item] += 1
+                    _V120_REPORT["positive_units"][item] += delta
+                    if sold <= 0:
+                        _V120_REPORT["clean_positive_events"][item] += 1
+                        _V120_REPORT["clean_positive_units"][item] += delta
+                elif delta < 0:
+                    _V120_REPORT["negative_events"][item] += 1
+
+                if excess > 0:
+                    _V120_REPORT["excess_events"][item] += 1
+                    _V120_REPORT["excess_units"][item] += excess
+                    if now_price < old_price:
+                        _V120_REPORT["joint_excess_price_drop"][item] += 1
+                    if len(_V120_REPORT["events"]) < 128:
+                        _V120_REPORT["events"].append({
+                            "step": step,
+                            "item": item,
+                            "inventory_before": old_inv,
+                            "inventory_after": now_inv,
+                            "delta": delta,
+                            "own_prev_sell": sold,
+                            "excess": excess,
+                            "price_before": old_price,
+                            "price_after": now_price,
+                        })
+
+        action = _v120_parent(obs, config)
+
+        _V120_STATE["prev_step"] = step
+        _V120_STATE["inventory"] = {k: _v120_num(inv, k, 0.0) for k in _V120_ITEMS}
+        _V120_STATE["prices"] = {k: _v120_num(prices, k, 0.0) for k in _V120_ITEMS}
+        _V120_STATE["own_sell"] = _v120_own_sell(action)
+        return action
+    except Exception:
+        _V120_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        return _v120_parent(obs, config)
+
+agent.telemetry = dict(getattr(_V120_PARENT, "telemetry", {}) or {})
+agent.telemetry["public_market_race_probe"] = _V120_REPORT
+agent.__version__ = "v120_public_market_race_probe"
