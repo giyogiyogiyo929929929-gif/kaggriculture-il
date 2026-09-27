@@ -4,6 +4,8 @@
 
 KEEP TESTING. Formal champion remains `v151_none_observation_guard`. No fresh sealed seed spent. No Kaggle submission.
 
+Current execution blocker: the only self-hosted Windows runner is occupied by run `36283893966` (`v112-v119 self-hosted exact and bronze panel`), currently in its 10-opponent × 4-seed external panel. v154 focused run `36284148569` is queued behind it. This is infrastructure scheduling, not v154 pass/fail evidence.
+
 ## Parent / champion
 
 - formal champion: `v151_none_observation_guard`
@@ -66,9 +68,9 @@ This supports a specific interpretation: the useful change is an order-index rac
 
 ## Orchestration
 
-Focused run: `36284148569` (triggered via temporary evaluation-only child PR because connector-created branch commits do not themselves trigger the workflow). The child PR must not be merged.
+Focused self-hosted run: `36284148569` (triggered via temporary evaluation-only child PR because connector-created branch commits do not themselves trigger the workflow). The child PR must not be merged.
 
-A GitHub-hosted fallback run `36284282397` failed before any executable job step was created (`runner_id=0`, empty step list). Treat it as provisioning/infrastructure evidence only, not candidate failure.
+GitHub-hosted fallback run `36284282397` failed before any executable job step was created on both attempt 1 and attempt 2. Attempt 2 again had `runner_id=0`, empty runner name, and `steps=[]`, completing in about two seconds. Treat both as provisioning/infrastructure evidence only, not candidate failure. Do not spend more GitHub-hosted retries unless runner provisioning changes.
 
 Prepared but intentionally not triggered before the focused gate passes:
 
