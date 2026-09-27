@@ -1,0 +1,35 @@
+name: v112-v126 day10 melon inventory probe hosted
+on:
+  push:
+    branches: [eval/v112-v126-day10-melon-inventory-probe-20260927]
+    paths:
+      - '.github/workflows/v112-v126-day10-melon-inventory-probe-hosted.yml'
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install engine and reconstruct v112
+        run: |
+          set -euxo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          cd experiments/v112_v116_milk_micro
+          python build_sources.py
+          python -m py_compile run_v126_day10_melon_inventory_probe.py
+      - name: Run day10 MELON inventory probe
+        run: |
+          set -euxo pipefail
+          cd experiments/v112_v116_milk_micro
+          python run_v126_day10_melon_inventory_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v126-day10-melon-inventory-probe-hosted
+          path: experiments/v112_v116_milk_micro/v126_day10_melon_inventory_probe.json
+          retention-days: 30
