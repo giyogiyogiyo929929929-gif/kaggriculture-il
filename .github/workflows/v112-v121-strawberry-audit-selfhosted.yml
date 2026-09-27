@@ -1,0 +1,44 @@
+name: v112-v121 strawberry schedule audit
+
+on:
+  push:
+    branches: [eval/v112-v121-strawberry-race-20260927]
+    paths:
+      - ".github/workflows/v112-v121-strawberry-audit-selfhosted.yml"
+      - "experiments/v112_v116_milk_micro/audit_v121_strawberry_schedule.py"
+  workflow_dispatch:
+
+concurrency:
+  group: v112-v121-strawberry-audit-current-lineage
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build exact v112 and audit strawberry schedule
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python audit_v121_strawberry_schedule.py
+          if ($LASTEXITCODE -ne 0) { throw 'v121 strawberry schedule audit failed' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v121-strawberry-schedule-audit
+          path: experiments/v112_v116_milk_micro/v121_strawberry_schedule.json
+          if-no-files-found: warn
+          retention-days: 30
