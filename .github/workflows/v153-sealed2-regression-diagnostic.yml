@@ -66,6 +66,7 @@ jobs:
       - name: Trace consumed regression and positive control
         run: |
           $ErrorActionPreference='Stop'
+          $env:PYTHONPATH = (Get-Location).Path
           python ci\diagnose_v153_sealed2_regression.py tmp\v153.py tmp\v147.py results\v153_sealed2_regression_diag.json
           if ($LASTEXITCODE -ne 0) { throw 'diagnostic failed' }
 
