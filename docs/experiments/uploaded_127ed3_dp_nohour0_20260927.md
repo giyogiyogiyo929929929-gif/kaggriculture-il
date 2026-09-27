@@ -1,6 +1,6 @@
-# uploaded 127ed3 DAWNPX no-hour0 — 2026-09-27
+# uploaded 127ed3 DAWNPX no-hour0 — REJECT — 2026-09-27
 
-Decision: **KEEP TESTING (burned dev queued)**
+Decision: **REJECT**
 
 ## Identity
 
@@ -23,15 +23,15 @@ Single tactical change only:
 _DP_HOURS = (0, 1, 2)
 ```
 
-becomes
+became
 
 ```python
 _DP_HOURS = (1, 2)
 ```
 
-All other safety-v3 bytes are unchanged.
+All other safety-v3 behavior was unchanged.
 
-Local exact reconstruction from the immutable uploaded raw parent plus the canonical safety-v3 wrapper verified:
+Exact reconstruction/build checks verified:
 
 - raw SHA256 `127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652`
 - parent SHA256 `87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df`
@@ -39,33 +39,61 @@ Local exact reconstruction from the immutable uploaded raw parent plus the canon
 - child SHA256 `ff5932a9cb7ceb2f6db9d1f052083fdb442e7270ac70048ce078a93fec819116`
 - AST/syntax: PASS
 
-## Diagnostic basis
-
-Existing safety-v3-v147 telemetry on contrast seeds shows:
-
-- seed 641: safety-v3 minus v147 = `-406`; WHEAT net-market contribution difference `-1722`, partly offset by CARROT `+1691`.
-- seed 350003: safety-v3 minus v147 = `-520`; WHEAT net-market contribution difference `-1008`, with smaller CARROT/high-value offsets.
-- seed 733: safety-v3 minus v147 = `+3428`; CARROT `+2324`, WOOL `+1926`, STRAWBERRY `+996` dominate despite WHEAT `-1472`.
-- seed 911: safety-v3 minus v147 = `+1178`; STRAWBERRY `+860`, MILK `+425`, WHEAT `+163`.
-
-This makes blanket CARROT suppression inappropriate. A previously tested CARROT2 swap-cap-24 child was already negative (`0W/3L/7D`, mean `-176.4`, worst `-1572`) and is not repeated.
-
-DAWNPX telemetry on these same games fired on loss seeds (641: 8 fires / 27 units; 350003: 4 / 11), was absent on strong seed 733 (0 / 0), and small on seed 911 (1 / 4). This is suggestive but not sufficient alone; the direct-parent ablation is the decision evidence.
-
 ## Evaluation
 
 Workflow: `.github/workflows/uploaded-127ed3-dp-nohour0-dev.yml`
 
 Actions run: `36284441745`
 
+Artifact: `uploaded-127ed3-dp-nohour0-dev`, artifact id `10920309507`
+
 Burned matched seeds, both seats:
 
 `641, 350003, 101, 211, 347, 509, 733, 911, 1201, 1601`
 
-Current state at log creation: **queued** because the self-hosted runner is occupied by another long evaluation.
+Direct-parent result:
 
-A separate full DAWNPX-off causal diagnostic run `36284150337` is also queued. Hosted four-seed CH/DP screen `36284180138` failed before producing an artifact and is not tactical evidence.
+- W/L/D = **1 / 1 / 8**
+- mean = **-2.2**
+- median = `0`
+- SE = `4.4242`
+- mean - 2SE = **-11.0484**
+- worst = **-39**
+- best = `+17`
+- seat0 mean = `-2.2`
+- seat1 mean = `-2.2`
+- candidate exceptions = `0`
+- parent exceptions = `0`
 
-## Promotion rule
+Seed deltas:
 
-Compare no-hour0 directly against safety-v3 first. Do not use v147 as the parent decision comparator. Advance only if the matched burned block is clearly non-negative with acceptable worst regression and no exceptions. If promising, run stress and then allocate fresh sealed seeds; do not inherit safety-v3 sealed evidence.
+| seed | candidate - parent |
+|---:|---:|
+| 641 | 0 |
+| 350003 | 0 |
+| 101 | +17 |
+| 211 | -39 |
+| 347 | 0 |
+| 509 | 0 |
+| 733 | 0 |
+| 911 | 0 |
+| 1201 | 0 |
+| 1601 | 0 |
+
+Both seat deltas were identical for every seed.
+
+## Interpretation
+
+The candidate does not improve either focal loss seed: 641 and 350003 are exact behavior-equivalent to the parent under this change. The two contrast wins 733 and 911 are also exact ties. The only observed changes are a small `+17` on seed 101 and a larger `-39` regression on seed 211, leaving the block slightly negative.
+
+There is therefore no evidence that hour-0 DAWNPX front-running explains the late loss pattern. Combined with the full DAWNPX-off diagnostic (`1W/7L/2D`, mean `-134.7`, worst `-594`), the DAWNPX suppression direction is closed.
+
+Do not spend stress or sealed seeds on this child. Do not repeat full DAWNPX-off or hour-0-only suppression without materially new evidence.
+
+## Decision
+
+**REJECT.** Formal champion remains `uploaded_127ed3_safety_v3`.
+
+## Next hypothesis
+
+Move upstream to the crop-realization decision rather than suppressing downstream protective/lead-sale layers. Existing late-market decomposition shows the loss structure is uncompensated WHEAT opportunity cost, whereas winning seed 733 has an even larger WHEAT shortfall that is more than repaid by CARROT/premium realized revenue. The next analysis should inspect CARROT2 decision-state chronology (including rejected opportunities), harvest horizon, market inventory, Town demand, standing crop mix, and planned SELL pipeline before introducing another tactical gate.
