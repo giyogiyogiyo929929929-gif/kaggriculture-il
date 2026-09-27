@@ -1,0 +1,74 @@
+name: uploaded 127ed3 CARROT2 feed0 burned stress
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-stress.yml'
+      - 'ci/build_uploaded_127ed3_ca_feed0.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and feed0 child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          @'
+          import hashlib,importlib.metadata,json
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          p=Path('tmp/safe_v3.py').read_bytes(); c=Path('tmp/ca_feed0.py').read_bytes()
+          assert hashlib.sha256(p).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(c).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          Path('results/build.json').write_text(json.dumps({'parent_sha256':hashlib.sha256(p).hexdigest(),'candidate_sha256':hashlib.sha256(c).hexdigest()},indent=2),encoding='utf-8')
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py
+      - name: Burned stress matched evaluation
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          seeds=list(range(621,633)); rows=[]; exc_c=exc_p=0; non_done=0
+          for seed in seeds:
+              s=evaluate('tmp/ca_feed0.py','tmp/safe_v3.py',pairs=1,jobs=1,seed_start=seed)
+              exc_c+=s['exceptions']['a']; exc_p+=s['exceptions']['b']
+              games=sorted(s['matches_detail'],key=lambda x:bool(x['swap']))
+              vals=[float(g['money'][0])-float(g['money'][1]) for g in games]
+              for g in games:
+                  st=g.get('statuses') or []
+                  if any(x!='DONE' for x in st): non_done+=1
+              pair=statistics.mean(vals); rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D'})
+          vals=[r['pair_mean_delta'] for r in rows]; mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'candidate':'uploaded_127ed3_ca_feed0','candidate_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'non_done':non_done,'rows':rows}
+          Path('results/ca_feed0_stress.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert exc_c==0 and exc_p==0 and non_done==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-stress
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
