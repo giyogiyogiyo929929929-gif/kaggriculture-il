@@ -79,11 +79,24 @@ Median post-signal prices at representative ubiquitous hotspots:
 - WOOL@294: 151 (~75.5% of base);
 - WOOL@343: 183 (~91.5% of base);
 - MELON@250: 266 (~106.4% of base), falling deterministically across the 250–256 sequence to 226 (~90.4%);
-- MILK@339: 169 (~105.6% of base), @340: 137 (~85.6%), @341: 152 median in the captured cross-opponent stream;
+- MILK@339: 169 (~105.6% of base), @340: 137 (~85.6%);
 - STRAWBERRY@404/428/430: median roughly 170.5/170.5/164, all still materially above nominal base 120;
 - STRAWBERRY@518: median 1, therefore unsuitable as a generic reactive trigger despite universal detection.
 
 This confirms that the detector sees both economically actionable early/mid-season pressure and useless post-collapse noise. v120b must therefore retain explicit price-state telemetry rather than treating all clean events equally.
+
+### Partial SELL-window inference from v120 event stream
+
+The v120 event record also contains `own_prev_sell`. When a clean signal at `t` is followed by another recorded event for the same item at `t+h+1`, a positive `own_prev_sell` there proves that v112 executed a same-item SELL at `t+h`. This is only a partial inference because the event list is capped and a later observation may not itself be recorded.
+
+Within the captured stream, the ubiquitous clean hotspots above generally showed no proven v112 SELL within h0..h3. A few narrower high-price overlaps did appear:
+
+- MILK@358 -> proven 6-unit v112 SELL at step 360 (h2) in 16 captured games, concentrated in v49/v50/tetsutani_dpts_b; median signal price ~154 versus nominal 160;
+- STRAWBERRY@453 -> proven 14-unit SELL at step 456 (h3) in 12 captured games; median signal price ~145 versus nominal 120;
+- WOOL@456 -> proven 8-unit same-turn SELL in 2 captured games; median signal price ~214 versus nominal 200;
+- STRAWBERRY@577 -> proven 8-unit same-turn SELL in 6 captured games; median signal price ~153.
+
+MILK@358 is therefore a concrete provisional v121 hypothesis: if v120b confirms shed stock is already executable at the signal step, a narrowly gated two-turn reactive lead could front-run the observed external sell pressure without affecting clone self-play. It must not be implemented if shed stock is absent or BUY/parent-state conflicts dominate.
 
 ## Decision rule
 
