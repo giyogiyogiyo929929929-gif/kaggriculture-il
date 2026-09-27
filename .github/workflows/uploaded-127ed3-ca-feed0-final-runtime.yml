@@ -63,21 +63,29 @@ jobs:
           @'
           import gc,json,statistics,sys,time
           from pathlib import Path
+          from kaggle_environments import make
           sys.path.insert(0,str(Path('scripts/analysis').resolve()))
           import _common as C
           LIMIT_P99_MS=50.0
           LIMIT_WORST_MS=200.0
           seeds=[71,75]
-          mine=C.load('tmp/ca_feed0.py')
           def measure(opponent,label):
-              ts=[]; inner=C.wrap(mine)
-              def timed(o,c=None):
-                  t=time.perf_counter(); a=inner(o,c); ts.append(time.perf_counter()-t); return a
-              gc.collect()
-              for seed in seeds: C.play(timed,opponent,seed)
+              ts=[]
+              for seed in seeds:
+                  for swap in (False,True):
+                      mine=C.load('tmp/ca_feed0.py')
+                      inner=C.wrap(mine)
+                      def timed(o,c=None):
+                          t=time.perf_counter(); a=inner(o,c); ts.append(time.perf_counter()-t); return a
+                      opp = opponent if opponent=='starter' else C.wrap(C.load(opponent))
+                      gc.collect()
+                      env=make('kaggriculture',configuration={'seed':seed})
+                      env.run([opp,timed] if swap else [timed,opp])
+                      assert len(env.steps)==720
+                      assert all(st.get('status')=='DONE' for st in env.state)
               ts.sort(); p99=ts[min(len(ts)-1,int(len(ts)*0.99))]*1000.0
               worst=ts[-1]*1000.0; median=statistics.median(ts)*1000.0
-              return {'label':label,'opponent':opponent,'seeds':seeds,'n':len(ts),'median_ms':median,'p99_ms':p99,'worst_ms':worst,'pass':p99<LIMIT_P99_MS and worst<LIMIT_WORST_MS}
+              return {'label':label,'opponent':opponent,'seeds':seeds,'both_seats':True,'n':len(ts),'median_ms':median,'p99_ms':p99,'worst_ms':worst,'pass':p99<LIMIT_P99_MS and worst<LIMIT_WORST_MS}
           rows=[measure('starter','starter'),measure('tmp/v147.py','v147')]
           out={'candidate':'uploaded_127ed3_ca_feed0','candidate_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','engine':'1.32.7','limits':{'p99_ms_lt':LIMIT_P99_MS,'worst_ms_lt':LIMIT_WORST_MS},'rows':rows,'pass':all(r['pass'] for r in rows)}
           print('RUNTIME_GATE',json.dumps(out,indent=2)); Path('results/runtime_gate.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
