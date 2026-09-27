@@ -2,7 +2,7 @@
 
 ## Status
 
-**TELEMETRY PROBE — NOT PROMOTION ELIGIBLE**
+**PROBE COMPLETE — SIGNAL FOUND — NOT PROMOTION ELIGIBLE**
 
 Formal champion remains `v112_wheat_lead3_lowdemand`.
 
@@ -44,34 +44,108 @@ Focused synthetic checks verify:
 - episode/reset handling does not create a fake transition;
 - parent telemetry remains attached.
 
-Local result: `v120 synthetic checks: PASS`.
+Canonical result: `v120 synthetic checks: PASS`.
 
-## Canonical probe plan
+## Canonical probe execution
 
 Engine: `kaggle_environments==1.32.7`.
 
-### Clone baseline
+Run: `36291456907` on self-hosted Windows X64 runner `CIYOI`.
 
-- seeds 308001–308004
-- v120 vs v112
-- seat swap
-- every matched pair diff must be exactly zero or the semantic gate fails.
+Source SHAs reconstructed successfully, including exact v112 SHA `1c6e00ff0bd46b16189b1f6a93ce5e498ff8ff5b0acb33591cdd247cd8b4771` as printed by the workflow source builder. v120 probe SHA was `e42783e7863eeb6f81e5ec0a17aa0163fb006efb68180afedbb11db7bb5217c9`.
 
-### External panel
+### Clone semantic gate
 
-- seeds 309001–309004
-- seat swap
-- opponents: v49, v50, metav4_v13, k256_h2_q_v1, market_rhythm, story_of_seasons, thomas_router_93, tetsutani_dpts_b, jaxa_2802, ready_stock.
+Seeds 308001–308004, seat swapped.
 
-Primary output is telemetry distribution, not score.
+Pair diffs:
 
-## Decision rule for v121
+- 308001: 0.0
+- 308002: 0.0
+- 308003: 0.0
+- 308004: 0.0
 
-Only create an opponent-reactive tactical candidate if external opponents show a repeatable public-state signal that is materially enriched relative to the v112-clone baseline, preferably concentrated in specific item/step regimes.
+Errors: 0.
 
-Do not use the probe to justify broad MILK/WOOL reordering. Any later action change must preserve the learned v112 premium order unless a separately tested, narrowly gated response is supported by the probe.
+Decision: semantic gate **PASS**. v120 is action-identical to v112 on the canonical clone panel.
 
-If the external distributions do not separate from clone baseline, abandon this race-detector axis rather than tuning thresholds on noise.
+### Self-play baseline telemetry
+
+Across 8 games / 5,744 transitions:
+
+| item | clean positive events | excess events | excess units |
+|---|---:|---:|---:|
+| STRAWBERRY | 0 | 214 | 1478 |
+| MELON | 0 | 48 | 664 |
+| MILK | 0 | 320 | 1146 |
+| WOOL | 0 | 104 | 606 |
+
+The key baseline is that **clean positive events are zero for all four premium items** when v112 plays its action-identical clone.
+
+### External panel separation
+
+Seeds 309001–309004, seat swapped, against 10 independent/historical opponents.
+
+For every external opponent and every tracked premium item, clean positive events became nonzero. Across opponents, the per-opponent ranges were:
+
+| item | clean events min | median | max | clean units min | median | max |
+|---|---:|---:|---:|---:|---:|---:|
+| STRAWBERRY | 146 | 235 | 262 | 996 | 1105 | 1198 |
+| MELON | 48 | 48 | 48 | 480 | 480 | 480 |
+| MILK | 156 | 220 | 276 | 706 | 900 | 936 |
+| WOOL | 170 | 212 | 240 | 680 | 848 | 1180 |
+
+This is a strong distributional separation from the clone baseline (`0` clean events for every item).
+
+Most positive residual events also coincided with a price drop. Across external opponents, the joint-excess/price-drop fraction ranged approximately:
+
+- STRAWBERRY: 97.6%–100%
+- MELON: 100%
+- MILK: 100%
+- WOOL: 84.8%–94.4%
+
+This supports treating the signal as economically relevant sell pressure rather than arbitrary inventory noise, while still not claiming exact opponent-action attribution for non-clean residuals.
+
+The external event streams also show repeated short runs rather than only isolated spikes. In the aggregate external telemetry, consecutive clean-event streaks reached length 4 for STRAWBERRY/MILK/WOOL and length 5 for MELON. This makes a short-horizon opponent-response hypothesis plausible, but it does not yet prove that v112 has executable stock or a safe SELL window immediately after the signal.
+
+### External strength context
+
+Because v120 is action-identical to v112, its external score is effectively the current champion's score on this panel, not a candidate-vs-champion delta.
+
+Across 40 seed-opponent matched pairs:
+
+- wins: 0
+- losses: 40
+- draws: 0
+- mean champion-vs-opponent pair diff: -48,754.15
+- worst: -59,294
+- best: -25,475
+
+This reinforces the bronze-medal policy: the main remaining problem is robust external-opponent performance, not extracting a few more self-play dollars.
+
+## Interpretation
+
+The broad `excess` count alone is not a safe trigger: self-play already has many non-clean excess events because mirrored actions can produce simultaneous inventory rises.
+
+The **clean positive event** is the useful discriminator. It requires our previous SELL quantity for that item to be zero, and it was absent in the clone baseline but abundant against all 10 external opponents.
+
+Therefore the race-detector axis is retained.
+
+However, v119 already showed that blind premium reordering is harmful. The next action-changing candidate must not simply front-run every clean signal. Before changing actions, measure overlap between a clean signal at step `t` and:
+
+1. executable shed stock at `t`;
+2. an existing native/premium SELL of the same item at `t` or within a short horizon;
+3. current price remaining materially above the floor;
+4. no BUY/cash dependency and no existing parent preemption repayment;
+5. repeated signal / short streak where useful.
+
+## Next experiment
+
+Create an action-identical overlap probe before a tactical v121 if needed. It should log, for every clean premium signal, whether the parent action at the same step or the next few static steps already contains a SELL of the same item and whether executable stock exists.
+
+Only then create v121 with one narrow response. Candidate changes must preserve the existing v112 premium ordering unless the clean-signal overlap demonstrates a specific safe timing opportunity.
+
+MELON deserves special attention because every external opponent produced exactly 48 clean events / 480 clean units while clone baseline was zero, but previous v114 evidence showed that a simple one-turn shed-only MELON lead had zero activation. Any MELON candidate therefore needs stock/horizon evidence first rather than re-running v114 in another form.
 
 ## Infrastructure
 
@@ -81,7 +155,8 @@ If the external distributions do not separate from clone baseline, abandon this 
 - runner: `run_v120_probe.py`
 - workflow: `.github/workflows/v112-v120-probe-selfhosted.yml`
 - run: `36291456907`
+- artifact: `v112-v120-public-market-race-probe`, artifact ID `10922558581`, SHA256 `91fff829db7e5762c36dc809b1f3cae3a20f0e6d8c63559267a4e0de83397424`
 
 ## Decision
 
-**Probe in progress. Formal champion remains v112.**
+**PROBE SUCCESS. Race-detector research continues. Formal champion remains `v112_wheat_lead3_lowdemand`. v120 itself is not promotion eligible.**
