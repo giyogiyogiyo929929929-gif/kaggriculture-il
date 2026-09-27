@@ -1,0 +1,90 @@
+name: v156 v151 focused gate
+
+on:
+  pull_request:
+    branches: [eval-v156-v151-not-ahead-three-exposure-20260927]
+    paths: ["ci/trigger-v156-focused.txt"]
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v151 and build v156
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          python ci\build_v156_v151_not_ahead_three_exposure.py tmp\v151.py tmp\v156.py
+          python -m py_compile tmp\v151.py tmp\v156.py
+          @'
+          import hashlib,json
+          from pathlib import Path
+          c=hashlib.sha256(Path('tmp/v151.py').read_bytes()).hexdigest(); v=hashlib.sha256(Path('tmp/v156.py').read_bytes()).hexdigest()
+          assert c=='54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31',c
+          Path('results/build.json').write_text(json.dumps({'v151_sha256':c,'v156_sha256':v},indent=2),encoding='utf-8'); print('v156_sha256='+v)
+          '@ | python -
+      - name: None safety and selected cells
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+          a=C.load('tmp/v156.py'); parent=C.load('tmp/v151.py')
+          x=C.wrap(a)(None,None); y=C.wrap(parent)(None,None)
+          assert x==y=={'farmer':['PASS'],'hands':[],'market':[]},(x,y)
+          '@ | python -
+          python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v156.py --champion tmp\v151.py --opponent opponents\score_2820\main.py --seed-start 520104 --seed-count 1 --jobs 2 --out results\score.json
+          python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v156.py --champion tmp\v151.py --opponent opponents\peak_2950\main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results\peak.json
+          python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v156.py --champion tmp\v151.py --opponent opponents\tetsutani_ms\main.py --seed-start 520101 --seed-count 4 --jobs 2 --out results\tetsutani.json
+      - name: Strict focused acceptance
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          score=json.loads(Path('results/score.json').read_text()); peak=json.loads(Path('results/peak.json').read_text()); tet=json.loads(Path('results/tetsutani.json').read_text())
+          out={'score_mean':score['candidate_minus_champion_mean'],'score_worst':score['worst'],'peak_mean':peak['candidate_minus_champion_mean'],'peak_worst':peak['worst'],'tetsutani_mean':tet['candidate_minus_champion_mean'],'tetsutani_worst':tet['worst'],'exceptions':score['candidate_exceptions']+score['champion_exceptions']+peak['candidate_exceptions']+peak['champion_exceptions']+tet['candidate_exceptions']+tet['champion_exceptions']}
+          Path('results/acceptance.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          assert out['exceptions']==0,out
+          assert out['score_mean']>0 and out['score_worst']>0,out
+          assert out['peak_worst']>=0,out
+          assert out['tetsutani_worst']>=0,out
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v156-v151-focused
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
