@@ -1,6 +1,6 @@
 # uploaded 127ed3 feed0 starter-margin trace and earlythin-v1 hypothesis — 2026-09-27
 
-Status: **TRACE COMPLETE; EARLYTHIN-V1 FOCUSED TEST QUEUED**
+Status: **TRACE COMPLETE; BYTE-PRESERVING EARLYTHIN-V1 FOCUSED TEST QUEUED**
 
 ## Formal champion
 
@@ -42,11 +42,13 @@ The earlier direct-parent divergence trace (`36295996084`) shows the clearly ben
 
 Parent: current formal champion `uploaded_127ed3_ca_feed0`.
 
-Candidate SHA256:
+Formal byte-preserving candidate SHA256:
 
-`d3cfbcbacb3530fc44e6db41fe7b336b00dcda6ae5823694869176de42711d9e`
+`e172cc82ff049766b9013a0a973817359d04349946544b1ba2091b552dc07c82`
 
 Builder: `ci/build_uploaded_127ed3_ca_feed0_earlythin_v1.py`.
+
+The initial builder used `read_text()` and therefore normalized the CRLF-heavy parent to LF. That produced SHA `d3cfbcbacb3530fc44e6db41fe7b336b00dcda6ae5823694869176de42711d9e`. That identity is **invalid for tactical evaluation** because its byte diff includes whole-file newline normalization. No result from that identity may be used as candidate evidence. The corrected builder operates on parent bytes and inserts only the intended guard while preserving all existing line endings.
 
 ### Single tactical change
 
@@ -61,7 +63,7 @@ Hypothesis: the large starter margin compression is caused by converting two of 
 
 ## Focused evaluation
 
-Run `36306082148` is queued. No fresh seeds are used.
+The workflow is updated to assert the formal byte-preserving SHA before any game. No fresh seeds are used.
 
 It checks:
 
