@@ -1,0 +1,255 @@
+# v121_strawberry_race_shift4: react to a late high-price external-only
+# STRAWBERRY inventory jump by moving exactly 4 units from a later known
+# STRAWBERRY SELL into the current existing SELL. Parent=v112; sibling of
+# v116/v117/v118. Total scheduled quantity is conserved by exact repayment.
+_V121_PARENT = agent
+_V121_ITEM = "STRAWBERRY"
+_V121_SHIFT = 4
+_V121_MIN_STEP = 500
+_V121_MIN_PRICE = 145.0
+_V121_MAX_MARKET_INV = 10000.0
+_V121_MIN_SIGNAL_DELTA = 4.0
+_V121_REPAY_MIN_STATIC = 8
+_V121_REPAY_HORIZON = 48
+_V121_STATE = {
+    0: {"prev_step": -1, "inventory": None, "own_sell": 0, "due_step": -1, "due": 0},
+    1: {"prev_step": -1, "inventory": None, "own_sell": 0, "due_step": -1, "due": 0},
+}
+_V121_REPORT = {
+    "activations": 0,
+    "units_shifted": 0,
+    "repayments": 0,
+    "units_repaid": 0,
+    "repay_deferrals": 0,
+    "repay_shortfalls": 0,
+    "signal_blocks": 0,
+    "price_blocks": 0,
+    "inventory_blocks": 0,
+    "shed_blocks": 0,
+    "buy_blocks": 0,
+    "current_sell_blocks": 0,
+    "repay_window_blocks": 0,
+    "errors": 0,
+    "activation_steps": [],
+    "repay_steps": [],
+}
+
+def _v121_parent(obs, config=None):
+    n = getattr(getattr(_V121_PARENT, "__code__", None), "co_argcount", 1)
+    return _V121_PARENT(*[obs, config][:n])
+
+def _v121_num(mapping, key, default=0.0):
+    try:
+        v = _get(mapping, key, default)
+        return float(default if v is None else v)
+    except Exception:
+        return float(default)
+
+def _v121_market_inventory(obs):
+    market = _get(obs, "market", {}) or {}
+    inv = _get(market, "inventory", {}) or {}
+    return _v121_num(inv, _V121_ITEM, 0.0)
+
+def _v121_price(obs):
+    market = _get(obs, "market", {}) or {}
+    prices = _get(market, "prices", {}) or {}
+    return _v121_num(prices, _V121_ITEM, 0.0)
+
+def _v121_shed(obs):
+    private = _get(obs, "private", {}) or {}
+    shed = _get(private, "shed", {}) or {}
+    return max(0.0, _v121_num(shed, _V121_ITEM, 0.0))
+
+def _v121_copy_action(action):
+    if not isinstance(action, dict):
+        return action
+    out = dict(action)
+    out["market"] = [list(o) if isinstance(o, (list, tuple)) else o for o in (action.get("market") or [])]
+    return out
+
+def _v121_actual_sell(action):
+    total = 0
+    if not isinstance(action, dict):
+        return total
+    for o in (action.get("market") or []):
+        try:
+            if len(o) >= 3 and o[0] == "SELL" and o[1] == _V121_ITEM:
+                total += max(0, int(o[2]))
+        except Exception:
+            continue
+    return total
+
+def _v121_has_buy(action):
+    if not isinstance(action, dict):
+        return False
+    for o in (action.get("market") or []):
+        try:
+            if len(o) >= 1 and o[0] == "BUY":
+                return True
+        except Exception:
+            continue
+    return False
+
+def _v121_static_sell(step):
+    try:
+        if step < 0 or step >= len(_ACTIONS):
+            return 0
+        return sum(
+            max(0, int(o[2]))
+            for o in ((_ACTIONS[step] or {}).get("market") or [])
+            if len(o) >= 3 and o[0] == "SELL" and o[1] == _V121_ITEM
+        )
+    except Exception:
+        return 0
+
+def _v121_find_repay(step, min_qty=None, horizon=None):
+    need = _V121_REPAY_MIN_STATIC if min_qty is None else max(1, int(min_qty))
+    span = _V121_REPAY_HORIZON if horizon is None else max(1, int(horizon))
+    stop = min(len(_ACTIONS), step + span + 1)
+    for s in range(step + 1, stop):
+        if _v121_static_sell(s) >= need:
+            return s
+    return -1
+
+def _v121_add_to_existing_sell(action, quantity):
+    out = _v121_copy_action(action)
+    if not isinstance(out, dict):
+        return action, 0
+    q = max(0, int(quantity))
+    market = list(out.get("market") or [])
+    for i, o in enumerate(market):
+        try:
+            if len(o) >= 3 and o[0] == "SELL" and o[1] == _V121_ITEM:
+                z = list(o)
+                z[2] = max(0, int(z[2])) + q
+                market[i] = z
+                out["market"] = market
+                return out, q
+        except Exception:
+            continue
+    return action, 0
+
+def _v121_subtract_sell(action, quantity):
+    out = _v121_copy_action(action)
+    if not isinstance(out, dict):
+        return action, 0
+    rem = max(0, int(quantity))
+    removed = 0
+    market = []
+    for o in (out.get("market") or []):
+        if rem > 0 and isinstance(o, (list, tuple)) and len(o) >= 3 and o[0] == "SELL" and o[1] == _V121_ITEM:
+            z = list(o)
+            oq = max(0, int(z[2]))
+            cut = min(rem, oq)
+            left = oq - cut
+            rem -= cut
+            removed += cut
+            if left > 0:
+                z[2] = left
+                market.append(z)
+        else:
+            market.append(o)
+    out["market"] = market
+    return out, removed
+
+def _v121_reset(st):
+    st.update({"prev_step": -1, "inventory": None, "own_sell": 0, "due_step": -1, "due": 0})
+
+def _v121_finish(st, step, inventory, action):
+    st["prev_step"] = step
+    st["inventory"] = float(inventory)
+    st["own_sell"] = int(_v121_actual_sell(action))
+    return action
+
+def agent(obs, config=None):
+    action = None
+    try:
+        try:
+            seat = int(_seat(obs))
+        except Exception:
+            seat = 0
+        st = _V121_STATE.setdefault(seat, {"prev_step": -1, "inventory": None, "own_sell": 0, "due_step": -1, "due": 0})
+        step = int(_get(obs, "step", 0) or 0)
+        if step <= int(st.get("prev_step", -1)):
+            _v121_reset(st)
+
+        now_inv = _v121_market_inventory(obs)
+        prev_inv = st.get("inventory", None)
+        own_prev_sell = max(0, int(st.get("own_sell", 0) or 0))
+        action = _v121_parent(obs, config)
+
+        # Repayment is always handled before considering a new activation.
+        if int(st.get("due_step", -1)) == step and int(st.get("due", 0)) > 0:
+            due = int(st["due"])
+            if _v121_actual_sell(action) >= due:
+                out, removed = _v121_subtract_sell(action, due)
+                if removed == due:
+                    st["due_step"] = -1
+                    st["due"] = 0
+                    _V121_REPORT["repayments"] += 1
+                    _V121_REPORT["units_repaid"] += due
+                    if len(_V121_REPORT["repay_steps"]) < 64:
+                        _V121_REPORT["repay_steps"].append(step)
+                    return _v121_finish(st, step, now_inv, out)
+            nxt = _v121_find_repay(step, min_qty=due, horizon=max(1, len(_ACTIONS) - step - 1))
+            if nxt >= 0:
+                st["due_step"] = nxt
+                _V121_REPORT["repay_deferrals"] += 1
+            else:
+                _V121_REPORT["repay_shortfalls"] += due
+                st["due_step"] = -1
+                st["due"] = 0
+            return _v121_finish(st, step, now_inv, action)
+
+        if step < _V121_MIN_STEP or prev_inv is None or own_prev_sell > 0:
+            return _v121_finish(st, step, now_inv, action)
+
+        delta = now_inv - float(prev_inv)
+        if delta < _V121_MIN_SIGNAL_DELTA:
+            _V121_REPORT["signal_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+
+        price = _v121_price(obs)
+        if price < _V121_MIN_PRICE:
+            _V121_REPORT["price_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+        if now_inv >= _V121_MAX_MARKET_INV:
+            _V121_REPORT["inventory_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+        if _v121_has_buy(action):
+            _V121_REPORT["buy_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+
+        current_q = _v121_actual_sell(action)
+        if current_q <= 0:
+            _V121_REPORT["current_sell_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+        if _v121_shed(obs) < current_q + _V121_SHIFT:
+            _V121_REPORT["shed_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+
+        repay_step = _v121_find_repay(step)
+        if repay_step < 0:
+            _V121_REPORT["repay_window_blocks"] += 1
+            return _v121_finish(st, step, now_inv, action)
+
+        out, added = _v121_add_to_existing_sell(action, _V121_SHIFT)
+        if added != _V121_SHIFT:
+            return _v121_finish(st, step, now_inv, action)
+
+        st["due_step"] = repay_step
+        st["due"] = _V121_SHIFT
+        _V121_REPORT["activations"] += 1
+        _V121_REPORT["units_shifted"] += _V121_SHIFT
+        if len(_V121_REPORT["activation_steps"]) < 64:
+            _V121_REPORT["activation_steps"].append({"step": step, "repay_step": repay_step, "delta": delta, "price": price, "shed": _v121_shed(obs), "parent_sell": current_q})
+        return _v121_finish(st, step, now_inv, out)
+    except Exception:
+        _V121_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        return _v121_parent(obs, config)
+
+agent.telemetry = dict(getattr(_V121_PARENT, "telemetry", {}) or {})
+agent.telemetry["strawberry_race_shift4"] = _V121_REPORT
+agent.__version__ = "v121_strawberry_race_shift4"
