@@ -1,0 +1,101 @@
+name: uploaded 127ed3 CARROT2 harvestcredit v1 starter focused
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-harvestcredit-v1-starter-focused.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          python ci\build_uploaded_127ed3_ca_harvestcredit_v1.py tmp\safe_v3.py tmp\ca_harvestcredit_v1.py
+          @'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          assert hashlib.sha256(Path('tmp/safe_v3.py').read_bytes()).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(Path('tmp/ca_feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          assert hashlib.sha256(Path('tmp/ca_harvestcredit_v1.py').read_bytes()).hexdigest()=='ea296402b43b2e389e2f9cf8a23e27f92434b5b25212c3095f720840d9a91eb0'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py tmp\ca_harvestcredit_v1.py
+      - name: Compare known starter margins 641-644 both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          seeds=[641,642,643,644]
+          specs={
+            'parent':Path('tmp/safe_v3.py'),
+            'feed0':Path('tmp/ca_feed0.py'),
+            'harvestcredit_v1':Path('tmp/ca_harvestcredit_v1.py'),
+          }
+          out={'seeds':seeds,'agents':{},'comparisons':{}}
+          for label,path in specs.items():
+              rows=[]; exc=0
+              for seed in seeds:
+                  seat_margins=[]
+                  for seat in (0,1):
+                      a=load_like_kaggle(path); local=[0]
+                      def wrap(obs,cfg=None,_a=a):
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception:
+                              local[0]+=1
+                              return {'farmer':['PASS'],'hands':[],'market':[]}
+                      agents=[wrap,'starter'] if seat==0 else ['starter',wrap]
+                      env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                      exc+=local[0]
+                      statuses=[s.get('status') for s in env.state]
+                      assert statuses==['DONE','DONE'] and len(env.steps)==720
+                      rewards=[float(s.get('reward',0)) for s in env.state]
+                      mine=rewards[seat]; opp=rewards[1-seat]
+                      seat_margins.append(mine-opp)
+                  rows.append({'seed':seed,'seat_margins':seat_margins,'pair_mean_margin':statistics.mean(seat_margins)})
+              out['agents'][label]={'rows':rows,'mean_margin':statistics.mean(r['pair_mean_margin'] for r in rows),'exceptions':exc}
+              assert exc==0
+          for label in ('feed0','harvestcredit_v1'):
+              deltas=[]
+              per=[]
+              for c,p in zip(out['agents'][label]['rows'],out['agents']['parent']['rows']):
+                  d=c['pair_mean_margin']-p['pair_mean_margin']; deltas.append(d); per.append({'seed':c['seed'],'margin_delta_vs_parent':d})
+              out['comparisons'][label]={'per_seed':per,'mean_margin_delta_vs_parent':statistics.mean(deltas),'worst_margin_delta_vs_parent':min(deltas)}
+          h=[]
+          for c,f in zip(out['agents']['harvestcredit_v1']['rows'],out['agents']['feed0']['rows']):
+              h.append({'seed':c['seed'],'margin_delta_harvestcredit_minus_feed0':c['pair_mean_margin']-f['pair_mean_margin']})
+          out['comparisons']['harvestcredit_minus_feed0']=h
+          Path('results/harvestcredit_v1_starter_focused.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-harvestcredit-v1-starter-focused
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
