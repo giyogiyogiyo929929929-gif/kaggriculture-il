@@ -1,0 +1,72 @@
+name: v153 hard cell diagnostic
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v153-hard-cell-diagnostic.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct v147/v153
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python -m py_compile tmp\v147.py tmp\v153.py ci\diagnose_v153_hard_cells.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          assert got=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',got
+          print('v147_sha256='+got)
+          print('v153_sha256='+hashlib.sha256(Path('tmp/v153.py').read_bytes()).hexdigest())
+          '@
+          $check | python -
+      - name: Diagnose changed v153 hard cells
+        run: |
+          python ci\diagnose_v153_hard_cells.py tmp\v153.py tmp\v147.py results\v153_hard_cell_diagnostic.json
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-hard-cell-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
