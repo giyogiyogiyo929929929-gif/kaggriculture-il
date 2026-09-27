@@ -214,7 +214,7 @@ def play_match(spec_a: str, spec_b: str, seed: int, swap: bool, episode_steps: i
             "b": agent_b.exceptions if agent_b else 0,
         },
         "health": {"a": health_metrics(env.steps, seat_a), "b": health_metrics(env.steps, seat_b)},
-        "statuses": list(env.state[0].get("status") or ""),
+        "statuses": [state.get("status") for state in env.state],
     }
 
 
