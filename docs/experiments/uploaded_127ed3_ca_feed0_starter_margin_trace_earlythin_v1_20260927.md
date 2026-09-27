@@ -50,6 +50,8 @@ Builder: `ci/build_uploaded_127ed3_ca_feed0_earlythin_v1.py`.
 
 The initial builder used `read_text()` and therefore normalized the CRLF-heavy parent to LF. That produced SHA `d3cfbcbacb3530fc44e6db41fe7b336b00dcda6ae5823694869176de42711d9e`. That identity is **invalid for tactical evaluation** because its byte diff includes whole-file newline normalization. No result from that identity may be used as candidate evidence. The corrected builder operates on parent bytes and inserts only the intended guard while preserving all existing line endings.
 
+Independent reconstruction from the verified feed0 preflight artifact reproduced SHA `e172cc82ff049766b9013a0a973817359d04349946544b1ba2091b552dc07c82` and passed `py_compile`; candidate size is 502187 bytes versus parent 501952 bytes.
+
 ### Single tactical change
 
 Keep feed0 behavior by default, but when both conditions hold:
@@ -63,13 +65,20 @@ Hypothesis: the large starter margin compression is caused by converting two of 
 
 ## Focused evaluation
 
-The workflow is updated to assert the formal byte-preserving SHA before any game. No fresh seeds are used.
+Formal self-hosted run: `36306499287`. The workflow asserts the formal byte-preserving SHA before any game. No fresh seeds are used.
 
 It checks:
 
 1. starter seeds641–644, both seats, candidate/feed0/safety-v3 margins;
 2. the existing burned dev 10-seed block, candidate minus current champion, both seats;
 3. exceptions, DONE status, and 720-turn completion.
+
+Excluded infrastructure attempts:
+
+- run `36306082148` uses the newline-normalized `d3cf...` identity and is invalid as tactical evidence even if it completes;
+- supplemental Ubuntu-hosted run `36307206148` failed with `steps=null` before workflow execution / runner allocation and is not candidate evidence.
+
+A dormant burned stress workflow for seeds621–632 both seats is prepared at `.github/workflows/uploaded-127ed3-ca-feed0-earlythin-v1-stress.yml`. It must not be triggered unless the formal focused run passes.
 
 Decision gate before any fresh/sealed testing:
 
