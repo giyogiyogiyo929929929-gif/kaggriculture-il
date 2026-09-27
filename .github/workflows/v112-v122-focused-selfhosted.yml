@@ -1,0 +1,68 @@
+name: v112-v122 focused exact and targeted external
+
+on:
+  push:
+    branches: [eval/v112-v122-wool-lowrisk-front-20260927]
+    paths:
+      - ".github/workflows/v112-v122-focused-selfhosted.yml"
+      - "experiments/v112_v116_milk_micro/v122_suffix.pyfrag"
+      - "experiments/v112_v116_milk_micro/build_v122.py"
+      - "experiments/v112_v116_milk_micro/test_v122_suffix_synthetic.py"
+      - "experiments/v112_v116_milk_micro/run_v122_focused.py"
+      - "experiments/v112_v116_milk_micro/build_sources.py"
+  workflow_dispatch:
+
+concurrency:
+  group: v112-v122-focused-current-lineage
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact Kaggriculture engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Synthetic exact source reconstruction and syntax
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python test_v122_suffix_synthetic.py
+          if ($LASTEXITCODE -ne 0) { throw 'v122 synthetic failed' }
+          python build_v122.py
+          if ($LASTEXITCODE -ne 0) { throw 'v122 build failed' }
+          python -m py_compile v122_wool_lowrisk_front1.py run_v122_focused.py
+          if ($LASTEXITCODE -ne 0) { throw 'v122 py_compile failed' }
+
+      - name: Fresh champion H2H and targeted two-seed external replay
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v122_focused.py
+          if ($LASTEXITCODE -ne 0) { throw 'v122 focused evaluation failed' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v122-focused
+          path: |
+            experiments/v112_v116_milk_micro/v122_focused.json
+            experiments/v112_v116_milk_micro/v122_wool_lowrisk_front1.py
+          if-no-files-found: warn
+          retention-days: 30
