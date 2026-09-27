@@ -1,0 +1,110 @@
+name: uploaded 127ed3 CARROT2 feed0 final submission preflight
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-final-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and reconstruct candidate
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results,results\package | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          @'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          assert hashlib.sha256(Path('tmp/safe_v3.py').read_bytes()).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(Path('tmp/ca_feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py
+      - name: Static audit and Kaggle loader safety
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          from scripts.preflight import check_imports,load_like_kaggle,call_like_kaggle,BROKEN_OBSERVATIONS
+          from scripts.analysis.audit_agent import audit_file
+          for name in ('safe_v3','ca_feed0'):
+              chk=check_imports([Path('tmp')/f'{name}.py']); print(name,chk.line()); assert chk.ok,chk.detail
+          base=Counter((depth,what) for _,depth,_,what in audit_file('tmp/safe_v3.py'))
+          cand=Counter((depth,what) for _,depth,_,what in audit_file('tmp/ca_feed0.py'))
+          new=cand-base; print('candidate_new_risky_signatures',dict(new)); assert not new,new
+          agent=load_like_kaggle(Path('tmp/ca_feed0.py')); assert getattr(agent,'__name__',None)=='agent'
+          rows=[]
+          for obs in BROKEN_OBSERVATIONS:
+              try:
+                  action=call_like_kaggle(agent,obs,None); ok=isinstance(action,dict) and set(action)=={'farmer','hands','market'} and all(isinstance(action[k],list) for k in action)
+                  rows.append({'ok':ok,'error':None,'action':action})
+              except Exception as exc: rows.append({'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+          assert all(r['ok'] for r in rows),rows
+          Path('results/final_loader_audit.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+      - name: Official-engine full 720-turn smoke both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          agent=load_like_kaggle(Path('tmp/ca_feed0.py')); rows=[]
+          for swap in (False,True):
+              errors=[]
+              def wrapped(obs,config=None):
+                  try:return call_like_kaggle(agent,obs,config)
+                  except Exception as exc:
+                      errors.append(f'{type(exc).__name__}: {exc}'); return {'farmer':['PASS'],'hands':[],'market':[]}
+              env=make('kaggriculture',configuration={'seed':641}); env.run(['starter',wrapped] if swap else [wrapped,'starter'])
+              seat=1 if swap else 0; row={'seed':641,'swap':swap,'seat':seat,'status':env.state[seat].get('status'),'steps':len(env.steps),'errors':errors}
+              assert row['status']=='DONE' and row['steps']==720 and not errors,row; rows.append(row)
+          Path('results/final_smoke.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          '@ | python -
+      - name: Build and verify exact submission archive
+        run: |
+          $ErrorActionPreference='Stop'
+          Copy-Item tmp\ca_feed0.py results\package\main.py
+          @'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          main=Path('results/package/main.py'); archive=Path('results/uploaded_127ed3_ca_feed0_submission.tar.gz')
+          expected='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          assert hashlib.sha256(main.read_bytes()).hexdigest()==expected
+          with tarfile.open(archive,'w:gz') as t:t.add(main,arcname='main.py')
+          with tarfile.open(archive,'r:gz') as t:
+              names=t.getnames(); extracted=t.extractfile('main.py').read()
+          assert names==['main.py'] and hashlib.sha256(extracted).hexdigest()==expected and archive.stat().st_size<100*1024*1024
+          meta={'candidate':'uploaded_127ed3_ca_feed0','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','main_sha256':expected,'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'archive_bytes':archive.stat().st_size,'members':names,'engine':'kaggle_environments==1.32.7','engine_kaggriculture_sha256':'bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'}
+          Path('results/final_package_meta.json').write_text(json.dumps(meta,indent=2),encoding='utf-8'); print(json.dumps(meta,indent=2))
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-final-preflight
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
