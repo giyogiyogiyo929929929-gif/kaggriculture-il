@@ -1,0 +1,131 @@
+name: uploaded 127ed3 CARROT2 decision trace
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-carrot2-decision-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build behavior-identical instrumented safety-v3 and exact v147
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          @'
+          import base64,gzip,hashlib
+          from pathlib import Path
+          root=Path('ci/uploaded_127ed3')
+          raw=gzip.decompress(base64.b64decode(''.join((root/f'part{i:02d}.b64').read_text(encoding='ascii') for i in range(12))))
+          assert hashlib.sha256(raw).hexdigest()=='127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652'
+          src=raw.decode('utf-8').replace('\r\n','\n')
+          marker='_CA_STATE = {}\n'
+          assert src.count(marker)==1,src.count(marker)
+          src=src.replace(marker,marker+'_CA_DECISION_TRACE = []\n',1)
+          reset='''            if step == 0:\n                _CA_REPORT.update(ca_swaps=0, ca_rescues=0, ca_harvested=0, ca_sold=0, ca_seed_bought=0,\n                                  ca_wheat_seed_saved=0, ca_carrot_seed_saved=0, ca_feed_block=0,\n                                  ca_errors=0, ca_min_wheat=999)\n'''
+          assert src.count(reset)==1,src.count(reset)
+          src=src.replace(reset,reset+'                _CA_DECISION_TRACE.clear()\n',1)
+          hook='''        # 2. swaps\n        pays_now = 3 * (p_c - _CA_DROP) - 20 > 4 * p_w - 10 + _CA_MARGIN\n'''
+          assert src.count(hook)==1,src.count(hook)
+          inject=hook+'''        # Instrumentation only: mirror the CARROT2 decision without mutating action/state.\n        if _CA_FROM <= day <= _CA_TO:\n            trace_seeds_c = min(st["spare_carrot"],\n                                int(priv["seeds"].get("CARROT", 0)) - sum(1 for c in units if c[:2] == ["PLANT", "CARROT"]))\n            trace_wheat_ok = None\n            for ti, tcmd in enumerate(units):\n                if tcmd[:2] != ["PLANT", "WHEAT"] or ti >= len(positions):\n                    continue\n                tpos = positions[ti]\n                if tiles[tpos[1]][tpos[0]] is not None:\n                    continue\n                inv = observation["market"].get("inventory", {})\n                shops = list(observation.get("town", {}).get("unlocked_shops", []))\n                crop_counts = {"WHEAT": 0, "CARROT": 0}\n                crop_yield = {"WHEAT": 0, "CARROT": 0}\n                for row in tiles:\n                    for tt in row:\n                        if isinstance(tt, dict) and tt.get("crop") in crop_counts:\n                            cc = tt.get("crop")\n                            crop_counts[cc] += 1\n                            crop_yield[cc] += int(tt.get("yield_units", 0))\n                total_inv = {}\n                for item in ("WHEAT", "CARROT", "STRAWBERRY", "MILK", "WOOL", "EGG", "FERTILIZER"):\n                    total_inv[item] = int(priv["shed"].get(item, 0)) + sum(int(ii.get(item, 0)) for ii in priv["inventories"])\n                tr = {\n                    "step": step, "day": day, "hour": step % 24, "seat": seat, "pos": list(tpos),\n                    "pays_now": bool(pays_now), "p_w": p_w, "p_c": p_c,\n                    "market_w": int(inv.get("WHEAT", 0)), "market_c": int(inv.get("CARROT", 0)),\n                    "shops": shops, "money": float(farm.get("money", 0)),\n                    "wheat_total": _ca_wheat_total(observation),\n                    "feed1": _ca_feed_need(seat, step, 1), "feed2": _ca_feed_need(seat, step, 2), "feed3": _ca_feed_need(seat, step, 3),\n                    "spare_wheat": int(st["spare_wheat"]), "spare_carrot": int(st["spare_carrot"]),\n                    "trace_seed_available": int(trace_seeds_c),\n                    "wheat_plots": crop_counts["WHEAT"], "carrot_plots": crop_counts["CARROT"],\n                    "wheat_plot_yield": crop_yield["WHEAT"], "carrot_plot_yield": crop_yield["CARROT"],\n                    "inventory": total_inv, "accepted": False, "reason": ""\n                }\n                if not pays_now:\n                    tr["reason"] = "global_pays_now"\n                    _CA_DECISION_TRACE.append(tr)\n                    continue\n                if trace_seeds_c <= 0:\n                    tr["reason"] = "no_carrot_seed"\n                    _CA_DECISION_TRACE.append(tr)\n                    continue\n                if trace_wheat_ok is None:\n                    trace_wheat_ok = _ca_wheat_total(observation) >= _ca_feed_need(seat, step, _CA_FEED_DAYS)\n                tr["wheat_ok"] = bool(trace_wheat_ok)\n                if not trace_wheat_ok:\n                    tr["reason"] = "feed_block"\n                    _CA_DECISION_TRACE.append(tr)\n                    break\n                tvisits = _ca_visits(observation, action, tpos, (day + 6) * 24, start=step + 1)\n                wu, _, _ = _ca_yield_path("WHEAT", day, tvisits)\n                ch, cr, rescue_t = _ca_yield_path("CARROT", day, tvisits)\n                cu = max(ch, cr if _CA_RESCUE else 0)\n                harvest_steps = [int(v[0]) for v in tvisits if v[2] == "HARVEST"]\n                harvest_t = harvest_steps[0] if harvest_steps else None\n                realize_t = harvest_t if ch >= (cr if _CA_RESCUE else 0) and ch > 0 else rescue_t\n                edge = cu * (p_c - _CA_DROP) - 20 - (wu * p_w - 10)\n                tr.update({"wu": int(wu), "carrot_harvest_units": int(ch), "carrot_rescue_units": int(cr),\n                           "cu": int(cu), "rescue_step": rescue_t, "planned_harvest_step": harvest_t,\n                           "carrot_realize_step": realize_t,\n                           "carrot_horizon": (None if realize_t is None else int(realize_t-step)),\n                           "edge": float(edge)})\n                if edge > _CA_MARGIN:\n                    tr["accepted"] = True\n                    tr["reason"] = "accepted"\n                    trace_seeds_c -= 1\n                else:\n                    tr["reason"] = "route_edge"\n                _CA_DECISION_TRACE.append(tr)\n'''
+          src=src.replace(hook,inject,1)
+          suffix='''\n\n# Safety-only wrapper v3 for instrumentation build.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
+          child=(src+suffix).encode('utf-8')
+          Path('tmp/trace.py').write_bytes(child)
+          print('trace_sha256',hashlib.sha256(child).hexdigest())
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\trace.py tmp\v147.py
+      - name: Replay focal seeds and assert behavioral identity
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from collections import Counter,defaultdict
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          C=Path('tmp/trace.py'); H=Path('tmp/v147.py')
+          seeds=[641,350003,733,911]
+          expected={
+            (641,0):[64032.0,64438.0],(641,1):[64438.0,64032.0],
+            (350003,0):[100144.0,100664.0],(350003,1):[100664.0,100144.0],
+            (733,0):[92204.0,88776.0],(733,1):[88776.0,92204.0],
+            (911,0):[137651.0,136473.0],(911,1):[136473.0,137651.0],
+          }
+          rows=[]
+          def money(env,s):
+              obs=env.steps[-1][s].get('observation')
+              return float(obs['farms'][s]['money'])
+          for seed in seeds:
+              for cs in (0,1):
+                  paths=[C,H] if cs==0 else [H,C]; loaded=[]; errors=[[],[]]; agents=[]
+                  for seat,p in enumerate(paths):
+                      a=load_like_kaggle(p); loaded.append(a)
+                      def w(obs,cfg=None,_a=a,_s=seat):
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                      agents.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                  m=[money(env,0),money(env,1)]
+                  assert m==expected[(seed,cs)],(seed,cs,m,expected[(seed,cs)])
+                  trace=loaded[cs].__globals__.get('_CA_DECISION_TRACE',[])
+                  row={'seed':seed,'candidate_seat':cs,'money':m,'delta':m[cs]-m[1-cs],
+                       'trace':trace,'trace_count':len(trace),'accepted':sum(1 for x in trace if x.get('accepted')),
+                       'reasons':dict(Counter(x.get('reason') for x in trace)),'errors':errors}
+                  rows.append(row)
+                  print('TRACE_SUMMARY',seed,cs,row['trace_count'],row['accepted'],row['reasons'])
+          out={'candidate':'instrumentation-only uploaded_127ed3_safety_v3','seeds':seeds,'rows':rows,
+               'exceptions':sum(len(e) for r in rows for e in r['errors']),'behavior_identity':'PASS'}
+          assert out['exceptions']==0
+          Path('results/carrot2_decision_trace.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          # compact analysis table for quick artifact inspection
+          agg=[]
+          for r in rows:
+              accepted=[x for x in r['trace'] if x.get('accepted')]
+              late=[x for x in accepted if x.get('day',0)>=24]
+              agg.append({'seed':r['seed'],'candidate_seat':r['candidate_seat'],'delta':r['delta'],
+                          'trace_count':r['trace_count'],'accepted':len(accepted),'late_accepted':len(late),
+                          'late_edge_sum':sum(float(x.get('edge',0)) for x in late),
+                          'late_wu_sum':sum(int(x.get('wu',0)) for x in late),
+                          'late_cu_sum':sum(int(x.get('cu',0)) for x in late),
+                          'late_horizon_mean':(sum(int(x['carrot_horizon']) for x in late if x.get('carrot_horizon') is not None)/max(1,sum(1 for x in late if x.get('carrot_horizon') is not None)))})
+          Path('results/summary.json').write_text(json.dumps(agg,indent=2),encoding='utf-8')
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-carrot2-decision-trace
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
