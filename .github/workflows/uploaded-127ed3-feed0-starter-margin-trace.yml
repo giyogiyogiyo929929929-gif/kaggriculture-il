@@ -1,0 +1,188 @@
+name: uploaded 127ed3 feed0 starter margin trace
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-feed0-starter-margin-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact champion and previous champion
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          @'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          assert hashlib.sha256(Path('tmp/safe_v3.py').read_bytes()).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(Path('tmp/ca_feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py
+      - name: Trace known starter margin cases
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:PYTHONIOENCODING='utf-8'
+          @'
+          import copy,json,statistics
+          from collections import defaultdict
+          from pathlib import Path
+          from kaggle_environments import make
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+
+          seeds=[641,642,643]
+          specs={'feed0':Path('tmp/ca_feed0.py'),'safety_v3':Path('tmp/safe_v3.py')}
+          shadow_for={'feed0':'safety_v3','safety_v3':'feed0'}
+          out={'seeds':seeds,'rows':[]}
+
+          def crop_counts(farm):
+              d=defaultdict(int)
+              for row in farm.get('tiles') or []:
+                  for tile in row:
+                      if isinstance(tile,dict) and tile.get('crop'):
+                          d[str(tile.get('crop'))]+=1
+              return dict(d)
+
+          def compact_snapshot(obs,seat):
+              farms=obs.get('farms') or []
+              farm=farms[seat] if seat < len(farms) else {}
+              private=obs.get('private') or {}
+              return {
+                  'step':obs.get('step'),
+                  'money':farm.get('money'),
+                  'shed':copy.deepcopy(private.get('shed') or {}),
+                  'crop_counts':crop_counts(farm),
+                  'market':copy.deepcopy(obs.get('market') or {}),
+              }
+
+          def summarize_ledger(rows,seat):
+              by_item=defaultdict(lambda:{'sell_gross':0.0,'buy_cost':0.0,'sell_units':0,'buy_units':0})
+              by_day=defaultdict(lambda:{'sell_gross':0.0,'buy_cost':0.0,'net':0.0})
+              for r in rows:
+                  if r['player']!=seat: continue
+                  op=str(r['op']); item=str(r['item']); price=float(r['price']); day=int(r['step'])//24
+                  if op.startswith('SELL'):
+                      by_item[item]['sell_gross']+=price; by_item[item]['sell_units']+=1
+                      by_day[day]['sell_gross']+=price; by_day[day]['net']+=price
+                  elif op.startswith('BUY'):
+                      by_item[item]['buy_cost']+=price; by_item[item]['buy_units']+=1
+                      by_day[day]['buy_cost']+=price; by_day[day]['net']-=price
+              for v in by_item.values(): v['net']=v['sell_gross']-v['buy_cost']
+              return {'by_item':dict(by_item),'by_day':dict(by_day)}
+
+          def play(version,seed,seat):
+              actual=load_like_kaggle(specs[version])
+              shadow_name=shadow_for[version]
+              shadow=load_like_kaggle(specs[shadow_name])
+              divergences=[]; errors={'actual':0,'shadow':0}; ledger=[]; cur={'step':None,'farms':None}
+              orig_process,orig_commit=kg._process_market,kg._commit_unit
+
+              def proc(state,env):
+                  cur['step']=state[0].observation.step
+                  cur['farms']=state[0].observation.farms
+                  return orig_process(state,env)
+
+              def commit(op,item,price,farm,private,market,shed_capacity=100):
+                  ok=orig_commit(op,item,price,farm,private,market,shed_capacity)
+                  if ok:
+                      farms=cur.get('farms') or []
+                      player=0 if len(farms)>0 and farm is farms[0] else 1
+                      ledger.append({'step':int(cur.get('step') or 0),'player':player,'op':op,'item':item,'price':float(price)})
+                  return ok
+
+              kg._process_market,kg._commit_unit=proc,commit
+              def agent(obs,cfg=None):
+                  try:
+                      a=call_like_kaggle(actual,obs,cfg)
+                  except Exception:
+                      errors['actual']+=1; a={'farmer':['PASS'],'hands':[],'market':[]}
+                  try:
+                      b=call_like_kaggle(shadow,copy.deepcopy(obs),cfg)
+                  except Exception:
+                      errors['shadow']+=1; b={'farmer':['PASS'],'hands':[],'market':[]}
+                  if a!=b and len(divergences)<40:
+                      divergences.append({
+                          'step':obs.get('step'),
+                          'actual_action':copy.deepcopy(a),
+                          'shadow_action':copy.deepcopy(b),
+                          'snapshot':compact_snapshot(obs,seat),
+                          'actual_ca_report':copy.deepcopy(actual.__globals__.get('_CA_REPORT',{})),
+                          'shadow_ca_report':copy.deepcopy(shadow.__globals__.get('_CA_REPORT',{})),
+                      })
+                  return a
+              try:
+                  agents=[agent,'starter'] if seat==0 else ['starter',agent]
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+              finally:
+                  kg._process_market,kg._commit_unit=orig_process,orig_commit
+
+              statuses=[s.get('status') for s in env.state]
+              assert statuses==['DONE','DONE'] and len(env.steps)==720
+              rewards=[float(s.get('reward',0)) for s in env.state]
+              daily=[]
+              for day in range(30):
+                  idx=min(len(env.steps)-1,(day+1)*24-1)
+                  obs=env.steps[idx][seat].get('observation') or {}
+                  farms=obs.get('farms') or []
+                  if seat < len(farms):
+                      daily.append({'day':day,'step':idx,'money':float(farms[seat].get('money',0)),'crop_counts':crop_counts(farms[seat])})
+              return {
+                  'version':version,'seed':seed,'seat':seat,
+                  'margin':rewards[seat]-rewards[1-seat],
+                  'candidate_money':rewards[seat],'starter_money':rewards[1-seat],
+                  'statuses':statuses,'steps':len(env.steps),'errors':errors,
+                  'first_divergence':divergences[0] if divergences else None,
+                  'divergences':divergences,
+                  'final_ca_report':copy.deepcopy(actual.__globals__.get('_CA_REPORT',{})),
+                  'shadow_final_ca_report':copy.deepcopy(shadow.__globals__.get('_CA_REPORT',{})),
+                  'daily':daily,'market_ledger':summarize_ledger(ledger,seat),
+              }
+
+          for seed in seeds:
+              for seat in (0,1):
+                  for version in ('feed0','safety_v3'):
+                      out['rows'].append(play(version,seed,seat))
+
+          comparisons=[]
+          for seed in seeds:
+              fs=[r for r in out['rows'] if r['seed']==seed and r['version']=='feed0']
+              ps=[r for r in out['rows'] if r['seed']==seed and r['version']=='safety_v3']
+              fmean=statistics.mean(r['margin'] for r in fs); pmean=statistics.mean(r['margin'] for r in ps)
+              comparisons.append({'seed':seed,'feed0_pair_margin':fmean,'safety_v3_pair_margin':pmean,'feed0_minus_safety_v3_margin':fmean-pmean})
+          out['comparisons']=comparisons
+          out['all_errors']=sum(sum(r['errors'].values()) for r in out['rows'])
+          Path('results/feed0_starter_margin_trace.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          compact={'comparisons':comparisons,'first_divergences':[{'version':r['version'],'seed':r['seed'],'seat':r['seat'],'first':r['first_divergence'],'final_ca_report':r['final_ca_report'],'market_by_item':r['market_ledger']['by_item']} for r in out['rows']], 'all_errors':out['all_errors']}
+          Path('results/feed0_starter_margin_trace_compact.json').write_text(json.dumps(compact,indent=2),encoding='utf-8')
+          print(json.dumps({'comparisons':comparisons,'all_errors':out['all_errors']},indent=2))
+          assert out['all_errors']==0
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-feed0-starter-margin-trace
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
