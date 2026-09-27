@@ -1,0 +1,78 @@
+name: v153 sealed2 regression diagnostic
+
+on:
+  push:
+    branches: [diag-v153-sealed2-regression-20260927]
+    paths: [".github/workflows/v153-sealed2-regression-diagnostic.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct formal v147 and exact v153
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python -m py_compile tmp\v147.py tmp\v153.py ci\diagnose_v153_sealed2_regression.py
+          @'
+          import hashlib
+          from pathlib import Path
+          expected={
+            'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+            'tmp/v153.py':'128836e8e945d9b5b8c6776dc68cd45f4c21775713ebd3bd50655cd2f711ebfd',
+          }
+          for p,w in expected.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@ | python -
+
+      - name: Trace consumed regression and positive control
+        run: |
+          $ErrorActionPreference='Stop'
+          python ci\diagnose_v153_sealed2_regression.py tmp\v153.py tmp\v147.py results\v153_sealed2_regression_diag.json
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic failed' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v153-sealed2-regression-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
