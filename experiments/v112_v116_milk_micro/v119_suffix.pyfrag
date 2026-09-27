@@ -1,0 +1,158 @@
+# v119_multi_premium_race_front: in the multi-premium all-SELL regime
+# blocked by v118, move only the clearly most race-sensitive scarce premium SELL
+# to the front. Sibling candidate; parent=v112.
+_V119_PARENT = agent
+_V119_PREMIUM_BASE = {
+    "STRAWBERRY": 120.0,
+    "MELON": 250.0,
+    "MILK": 160.0,
+    "WOOL": 200.0,
+}
+_V119_LOW_RISK_PREFIX = {"WHEAT", "EGG", "FERTILIZER"}
+_V119_BASE = {
+    "WHEAT": 25.0,
+    "EGG": 50.0,
+    "FERTILIZER": 100.0,
+}
+_V119_MIN_RATIO = 1.10
+_V119_MIN_DOMINANCE = 0.03
+_V119_REPORT = {
+    "reorders": 0,
+    "units": 0,
+    "moved_positions": 0,
+    "multi_premium_seen": 0,
+    "strawberry": 0,
+    "melon": 0,
+    "milk": 0,
+    "wool": 0,
+    "non_sell_blocks": 0,
+    "single_premium_blocks": 0,
+    "scarcity_blocks": 0,
+    "already_front_blocks": 0,
+    "unsafe_prefix_blocks": 0,
+    "front_race_blocks": 0,
+    "dominance_blocks": 0,
+    "errors": 0,
+    "steps": [],
+}
+
+def _v119_parent(obs, config=None):
+    n = getattr(getattr(_V119_PARENT, "__code__", None), "co_argcount", 1)
+    return _V119_PARENT(*[obs, config][:n])
+
+def _v119_copy_action(action):
+    if not isinstance(action, dict):
+        return action
+    out = dict(action)
+    out["market"] = [
+        list(o) if isinstance(o, (list, tuple)) else o
+        for o in (action.get("market") or [])
+    ]
+    return out
+
+def _v119_market_maps(obs):
+    market = _get(obs, "market", {}) or {}
+    inv = _get(market, "inventory", {}) or {}
+    prices = _get(market, "prices", {}) or {}
+    return inv, prices
+
+def _v119_num(mapping, key, default=0.0):
+    try:
+        value = _get(mapping, key, default)
+        return float(default if value is None else value)
+    except Exception:
+        return float(default)
+
+def _v119_state(obs, item, base):
+    inv, prices = _v119_market_maps(obs)
+    qty = _v119_num(inv, item, 10000.0)
+    price = _v119_num(prices, item, base)
+    ratio = price / base if base > 0 else 0.0
+    return qty, price, ratio
+
+def _v119_low_risk_racing(obs, item, base):
+    qty, _, ratio = _v119_state(obs, item, base)
+    return qty < 10000.0 and ratio >= 1.05
+
+def agent(obs, config=None):
+    action = None
+    try:
+        step = int(_get(obs, "step", 0) or 0)
+        action = _v119_parent(obs, config)
+        if step < 239 or not isinstance(action, dict):
+            return action
+        market = list(action.get("market") or [])
+        if len(market) < 2:
+            return action
+        if any(
+            not (isinstance(o, (list, tuple)) and len(o) >= 3 and o[0] == "SELL")
+            for o in market
+        ):
+            _V119_REPORT["non_sell_blocks"] += 1
+            return action
+
+        premium = [
+            (i, o)
+            for i, o in enumerate(market)
+            if o[1] in _V119_PREMIUM_BASE and max(0, int(o[2])) > 0
+        ]
+        if len(premium) < 2:
+            _V119_REPORT["single_premium_blocks"] += 1
+            return action
+        _V119_REPORT["multi_premium_seen"] += 1
+
+        ranked = []
+        for idx, order in premium:
+            item = order[1]
+            base = _V119_PREMIUM_BASE[item]
+            qty, _, ratio = _v119_state(obs, item, base)
+            if qty < 10000.0 and ratio >= _V119_MIN_RATIO:
+                ranked.append((ratio, -qty, -idx, idx, order))
+        if not ranked:
+            _V119_REPORT["scarcity_blocks"] += 1
+            return action
+
+        ranked.sort(reverse=True)
+        best_ratio, _, _, idx, order = ranked[0]
+        if idx == 0:
+            _V119_REPORT["already_front_blocks"] += 1
+            return action
+
+        for prior in market[:idx]:
+            pitem = prior[1]
+            if pitem in _V119_PREMIUM_BASE:
+                _, _, pratio = _v119_state(obs, pitem, _V119_PREMIUM_BASE[pitem])
+                if best_ratio < pratio + _V119_MIN_DOMINANCE:
+                    _V119_REPORT["dominance_blocks"] += 1
+                    return action
+            else:
+                if pitem not in _V119_LOW_RISK_PREFIX:
+                    _V119_REPORT["unsafe_prefix_blocks"] += 1
+                    return action
+                if _v119_low_risk_racing(obs, pitem, _V119_BASE[pitem]):
+                    _V119_REPORT["front_race_blocks"] += 1
+                    return action
+
+        out = _v119_copy_action(action)
+        moved = out["market"].pop(idx)
+        out["market"].insert(0, moved)
+        item = moved[1]
+        q = max(0, int(moved[2]))
+        _V119_REPORT["reorders"] += 1
+        _V119_REPORT["units"] += q
+        _V119_REPORT["moved_positions"] += idx
+        key = item.lower()
+        if key in _V119_REPORT:
+            _V119_REPORT[key] += 1
+        if len(_V119_REPORT["steps"]) < 64:
+            _V119_REPORT["steps"].append(step)
+        return out
+    except Exception:
+        _V119_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        raise
+
+agent.telemetry = dict(getattr(_V119_PARENT, "telemetry", {}) or {})
+agent.telemetry["multi_premium_race_front"] = _V119_REPORT
+agent.__version__ = "v119_multi_premium_race_front"
