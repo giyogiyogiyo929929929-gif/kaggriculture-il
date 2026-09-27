@@ -1,0 +1,104 @@
+name: uploaded 127ed3 CARROT2 feed-block horizon trace
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feedblock-horizon-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build behavior-identical feed-block instrumented safety-v3 and exact v147
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          @'
+          import hashlib
+          from pathlib import Path
+          p=Path('tmp/safe_v3.py')
+          b=p.read_bytes()
+          assert hashlib.sha256(b).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          src=b.decode('utf-8').replace('\r\n','\n')
+          marker='_CA_STATE = {}\n'
+          assert src.count(marker)==1,src.count(marker)
+          src=src.replace(marker,marker+'_CA_FEED_TRACE = []\n',1)
+          reset='''                _CA_REPORT.update(ca_swaps=0, ca_rescues=0, ca_harvested=0, ca_sold=0, ca_seed_bought=0,\n                                  ca_wheat_seed_saved=0, ca_carrot_seed_saved=0, ca_feed_block=0,\n                                  ca_errors=0, ca_min_wheat=999)\n'''
+          assert src.count(reset)==1,src.count(reset)
+          src=src.replace(reset,reset+'                _CA_FEED_TRACE.clear()\n',1)
+          old='''                if not wheat_ok:\n                    _CA_REPORT["ca_feed_block"] += 1\n                    break\n'''
+          assert src.count(old)==1,src.count(old)
+          new='''                if not wheat_ok:\n                    _CA_REPORT["ca_feed_block"] += 1\n                    # Instrumentation only: value the blocked swap and count only WHEAT\n                    # that the unchanged route actually harvests inside the same 24-turn feed horizon.\n                    wheat_total = _ca_wheat_total(observation)\n                    feed1 = _ca_feed_need(seat, step, 1)\n                    standing_yield = 0\n                    planned_harvest_units = 0\n                    wheat_tiles = []\n                    for yy, row in enumerate(tiles):\n                        for xx, tile in enumerate(row):\n                            if not (isinstance(tile, dict) and tile.get("crop") == "WHEAT"):\n                                continue\n                            yu = int(tile.get("yield_units", 0))\n                            planted = int(tile.get("planted_day", -99))\n                            standing_yield += yu\n                            wvis = _ca_visits(observation, action, (xx, yy), min(719, step + 24), start=step + 1)\n                            wh, _, _ = _ca_yield_path("WHEAT", planted, wvis, y0=yu,\n                                                      fert_until=int(tile.get("fertilized_until_day", -1)),\n                                                      watered_day=day if tile.get("watered_today") else -1,\n                                                      now_step=step)\n                            planned_harvest_units += int(wh)\n                            hs = [int(v[0]) for v in wvis if v[2] == "HARVEST"]\n                            wheat_tiles.append({"pos":[xx,yy],"planted_day":planted,"yield_units":yu,\n                                                "planned_harvest_units":int(wh),\n                                                "first_harvest_step":(hs[0] if hs else None)})\n                    bvis = _ca_visits(observation, action, pos, (day + 6) * 24, start=step + 1)\n                    wu, _, _ = _ca_yield_path("WHEAT", day, bvis)\n                    ch, cr, rescue_t = _ca_yield_path("CARROT", day, bvis)\n                    cu = max(ch, cr if _CA_RESCUE else 0)\n                    edge = cu * (p_c - _CA_DROP) - 20 - (wu * p_w - 10)\n                    _CA_FEED_TRACE.append({\n                        "step":step,"day":day,"hour":step%24,"seat":seat,"pos":list(pos),\n                        "wheat_total":int(wheat_total),"feed1":int(feed1),\n                        "standing_yield":int(standing_yield),\n                        "planned_harvest_units_24":int(planned_harvest_units),\n                        "covered_by_planned_harvest":bool(wheat_total + planned_harvest_units >= feed1),\n                        "p_w":int(p_w),"p_c":int(p_c),"wu":int(wu),"cu":int(cu),\n                        "edge":float(edge),"route_accept":bool(edge > _CA_MARGIN),\n                        "carrot_rescue_step":rescue_t,"wheat_tiles":wheat_tiles})\n                    break\n'''
+          src=src.replace(old,new,1)
+          Path('tmp/feed_trace.py').write_text(src,encoding='utf-8')
+          print('trace_sha256='+hashlib.sha256(src.encode('utf-8')).hexdigest())
+          '@ | python -
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python -m py_compile tmp\feed_trace.py tmp\v147.py
+      - name: Replay seed641 both seats and assert behavioral identity
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          C=Path('tmp/feed_trace.py'); H=Path('tmp/v147.py')
+          expected={0:[64032.0,64438.0],1:[64438.0,64032.0]}
+          rows=[]
+          def money(env,s): return float(env.steps[-1][s]['observation']['farms'][s]['money'])
+          for cs in (0,1):
+              paths=[C,H] if cs==0 else [H,C]; loaded=[]; errors=[[],[]]; agents=[]
+              for seat,p in enumerate(paths):
+                  a=load_like_kaggle(p); loaded.append(a)
+                  def w(obs,cfg=None,_a=a,_s=seat):
+                      try:return call_like_kaggle(_a,obs,cfg)
+                      except Exception as e:errors[_s].append(f'{type(e).__name__}: {e}');return {'farmer':['PASS'],'hands':[],'market':[]}
+                  agents.append(w)
+              env=make('kaggriculture',configuration={'seed':641}); env.run(agents)
+              m=[money(env,0),money(env,1)]
+              assert m==expected[cs],(cs,m,expected[cs])
+              tr=loaded[cs].__globals__.get('_CA_FEED_TRACE',[])
+              rows.append({'candidate_seat':cs,'money':m,'trace':tr,'errors':errors})
+              print('TRACE',cs,'events',len(tr),'covered',sum(x['covered_by_planned_harvest'] for x in tr),'route_accept',sum(x['route_accept'] for x in tr),'both',sum(x['covered_by_planned_harvest'] and x['route_accept'] for x in tr))
+          out={'seed':641,'behavior_identity':'PASS','rows':rows,'exceptions':sum(len(e) for r in rows for e in r['errors'])}
+          assert out['exceptions']==0
+          Path('results/feedblock_horizon_trace.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feedblock-horizon-trace
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
