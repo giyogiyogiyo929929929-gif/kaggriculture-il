@@ -1,0 +1,103 @@
+name: uploaded 127ed3 CARROT2 feed0 causal divergence trace
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-divergence-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and feed0 child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          @'
+          import hashlib
+          from pathlib import Path
+          assert hashlib.sha256(Path('tmp/safe_v3.py').read_bytes()).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(Path('tmp/ca_feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py
+      - name: Trace same-observation action divergences on burned nonzero seeds
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import copy,json
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          seeds=[641,350003,347,1201,1601,623,625,628,629,630,632]
+          C=Path('tmp/ca_feed0.py'); P=Path('tmp/safe_v3.py')
+          rows=[]; total_errors=0
+          def money(env,s):
+              obs=env.steps[-1][s].get('observation') or {}
+              return float(obs['farms'][s]['money'])
+          def compact_obs(obs,seat):
+              farms=obs.get('farms') or []
+              farm=copy.deepcopy(farms[seat]) if seat < len(farms) else None
+              return {'step':obs.get('step'),'seat':seat,'farm':farm,'market':copy.deepcopy(obs.get('market')),'town':copy.deepcopy(obs.get('town'))}
+          for seed in seeds:
+              for cs in (0,1):
+                  paths=[C,P] if cs==0 else [P,C]
+                  actual=[load_like_kaggle(p) for p in paths]
+                  shadow=load_like_kaggle(P)
+                  errors=[[],[]]; divergences=[]; call_count=0
+                  agents=[]
+                  for seat,a in enumerate(actual):
+                      if seat==cs:
+                          def wc(obs,cfg=None,_a=a,_seat=seat):
+                              nonlocal_box=None
+                              try:
+                                  ca=call_like_kaggle(_a,obs,cfg)
+                              except Exception as e:
+                                  errors[_seat].append(f'candidate {type(e).__name__}: {e}'); ca={'farmer':['PASS'],'hands':[],'market':[]}
+                              try:
+                                  pa=call_like_kaggle(shadow,copy.deepcopy(obs),cfg)
+                              except Exception as e:
+                                  errors[_seat].append(f'shadow {type(e).__name__}: {e}'); pa={'farmer':['PASS'],'hands':[],'market':[]}
+                              if ca!=pa and len(divergences)<40:
+                                  divergences.append({'step':obs.get('step'),'candidate_action':copy.deepcopy(ca),'shadow_parent_action':copy.deepcopy(pa),'observation':compact_obs(obs,_seat),'candidate_ca_report':copy.deepcopy(getattr(_a,'__globals__',{}).get('_CA_REPORT')),'shadow_ca_report':copy.deepcopy(getattr(shadow,'__globals__',{}).get('_CA_REPORT'))})
+                              return ca
+                          agents.append(wc)
+                      else:
+                          def wp(obs,cfg=None,_a=a,_seat=seat):
+                              try:return call_like_kaggle(_a,obs,cfg)
+                              except Exception as e:
+                                  errors[_seat].append(f'parent {type(e).__name__}: {e}'); return {'farmer':['PASS'],'hands':[],'market':[]}
+                          agents.append(wp)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                  total_errors+=sum(len(x) for x in errors)
+                  m=[money(env,0),money(env,1)]
+                  rows.append({'seed':seed,'candidate_seat':cs,'candidate_money':m[cs],'parent_money':m[1-cs],'delta':m[cs]-m[1-cs],'steps':len(env.steps),'statuses':[x.get('status') for x in env.state],'errors':errors,'divergence_count_capped':len(divergences),'divergences':divergences})
+          out={'candidate_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','seeds':seeds,'errors':total_errors,'rows':rows}
+          Path('results/feed0_divergence_trace.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({'errors':total_errors,'games':len(rows),'nonzero_games':sum(r['delta']!=0 for r in rows),'first_divergence_steps':{str(r['seed'])+':'+str(r['candidate_seat']):(r['divergences'][0]['step'] if r['divergences'] else None) for r in rows}},indent=2))
+          assert total_errors==0
+          assert all(r['steps']==720 and all(s=='DONE' for s in r['statuses']) for r in rows)
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-divergence-trace
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
