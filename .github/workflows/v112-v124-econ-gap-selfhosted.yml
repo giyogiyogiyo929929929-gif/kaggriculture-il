@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/v112-v124-econ-gap-selfhosted.yml'
       - 'experiments/v112_v116_milk_micro/run_v124_econ_gap_probe.py'
+      - 'experiments/v112_v116_milk_micro/run_v124_econ_gap_probe_bound.py'
 concurrency:
   group: v112-v124-econ-gap-probe
   cancel-in-progress: true
@@ -25,13 +26,13 @@ jobs:
           python -m pip install jsonschema requests
           Set-Location experiments\v112_v116_milk_micro
           python build_sources.py
-          python -m py_compile run_v124_econ_gap_probe.py
+          python -m py_compile run_v124_econ_gap_probe.py run_v124_econ_gap_probe_bound.py
       - name: Run economics gap probe
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           Set-Location experiments\v112_v116_milk_micro
-          python run_v124_econ_gap_probe.py
+          python run_v124_econ_gap_probe_bound.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
