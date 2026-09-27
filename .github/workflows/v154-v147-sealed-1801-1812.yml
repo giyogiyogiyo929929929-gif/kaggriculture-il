@@ -1,0 +1,100 @@
+name: v154 v147 sealed 1801 1812
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-v147-sealed-1801-1812.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sealed:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine and reconstruct agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v154_v147_dense_self_exposure_not_ahead.py tmp\v147.py tmp\v154.py
+          python -m py_compile tmp\v147.py tmp\v154.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          assert got=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',got
+          print('v147_sha256='+got)
+          print('v154_sha256='+hashlib.sha256(Path('tmp/v154.py').read_bytes()).hexdigest())
+          '@
+          $check | python -
+      - name: Sealed direct 1801-1812 both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\eval.py tmp\v154.py tmp\v147.py -n 12 -j 2 --seed-start 1801 --json results\sealed_1801_1812_raw.json
+          $code=@'
+          import json, statistics
+          from pathlib import Path
+          d=json.loads(Path('results/sealed_1801_1812_raw.json').read_text(encoding='utf-8'))
+          by={}; seat={False:[],True:[]}
+          for g in d['matches_detail']:
+              seed=int(g['seed']); swap=bool(g['swap']); diff=float(g['money'][0])-float(g['money'][1])
+              by.setdefault(seed,[]).append(diff); seat[swap].append(diff)
+          rows=[]; vals=[]
+          for seed in sorted(by):
+              pair=statistics.mean(by[seed]); vals.append(pair)
+              rows.append({'seed':seed,'seat_diffs':by[seed],'pair':pair})
+          se=statistics.stdev(vals)/(len(vals)**0.5) if len(vals)>1 else 0.0
+          out={'metric':'candidate_minus_champion = candidate - champion, pair averaged across seats',
+               'candidate':'v154','champion':'v147','engine':'kaggle_environments==1.32.7',
+               'sealed_declared_before_run':True,'seed_start':1801,'seed_end':1812,'pairs':len(vals),
+               'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),
+               'mean':statistics.mean(vals),'se':se,'mean_minus_2se':statistics.mean(vals)-2*se,
+               'worst':min(vals),'best':max(vals),
+               'seat0_mean':statistics.mean(seat[False]),'seat1_mean':statistics.mean(seat[True]),
+               'candidate_exceptions':d['exceptions']['a'],'champion_exceptions':d['exceptions']['b'],
+               'rows':rows}
+          Path('results/v154_sealed_1801_1812_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          if out['candidate_exceptions'] != 0: raise SystemExit('candidate exceptions')
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-v147-sealed-1801-1812
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
