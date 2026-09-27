@@ -22,20 +22,21 @@ v120b found 40 executable WOOL clean-signal overlap events across seeds 309001, 
 - v119 already showed that broad premium front-running is harmful;
 - v121 showed that identical public inventory/price state can still have opponent-sensitive economics when quantity is moved across turns.
 
-The remaining narrow, previously untested state is the step-456 pattern. In the v120b 80-game external panel, the gate below selects exactly six games:
+The remaining narrow, previously untested state is the step-456 pattern. In the v120b 80-game external panel, the telemetry event occurred in exactly six games:
 
 - `metav4_v13`, seed 309004, both seats;
 - `story_of_seasons`, seed 309004, both seats;
 - `tetsutani_dpts_b`, seed 309003, both seats.
 
-Observed state:
+Observed v120b event fields:
 
 - clean WOOL inventory increase: +3 or +4;
 - WOOL price after signal: 214 or 225;
-- market inventory remains below 10000;
+- market inventory below 10000;
 - shed WOOL: 8;
-- parent same-turn WOOL SELL: 8;
-- parent static order shape at step 456: `STRAWBERRY 14 -> WHEAT 4 -> WOOL 8 -> HIRE...`.
+- parent same-turn WOOL SELL: 8.
+
+The initial candidate design additionally assumed the effective parent action shape matched the static schedule `STRAWBERRY 14 -> WHEAT 4 -> WOOL 8 -> HIRE...` and that no BUY-like order was present. The focused run showed this assumption must be verified from the actual runtime parent action rather than inferred from v120b's limited overlap fields.
 
 ## Hypothesis
 
@@ -82,32 +83,56 @@ No quantity, turn, repayment, farm, BUY, or other premium logic changes.
 
 ## Focused evaluation
 
+Focused self-hosted run `36305589691`: **SUCCESS**.
+
+Candidate SHA256: `aa15c09b3fe5d554a5fd47fae0a5a053f65f7597d07fb30aa8607f1b75f5457d`.
+
 ### Synthetic/static
 
-Focused synthetic covers:
-
-- canonical one-slot WHEAT/WOOL swap;
-- no signal;
-- low price;
-- market inventory >=10000;
-- shed mismatch;
-- premium-cross prevention;
-- two-low-risk-cross prevention;
-- BUY dependency block;
-- prior own WOOL SELL block;
-- seat-state independence.
+- focused synthetic: PASS;
+- exact v112 reconstruction: PASS;
+- py_compile: PASS;
+- telemetry errors: 0.
 
 ### Fresh self-H2H
 
-Seeds 314001–314004, same seed and seat swap, `candidate_minus_champion = v122 - v112`.
+Seeds `314001–314004`, same seed and seat swap:
 
-Expected result is no regression; activation may be zero if the external-only signal is absent.
+- 0W / 0L / 4D;
+- mean `candidate_minus_champion = 0.0`;
+- worst `0.0`;
+- reorders: 0.
+
+No self-play regression was introduced.
 
 ### Targeted external replay
 
-Seeds 309003 and 309004 against all 10 bronze-panel opponents, champion and candidate both seat-swapped.
+Seeds `309003` and `309004` against all 10 bronze-panel opponents, champion and candidate both seat-swapped:
 
-Prior telemetry predicts activation only in the six games listed above. This broader 20 pair replay checks for accidental extra activations as well as economics.
+- all 20 matched opponent-seed pairs: `candidate_minus_champion = 0.0`;
+- outcome regressions: 0;
+- outcome improvements: 0;
+- **active pairs: 0**;
+- total reorders: 0;
+- errors: 0.
+
+This means the intended step-456 state did not satisfy the full v122 runtime gate even in the six games where v120b had recorded a clean WOOL overlap event.
+
+## Probe discrepancy / diagnostic
+
+The no-activation result is not tactical evidence yet; the tactical reorder was never executed. A diagnostic was therefore started instead of proceeding to fresh external seeds.
+
+One concrete discrepancy is already identified in the old v120b probe: its `_v120b_has_buy()` only recognized an order whose opcode was exactly `BUY`. It did **not** classify `BUY_PRODUCT` or `BUY_SEED` as BUY dependencies. v122 intentionally uses `startswith("BUY")`, so some v120b events labelled `has_buy_now=False` may not be safe under the stricter candidate gate.
+
+A second possible mismatch is that v120b recorded only aggregate `sell_h0_parent` and did not preserve the actual runtime market-order shape. The static `_ACTIONS[456]` order therefore cannot be assumed to be the effective v112 action after parent wrappers.
+
+Targeted diagnostic run `36308818490` captures the exact v112 actions and WOOL state at steps 455/456 for:
+
+- `metav4_v13` / seed 309004 / both seats;
+- `story_of_seasons` / seed 309004 / both seats;
+- `tetsutani_dpts_b` / seed 309003 / both seats.
+
+Do not loosen v122 before that diagnostic identifies the blocking condition.
 
 ## Decision rule
 
@@ -119,6 +144,8 @@ Immediate REJECT if:
 - any intended activated opponent shows a reproducible material regression;
 - aggregate active-pair economics are negative without an outcome improvement.
 
-Proceed to fresh external seeds only if the targeted active pairs are consistently non-negative or beneficial and no outcome regression appears.
+If the diagnostic shows the six old v120b events are invalidated by real BUY dependencies or a materially different runtime order shape, reject the current v122 gate as **no canonical activation / incorrect probe assumption** rather than weakening safety guards.
+
+Proceed to fresh external seeds only if a telemetry-supported runtime shape survives the diagnostic and can be tested without crossing BUY dependencies or premium SELLs.
 
 Even a positive focused result cannot promote v122 directly. Fresh external, sealed/stress and runtime gates remain required.
