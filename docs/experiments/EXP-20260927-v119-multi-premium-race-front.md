@@ -2,7 +2,7 @@
 
 ## Status
 
-**KEEP TESTING — DO NOT PROMOTE**
+**KEEP TESTING — canonical self-hosted exact H2H in progress**
 
 Formal champion remains `v112_wheat_lead3_lowdemand`.
 
@@ -61,6 +61,8 @@ Synthetic coverage includes:
 
 Local dependency-free result: `v119 synthetic checks: PASS`.
 
+Canonical workflow has also passed synthetic, deterministic source reconstruction, and py_compile.
+
 ## Canonical evaluation
 
 Engine: `kaggle_environments==1.32.7`.
@@ -88,6 +90,8 @@ If activation gate passes, bronze external panel uses seeds 307001–307004 agai
 - external runner: `run_v119_external_eval.py`
 - workflow: `.github/workflows/v112-v119-selfhosted.yml`
 - workflow creation commit: `a91162285ac1d1ae85e765d9a28a0945e5ab0f8a`
+- active self-hosted run: `36283893966`, job `108520855126`
+- current phase at last check: `Exact v119 vs v112 matched evaluation`
 
 ## Decision
 
