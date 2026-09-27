@@ -1,0 +1,124 @@
+name: v112-v118 self-hosted exact and bronze panel
+
+on:
+  push:
+    branches: [eval/v112-v116-milk-micro-20260926]
+    paths:
+      - ".github/workflows/v112-v118-selfhosted.yml"
+      - "experiments/v112_v116_milk_micro/build_sources.py"
+      - "experiments/v112_v116_milk_micro/v118_suffix.pyfrag"
+      - "experiments/v112_v116_milk_micro/test_v118_suffix_synthetic.py"
+      - "experiments/v112_v116_milk_micro/run_v118_eval.py"
+      - "experiments/v112_v116_milk_micro/run_v118_external_eval.py"
+  workflow_dispatch:
+
+concurrency:
+  group: v112-v118-selfhosted-current-lineage
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact Kaggriculture engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'; print(kaggle_environments.__version__)"
+
+      - name: Focused synthetic and exact source reconstruction
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python test_v118_suffix_synthetic.py
+          if ($LASTEXITCODE -ne 0) { throw 'v118 synthetic checks failed' }
+          python build_sources.py
+          if ($LASTEXITCODE -ne 0) { throw 'source reconstruction failed' }
+          python -m py_compile v110b_wheat_late_batch_lead2.py v112_wheat_lead3_lowdemand.py v118_premium_scarce_sell_front.py run_v118_eval.py run_v118_external_eval.py
+          if ($LASTEXITCODE -ne 0) { throw 'py_compile failed' }
+
+      - name: Exact v118 vs v112 matched evaluation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v118_eval.py
+          if ($LASTEXITCODE -ne 0) { throw 'v118 exact evaluation failed' }
+
+      - name: Activation and safety gate
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          from pathlib import Path
+          p=Path('experiments/v112_v116_milk_micro/v118_eval.json')
+          d=json.loads(p.read_text(encoding='utf-8'))
+          blocks=['telemetry_validation','telemetry_sealed','telemetry_stress']
+          validation_reorders=int((d.get('telemetry_validation') or {}).get('reorders',0))
+          total_reorders=sum(int((d.get(k) or {}).get('reorders',0)) for k in blocks)
+          errors=sum(int((d.get(k) or {}).get('errors',0)) for k in blocks)
+          runtime_errors=int((d.get('runtime') or {}).get('errors',0))
+          print({'validation_reorders':validation_reorders,'total_reorders':total_reorders,'errors':errors,'runtime_errors':runtime_errors})
+          if errors:
+              raise SystemExit('REJECT_GATE: telemetry errors')
+          if runtime_errors:
+              raise SystemExit('REJECT_GATE: runtime callback errors')
+          if validation_reorders <= 0:
+              raise SystemExit('REJECT_GATE: no validation activation')
+          '@
+          $code | python -
+          if ($LASTEXITCODE -ne 0) { throw 'v118 activation/safety gate failed' }
+
+      - name: Bronze external regression panel
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v118_external_eval.py
+          if ($LASTEXITCODE -ne 0) { throw 'v118 external panel failed' }
+
+      - name: Summarize bronze decision evidence
+        if: always()
+        run: |
+          $code = @'
+          import json
+          from pathlib import Path
+          root=Path('experiments/v112_v116_milk_micro')
+          out={'champion':'v112_wheat_lead3_lowdemand','candidate':'v118_premium_scarce_sell_front','sign':'candidate_minus_champion = candidate - champion','engine':'kaggle_environments==1.32.7'}
+          p=root/'v118_eval.json'
+          if p.exists():
+              d=json.loads(p.read_text(encoding='utf-8'))
+              out['exact']={k:d.get(k,{}).get('summary') for k in ('validation','sealed','stress','v118_starter','v112_starter')}
+              out['runtime']=d.get('runtime')
+              out['telemetry']={k:d.get(k) for k in ('telemetry_validation','telemetry_sealed','telemetry_stress')}
+          p=root/'v118_external_eval.json'
+          if p.exists():
+              d=json.loads(p.read_text(encoding='utf-8'))
+              out['external_pooled']=d.get('pooled')
+              out['external_opponents']=[{'opponent':x.get('opponent'),'champion':x.get('champion'),'candidate':x.get('candidate'),'candidate_minus_champion':x.get('candidate_minus_champion'),'outcome_regressions':x.get('outcome_regressions'),'outcome_improvements':x.get('outcome_improvements'),'candidate_telemetry':x.get('candidate_telemetry')} for x in d.get('opponents',[])]
+          (root/'v118_bronze_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          '@
+          $code | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v118-selfhosted-bronze-results
+          path: |
+            experiments/v112_v116_milk_micro/v118_eval.json
+            experiments/v112_v116_milk_micro/v118_external_eval.json
+            experiments/v112_v116_milk_micro/v118_bronze_summary.json
+          if-no-files-found: warn
+          retention-days: 30
