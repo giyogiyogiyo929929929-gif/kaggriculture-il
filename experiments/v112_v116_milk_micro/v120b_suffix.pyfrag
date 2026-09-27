@@ -1,0 +1,193 @@
+# v120b_clean_signal_overlap_probe: telemetry-only wrapper over v112.
+# It keeps the exact parent action and measures whether an opponent-specific
+# clean premium sell-pressure signal overlaps executable stock and existing
+# parent/native SELL windows.
+_V120B_PARENT = agent
+_V120B_ITEMS = ("STRAWBERRY", "MELON", "MILK", "WOOL")
+_V120B_BASE = {"STRAWBERRY": 120.0, "MELON": 250.0, "MILK": 160.0, "WOOL": 200.0}
+_V120B_STATE = {"prev_step": -1, "inventory": {}, "prices": {}, "own_sell": {}}
+_V120B_REPORT = {
+    "transitions": 0,
+    "clean_events": {k: 0 for k in _V120B_ITEMS},
+    "clean_units": {k: 0.0 for k in _V120B_ITEMS},
+    "shed_positive": {k: 0 for k in _V120B_ITEMS},
+    "same_sell_now": {k: 0 for k in _V120B_ITEMS},
+    "future_sell_h1": {k: 0 for k in _V120B_ITEMS},
+    "future_sell_h2": {k: 0 for k in _V120B_ITEMS},
+    "future_sell_h3": {k: 0 for k in _V120B_ITEMS},
+    "any_sell_h0_3": {k: 0 for k in _V120B_ITEMS},
+    "shed_and_sell_h0_3": {k: 0 for k in _V120B_ITEMS},
+    "buy_free_now": {k: 0 for k in _V120B_ITEMS},
+    "shed_sell_buyfree": {k: 0 for k in _V120B_ITEMS},
+    "price_above_base": {k: 0 for k in _V120B_ITEMS},
+    "price_above_75pct_base": {k: 0 for k in _V120B_ITEMS},
+    "errors": 0,
+    "events": [],
+}
+
+def _v120b_parent(obs, config=None):
+    n = getattr(getattr(_V120B_PARENT, "__code__", None), "co_argcount", 1)
+    return _V120B_PARENT(*[obs, config][:n])
+
+def _v120b_num(mapping, key, default=0.0):
+    try:
+        v = _get(mapping, key, default)
+        return float(default if v is None else v)
+    except Exception:
+        return float(default)
+
+def _v120b_market_maps(obs):
+    market = _get(obs, "market", {}) or {}
+    return _get(market, "inventory", {}) or {}, _get(market, "prices", {}) or {}
+
+def _v120b_own_sell(action):
+    out = {k: 0.0 for k in _V120B_ITEMS}
+    if not isinstance(action, dict):
+        return out
+    for order in (action.get("market") or []):
+        try:
+            if len(order) >= 3 and order[0] == "SELL" and order[1] in out:
+                out[order[1]] += max(0.0, float(order[2]))
+        except Exception:
+            continue
+    return out
+
+def _v120b_action_sell(action, item):
+    total = 0.0
+    if not isinstance(action, dict):
+        return total
+    for order in (action.get("market") or []):
+        try:
+            if len(order) >= 3 and order[0] == "SELL" and order[1] == item:
+                total += max(0.0, float(order[2]))
+        except Exception:
+            continue
+    return total
+
+def _v120b_has_buy(action):
+    if not isinstance(action, dict):
+        return False
+    for order in (action.get("market") or []):
+        try:
+            if len(order) >= 1 and order[0] == "BUY":
+                return True
+        except Exception:
+            continue
+    return False
+
+def _v120b_static_sell(step, item):
+    try:
+        if step < 0 or step >= len(_ACTIONS):
+            return 0.0
+        total = 0.0
+        for order in ((_ACTIONS[step] or {}).get("market") or []):
+            if len(order) >= 3 and order[0] == "SELL" and order[1] == item:
+                total += max(0.0, float(order[2]))
+        return total
+    except Exception:
+        return 0.0
+
+def _v120b_shed(obs, item):
+    private = _get(obs, "private", {}) or {}
+    shed = _get(private, "shed", {}) or {}
+    return max(0.0, _v120b_num(shed, item, 0.0))
+
+def _v120b_reset(step):
+    _V120B_STATE["prev_step"] = step
+    _V120B_STATE["inventory"] = {}
+    _V120B_STATE["prices"] = {}
+    _V120B_STATE["own_sell"] = {k: 0.0 for k in _V120B_ITEMS}
+
+def agent(obs, config=None):
+    action = None
+    try:
+        step = int(_get(obs, "step", 0) or 0)
+        if step <= int(_V120B_STATE.get("prev_step", -1)):
+            _v120b_reset(step)
+
+        inv, prices = _v120b_market_maps(obs)
+        prev_inv = _V120B_STATE.get("inventory") or {}
+        prev_prices = _V120B_STATE.get("prices") or {}
+        own_prev_sell = _V120B_STATE.get("own_sell") or {}
+
+        # Generate the exact parent action first so overlap telemetry describes
+        # what v112 would actually execute at this observation.
+        action = _v120b_parent(obs, config)
+
+        if prev_inv and step > int(_V120B_STATE.get("prev_step", -1)):
+            _V120B_REPORT["transitions"] += 1
+            has_buy = _v120b_has_buy(action)
+            for item in _V120B_ITEMS:
+                old_inv = _v120b_num(prev_inv, item, 0.0)
+                now_inv = _v120b_num(inv, item, old_inv)
+                delta = now_inv - old_inv
+                sold_prev = max(0.0, float(own_prev_sell.get(item, 0.0) or 0.0))
+                if delta <= 0 or sold_prev > 0:
+                    continue
+
+                old_price = _v120b_num(prev_prices, item, 0.0)
+                now_price = _v120b_num(prices, item, old_price)
+                shed_q = _v120b_shed(obs, item)
+                sell0 = _v120b_action_sell(action, item)
+                sell1 = _v120b_static_sell(step + 1, item)
+                sell2 = _v120b_static_sell(step + 2, item)
+                sell3 = _v120b_static_sell(step + 3, item)
+                any_sell = (sell0 + sell1 + sell2 + sell3) > 0
+                base = float(_V120B_BASE[item])
+
+                _V120B_REPORT["clean_events"][item] += 1
+                _V120B_REPORT["clean_units"][item] += delta
+                if shed_q > 0:
+                    _V120B_REPORT["shed_positive"][item] += 1
+                if sell0 > 0:
+                    _V120B_REPORT["same_sell_now"][item] += 1
+                if sell1 > 0:
+                    _V120B_REPORT["future_sell_h1"][item] += 1
+                if sell2 > 0:
+                    _V120B_REPORT["future_sell_h2"][item] += 1
+                if sell3 > 0:
+                    _V120B_REPORT["future_sell_h3"][item] += 1
+                if any_sell:
+                    _V120B_REPORT["any_sell_h0_3"][item] += 1
+                if shed_q > 0 and any_sell:
+                    _V120B_REPORT["shed_and_sell_h0_3"][item] += 1
+                if not has_buy:
+                    _V120B_REPORT["buy_free_now"][item] += 1
+                if shed_q > 0 and any_sell and not has_buy:
+                    _V120B_REPORT["shed_sell_buyfree"][item] += 1
+                if now_price >= base:
+                    _V120B_REPORT["price_above_base"][item] += 1
+                if now_price >= 0.75 * base:
+                    _V120B_REPORT["price_above_75pct_base"][item] += 1
+
+                if len(_V120B_REPORT["events"]) < 256:
+                    _V120B_REPORT["events"].append({
+                        "step": step,
+                        "item": item,
+                        "delta": delta,
+                        "inventory_before": old_inv,
+                        "inventory_after": now_inv,
+                        "price_before": old_price,
+                        "price_after": now_price,
+                        "shed": shed_q,
+                        "sell_h0_parent": sell0,
+                        "sell_h1_static": sell1,
+                        "sell_h2_static": sell2,
+                        "sell_h3_static": sell3,
+                        "has_buy_now": bool(has_buy),
+                    })
+
+        _V120B_STATE["prev_step"] = step
+        _V120B_STATE["inventory"] = {k: _v120b_num(inv, k, 0.0) for k in _V120B_ITEMS}
+        _V120B_STATE["prices"] = {k: _v120b_num(prices, k, 0.0) for k in _V120B_ITEMS}
+        _V120B_STATE["own_sell"] = _v120b_own_sell(action)
+        return action
+    except Exception:
+        _V120B_REPORT["errors"] += 1
+        if action is not None:
+            return action
+        return _v120b_parent(obs, config)
+
+agent.telemetry = dict(getattr(_V120B_PARENT, "telemetry", {}) or {})
+agent.telemetry["clean_signal_overlap_probe"] = _V120B_REPORT
+agent.__version__ = "v120b_clean_signal_overlap_probe"
