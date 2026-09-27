@@ -1,0 +1,102 @@
+name: uploaded 127ed3 CARROT2 feed0 second sealed
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/feed0-second-sealed.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and feed0 child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          @'
+          import hashlib,importlib.metadata,json
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          p=Path('tmp/safe_v3.py').read_bytes(); c=Path('tmp/ca_feed0.py').read_bytes()
+          assert hashlib.sha256(p).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(c).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          seeds=[323743,992353,766816,468935,311561,814751,325596,507226,602943,874235,479622,296115]
+          compact='['+','.join(map(str,seeds))+']'
+          assert hashlib.sha256(compact.encode()).hexdigest()=='da7aeb107fa8dcf4501e196f813aa9ea5ce75059fc4a8d7dd2821d1286cf33b9'
+          Path('results/build.json').write_text(json.dumps({'parent_sha256':hashlib.sha256(p).hexdigest(),'candidate_sha256':hashlib.sha256(c).hexdigest(),'sealed2_seed_list_sha256':hashlib.sha256(compact.encode()).hexdigest()},indent=2),encoding='utf-8')
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_feed0.py
+      - name: Second precommitted sealed matched evaluation
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,math,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          seeds=[323743,992353,766816,468935,311561,814751,325596,507226,602943,874235,479622,296115]
+          A=Path('tmp/ca_feed0.py'); B=Path('tmp/safe_v3.py')
+          rows=[]; exc_c=0; exc_p=0; non_done=0
+          def final_money(env,seat):
+              obs=env.steps[-1][seat].get('observation') or {}
+              farms=obs.get('farms') or []
+              if seat < len(farms) and isinstance(farms[seat],dict) and 'money' in farms[seat]:
+                  return float(farms[seat]['money'])
+              return float(env.state[seat].get('reward',0))
+          for seed in seeds:
+              seat_deltas=[]; status_rows=[]; step_rows=[]
+              for cs in (0,1):
+                  paths=[A,B] if cs==0 else [B,A]
+                  loaded=[load_like_kaggle(p) for p in paths]
+                  local=[0,0]; agents=[]
+                  for seat,a in enumerate(loaded):
+                      def w(obs,cfg=None,_a=a,_seat=seat):
+                          try:
+                              return call_like_kaggle(_a,obs,cfg)
+                          except Exception:
+                              local[_seat]+=1
+                              return {'farmer':['PASS'],'hands':[],'market':[]}
+                      agents.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                  exc_c+=local[cs]; exc_p+=local[1-cs]
+                  statuses=[st.get('status') for st in env.state]
+                  if any(x!='DONE' for x in statuses): non_done+=1
+                  steps=len(env.steps)
+                  d=final_money(env,cs)-final_money(env,1-cs)
+                  seat_deltas.append(d); status_rows.append(statuses); step_rows.append(steps)
+              pair=statistics.mean(seat_deltas)
+              rows.append({'seed':seed,'seat_deltas':seat_deltas,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D','statuses':status_rows,'steps':step_rows})
+          vals=[r['pair_mean_delta'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'candidate':'uploaded_127ed3_ca_feed0','candidate_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','seed_precommit_sha256':'da7aeb107fa8dcf4501e196f813aa9ea5ce75059fc4a8d7dd2821d1286cf33b9','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'non_done':non_done,'rows':rows}
+          Path('results/ca_feed0_sealed2.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert exc_c==0 and exc_p==0 and non_done==0
+          assert all(all(x==720 for x in r['steps']) for r in rows)
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-second-sealed
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
