@@ -2,125 +2,185 @@
 
 ## Status
 
-KEEP TESTING. Formal champion remains `v151_none_observation_guard`. No fresh sealed seed spent. No Kaggle submission.
+KEEP TESTING / NOT READY TO PROMOTE.
 
-Focused exact-v151 gate passed. Burned/hard qualification is now running as Actions run `36290874071`.
+Formal champion remains `v151_none_observation_guard`. Fresh sealed block `894322..894333` remains reserved and **unconsumed**. No Kaggle submission.
 
-## Parent / champion
+v154 passed focused, burned, safety/preflight, and internal telemetry checks. The broad hard panel preserved/improved all sampled outcomes but failed the pre-registered non-negative cash-worst gate (`worst = -19`). The first formal runtime stress also failed raw max `<200 ms`; importantly, the exact v151 control failed the same raw-max threshold in that run, so this is not yet evidence of a v154-specific timeout regression.
+
+## Parent / candidate identity
 
 - formal champion: `v151_none_observation_guard`
-- exact champion SHA256: `54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31`
-- lineage: v115 -> v147 -> v150 -> v151
-- candidate branch: `eval-v154-v151-dense-self-exposure-port-20260927`
+- champion SHA256: `54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31`
+- candidate: `v154`
 - candidate SHA256: `9643521253a9c3bb41e27d103353f76ac7e805d91cb838559b8227bc93bff593`
+- lineage: v115 -> v147 -> v150 -> v151 -> v154
+- engine: `kaggle_environments==1.32.7`
 
-## Hypothesis
+## Hypothesis / change
 
-The v153 dense leading-SELL self-exposure ordering showed a narrowly localized, seat-robust benefit against `score_2820` seed `520104`, but v153 was built on stale formal parent v147. Port exactly that tactical reorder onto exact v151 so that all subsequent evidence is against the current formal champion.
+Port the v153 dense leading-SELL self-exposure order change onto exact v151:
 
-## Changes
+- only steps 288..693;
+- only a contiguous leading block of at least five distinct SELL items;
+- stable-sort that leading SELL block descending by executable self-impact exposure;
+- preserve quantities;
+- never cross the first non-SELL / BUY_PRODUCT barrier;
+- preserve v151 `observation is None` semantics exactly.
 
-One tactical mechanism only:
+## Focused qualification
 
-- steps 288..693, only when the action begins with a contiguous block of at least five distinct SELL items, stable-sort that leading SELL block descending by executable self-impact exposure;
-- preserve quantities and never cross the first non-SELL / BUY_PRODUCT barrier.
+Run `36284148569`: SUCCESS.
 
-Compatibility detail: after calling the v151 parent, `observation is None` returns the parent's action unchanged. This preserves v151's existing None-observation safety semantics and is not a new tactical/safety behavior.
+`score_2820`, seed `520104`, both seats:
 
-Source comparison with the v153 builder confirms the tactical overlay is otherwise the same. The v154 differences are the exact-v151 parent and explicit preservation of v151's `None` guard.
+- candidate_minus_champion: `+20 / +20`;
+- mean `+20`, worst `+20`;
+- margin `-9 -> +34`, improvement `+43`;
+- candidate/champion exceptions: 0;
+- v154 telemetry each seat: `eligible=3`, `changed=1`, `errors=0`;
+- `observation=None` returned the same v151 PASS action;
+- `py_compile` and exact-v151 SHA check passed.
 
-## Historical v153 evidence (not v154 promotion evidence)
+## Burned direct qualification
 
-v153 was built on exact v147, so these results are hypothesis support only:
+Run `36290874071`, seeds `681..692`, seat swap. The burned step passed.
 
-- burned direct v153-v147 seeds 681..692: 8W / 0L / 4T, mean +37, worst 0, best +150, exceptions 0;
-- hard panel: 8 opponents x seeds 520101..520104 x seat swap = 64 games;
-- outcome transitions: W->W 62, L->W 2, regressions 0;
-- both L->W are `score_2820`, seed 520104, both seats;
-- champion margin -9 -> candidate margin +34; candidate-minus-champion final cash +20 per seat; margin improvement +43;
-- runtime stress run 36260008638: v153 5,752 calls, median 2.6585 ms, p99 13.2385 ms, max 199.1765 ms, errors 0. The v147 control in the same run had max 210.2851 ms, consistent with previously observed raw-max/GC noise.
+Matched-seed candidate_minus_champion:
 
-### Causal cell detail from retained v152 focused artifact
+- `8W / 0L / 4T`;
+- mean `+37.0`;
+- worst `0`;
+- best `+97`;
+- exceptions 0.
 
-The retained precursor artifact from run `36250312541` makes the market-order mechanism concrete. This is historical v152/v153-family evidence, not v154 qualification evidence.
+Per seed:
 
-At seed `520104`, step `649`, in both seats:
+`681 0, 682 +67, 683 0, 684 +37, 685 +62, 686 0, 687 +53, 688 +97, 689 +46, 690 +36, 691 0, 692 +46`.
 
-- before the market action the candidate was behind by 178 cash;
-- market inventory included MILK `9888`, with observed MILK price `252`;
-- candidate action placed `SELL MILK 9` second in the leading SELL block:
-  `FERTILIZER 18 -> MILK 9 -> WOOL 7 -> WHEAT 6 -> EGG 2 -> BUY_PRODUCT FERTILIZER 2 -> ...`;
-- `score_2820` used the same relevant sale quantities but delayed `MILK 9` until after `BUY_PRODUCT FERTILIZER 2`:
-  `FERTILIZER 18 -> WOOL 7 -> WHEAT 6 -> EGG 2 -> BUY_PRODUCT FERTILIZER 2 -> MILK 9 -> ...`;
-- immediately after that market step, the candidate deficit narrowed from `-178` to `-157`, a +21 relative-cash swing in both seats;
-- v152 telemetry for this match had `eligible=3`, `changed=1`, with the only changed step being 649 and estimated self-impact delta 57.
+Seed 691 seat legs are `-54/+54`, so the matched pair is 0. Do not misclassify a single seat leg as a matched-pair regression.
 
-This supports a specific interpretation: the useful change is an order-index race on scarce/high-priced MILK, not extra inventory, extra SELL quantity, or a farm-production change. The final v153 hard-cell improvement (+20 candidate cash, margin -9 -> +34) is consistent with that immediate +21 market swing plus later one-dollar cascade/noise. Do not generalize this to every dense block until wider v154 evidence confirms safety.
+## Hard opponent qualification
 
-## v154 focused qualification
+Run `36290874071`: all individual hard panels completed successfully; aggregate step failed only because the workflow required `min(candidate_minus_champion_cash) >= 0`.
 
-Self-hosted run `36284148569`: SUCCESS.
+Panel: 8 opponents x seeds `520101..520104` x seat swap = 64 games.
 
-Environment: Python 3.11, `kaggle_environments==1.32.7`, exact v151 reconstructed and SHA asserted before v154 build.
+Outcome transitions:
 
-Safety/static:
+- `W->W`: 62;
+- `L->W`: 2;
+- outcome regressions: 0;
+- outcome improvements: 2;
+- exceptions: 0.
 
-- v151 SHA matched `54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31`;
-- v154 SHA `9643521253a9c3bb41e27d103353f76ac7e805d91cb838559b8227bc93bff593`;
-- `py_compile` PASS;
-- `observation=None` preserved v151 action exactly: `{'farmer':['PASS'],'hands':[],'market':[]}`;
-- v154 telemetry errors after the None test: 0.
+Both improvements are `score_2820`, seed `520104`, both seats:
 
-Focused `score_2820`, seed `520104`, both seats:
+- champion margin `-9`;
+- candidate margin `+34`;
+- candidate_minus_champion cash `+20`.
 
-- candidate_minus_champion mean: +20;
-- seat0: +20;
-- seat1: +20;
-- worst: +20;
-- best: +20;
-- margin improvement mean: +43;
-- candidate exceptions: 0;
-- champion exceptions: 0;
-- v154 telemetry in each seat: `eligible=3`, `changed=1`, `errors=0`.
+Cash-delta summary across opponent/seed matched pairs:
 
-This is an exact reproduction of the intended v153-family causal cell on the current formal v151 parent. It is still insufficient for PROMOTE by itself.
+- mean `+1.90625`;
+- worst `-19`;
+- best `+23`.
 
-## v154 evaluation plan
+By opponent:
 
-1. Reconstruct exact v151 and assert champion SHA. PASS.
-2. Static / syntax check v151 and v154. PASS.
-3. Verify `observation=None` preserves v151 PASS action and adds no v154 telemetry error. PASS.
-4. Focused `score_2820`, seed 520104, both seats. PASS.
-5. Burned direct v154-v151 seeds 681..692 with seat swap. RUNNING.
-6. Hard panel seeds 520101..520104 with seat swap; inspect every transition and worst cash regression. QUEUED in same run.
-7. Verify internal v154 telemetry errors remain zero on wider evaluation; the current broad workflow gates match exceptions but does not directly aggregate `_V154_REPORT['errors']`, so this must be checked separately before sealed.
-8. Runtime/stress on already consumed seeds.
-9. Only after the above gates, spend a genuinely unused sealed block.
-10. Important-opponent regression plus final formal runtime/preflight before any PROMOTE.
+- `peak_2950`: mean `-3.75`, worst `-19`, best `+12`;
+- `tetsutani_ms`: mean `-1.25`, worst `-4`, best `+1`;
+- `score_2820`: mean `+5.5`, worst `-2`, best `+20`;
+- `jaxa_2802`: mean `+4.5`, worst `-2`, best `+20`;
+- `shop_router_v7`: mean `+4.5`, worst `-2`, best `+20`;
+- `melon_squeeze`: mean `+5.75`, worst `0`, best `+23`;
+- `salem_2900`: all zero;
+- `thomas_router_95`: all zero.
 
-## Orchestration
+Worst cell is `peak_2950 / 520104`: `-19` cash, but outcome remains W->W and margin remains strongly positive (`+368 -> +329`). The negative cells are symmetric across both seats in this panel, so they are not explained by seat assignment.
 
-Focused self-hosted run: `36284148569` — SUCCESS.
+Decision implication: the useful `score_2820` loss-to-win flip reproduces exactly, but the candidate violates the pre-registered non-negative worst-cash qualification rule. Do not silently move that goalpost. Investigate whether a narrower activation rule can retain the L->W cells while removing the `peak_2950` / `tetsutani_ms` cash regressions.
 
-Burned/hard run: `36290874071`, triggered by temporary evaluation-only PR #5. Do not merge the trigger PR.
+## Safety / internal telemetry qualification
 
-GitHub-hosted fallback run `36284282397` failed before any executable job step was created on both attempt 1 and attempt 2. Attempt 2 again had `runner_id=0`, empty runner name, and `steps=[]`, completing in about two seconds. Treat both as provisioning/infrastructure evidence only, not candidate failure. Do not spend more GitHub-hosted retries unless runner provisioning changes.
+Run `36291497324`: SUCCESS.
 
-Prepared but not triggered before burned/hard passes:
+Kaggle-compatible preflight:
 
-- `.github/workflows/v154-v151-runtime-stress.yml`
+- last function/callable is `agent`;
+- standard library / own code only;
+- Kaggle-style loader succeeds;
+- action shape valid;
+- five malformed-observation patterns do not crash.
 
-## Parallel candidate triage
+Normal-game internal telemetry over 88 consumed-panel games:
 
-Run `36283893966` for `v119_multi_premium_race_front` completed successfully as infrastructure, but the candidate itself is REJECT evidence on its own v112 parent:
+- `eligible = 166`;
+- `changed = 66`;
+- `errors = 0`.
 
-- validation: 0W / 8L / 4T, mean -156.33, worst -846;
-- sealed: 0W / 4L, mean -338.75, worst -1308;
-- stress: 0W / 8L, mean -273.625, worst -1233;
-- external 40 seed-opponent pairs: no outcome improvements, worst candidate-minus-parent -2.
+This rules out hidden v154 wrapper exceptions as the cause of the observed cash differences.
 
-Do not port v119 to v151.
+## Runtime qualification
 
-## Decision rule
+Run `36291516091`: FAIL on raw max `<200 ms`.
 
-Do not PROMOTE from v153 historical evidence or the focused cell alone. Formal baseline is exact v151. Require same-seed seat-swap matched evidence, non-negative worst regression on the qualification panels, zero exceptions/timeouts, zero internal wrapper errors, fresh sealed reproduction, important-opponent regression check, and formal runtime/preflight gates.
+Sequential single-process, GC enabled, `score_2820`, seeds `520101..520104`, both seats, 5,752 calls per agent.
+
+v151 control:
+
+- median `2.861 ms`;
+- p95 `6.989 ms`;
+- p99 `13.506 ms`;
+- max `218.260 ms`;
+- wall calls >200 ms: 1;
+- errors: 0.
+
+v154 candidate:
+
+- median `3.005 ms`;
+- p95 `7.538 ms`;
+- p99 `13.732 ms`;
+- max `227.679 ms`;
+- wall calls >200 ms: 1;
+- errors: 0.
+
+Both agents comfortably pass the p99 `<50 ms` criterion, but both fail the raw max `<200 ms` criterion in the same run. This is consistent with the previously observed GC/raw-max tail-noise problem, but it is still a formal runtime FAIL and must not be counted as a pass. Re-run with a pre-registered repeated-control methodology before promotion; do not cherry-pick a passing single rerun.
+
+## Historical v153 correction
+
+The retained v153 artifact, not older prose, is authoritative. It records:
+
+- burned: `8W/0L/4T`, mean `+37`, worst `0`, best `+97`;
+- hard outcome transitions: `W->W 62`, `L->W 2`, regressions 0;
+- hard cash worst `-19`, not 0.
+
+See `CORRECTION-20260927-v153-artifact-summary.md`.
+
+## Sealed reservation
+
+Fresh block `894322..894333` was preregistered from candidate SHA before outcomes were observed. It remains RESERVED / NOT CONSUMED.
+
+Do **not** spend it yet because the pre-sealed qualification gates are not all passed.
+
+## Current decision
+
+`KEEP TESTING`, formal champion remains v151.
+
+Reasons not to promote yet:
+
+1. hard panel violates the pre-registered non-negative worst-cash gate (`-19`);
+2. runtime raw max gate failed (`227.679 ms`), even though the v151 control also failed (`218.260 ms`);
+3. fresh sealed evidence has intentionally not been spent;
+4. public-diversity / important-opponent final regression and final package/preflight are still pending.
+
+## Next hypothesis / next candidate
+
+Create a narrow follow-up candidate rather than weakening the v154 gate after seeing results. Use telemetry/replay contrast between:
+
+- positive causal cell: `score_2820 / 520104`, and
+- negative cash cells, especially `peak_2950 / 520104` and `peak_2950 / 520103`.
+
+Goal: retain the scarce/high-priced MILK order-index race that flips `score_2820` L->W while suppressing activations that only reduce cash inside already-safe wins. Keep this as a 1-mechanism candidate and re-run focused/burned/hard before any sealed spend.
+
+Separately, use a pre-registered repeated runtime/control test to characterize the >200 ms outlier rather than treating a single rerun as qualification.
