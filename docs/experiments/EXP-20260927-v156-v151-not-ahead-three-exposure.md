@@ -2,7 +2,7 @@
 
 ## Status
 
-STRICT BURNED/HARD PASS / PREFLIGHT+TELEMETRY NEXT. Formal champion remains `v151_none_observation_guard`.
+PREFLIGHT/TELEMETRY PASS / RUNTIME CHARACTERIZATION RUNNING. Formal champion remains `v151_none_observation_guard`.
 
 No fresh sealed seeds consumed. No Kaggle submission.
 
@@ -97,6 +97,37 @@ Both improvements are `score_2820 / 520104`, both seats: champion margin `-9` ->
 
 This is the key difference from v154: the intended loss-to-win cell remains, while the hard-panel cash worst improves from `-19` to `0` under the unchanged strict gate.
 
+## Preflight / internal telemetry
+
+Run `36305115867`: SUCCESS. Artifact `v156-v151-preflight-telemetry`.
+
+Preflight:
+
+- last callable `agent` — PASS;
+- standard-library / own-module imports only — PASS;
+- Kaggle-compatible loader — PASS;
+- action shape — PASS;
+- five malformed-observation fallback patterns — PASS.
+
+Internal telemetry over the consumed burned + hard panels:
+
+- games: `88`;
+- eligible: `36`;
+- changed: `22`;
+- ahead_skips: `10787`;
+- exposure_skips: `12`;
+- errors: `0`.
+
+This confirms that both guards are actively filtering candidate reorder opportunities rather than the candidate becoming inert, while retaining zero internal exceptions.
+
+## Runtime characterization
+
+Preregistered workflow `.github/workflows/v156-v151-runtime-characterization.yml` uses three repetitions with alternating execution order (`v151->v156`, `v156->v151`, `v151->v156`), GC enabled, the same consumed `score_2820 / 520101..520104` games with seat swap, and records wall/CPU p99/max/>200ms for both agents.
+
+Run `36308693426` from PR #13 is in progress at the time of this update.
+
+The characterization requires zero errors and v156 wall p99 <50 ms in every repetition. Raw max is compared with the v151 control and is not by itself retroactively declared a formal PASS. A later strict final runtime gate remains required before PROMOTE.
+
 ## Evaluation order / gates
 
 Completed:
@@ -106,20 +137,15 @@ Completed:
 3. focused consumed cells — PASS;
 4. focused strict gate — PASS;
 5. burned 681..692 with seat swap, matched worst >=0, exceptions0 — PASS;
-6. full hard 8-opponent panel with seat swap, zero outcome regressions, at least one improvement, cash worst >=0, exceptions0 — PASS.
+6. full hard 8-opponent panel with seat swap, zero outcome regressions, at least one improvement, cash worst >=0, exceptions0 — PASS;
+7. internal telemetry / malformed preflight — PASS.
 
-Next:
+Current / next:
 
-7. internal telemetry / malformed preflight — run `36305115867` queued at time of this update;
-8. preregistered repeated-control runtime characterization, followed later by a strict final runtime gate;
+8. preregistered repeated-control runtime characterization — run `36308693426` in progress; strict final runtime gate still required later;
 9. only after pre-sealed gates qualify, reserve a new SHA-derived fresh sealed block for v156. Do not reuse v154's reserved `894322..894333` as v156 fresh evidence;
 10. sealed, important-opponent/climb-band regression, final package/preflight, then PROMOTE/REJECT.
 
-Prepared but not yet counted as evidence:
-
-- `.github/workflows/v156-v151-preflight-telemetry.yml`
-- `.github/workflows/v156-v151-runtime-characterization.yml`
-
 ## Decision
 
-KEEP TESTING. v156 has now passed focused and strict consumed-seed burned/hard gates with zero hard cash regression and two reproducible loss-to-win outcomes. Formal champion remains v151 until preflight, runtime, fresh sealed and final regression gates pass.
+KEEP TESTING. v156 has passed focused, strict consumed-seed burned/hard, and preflight/internal telemetry gates. Formal champion remains v151 until runtime, fresh sealed and final regression gates pass.
