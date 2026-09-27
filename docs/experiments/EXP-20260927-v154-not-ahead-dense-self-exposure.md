@@ -2,7 +2,7 @@
 
 ## Status
 
-**FOCUSED PASS / BURNED DIRECT PASS / FULL HARD PANEL PASS-WITH-TINY-REGRESSION / STRESS QUEUED / NOT PROMOTED.** Formal champion remains exact v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
+**FOCUSED PASS / BURNED DIRECT PASS / FULL HARD PANEL PASS-WITH-TINY-REGRESSION / BURNED STRESS PASS / SEALED PASS / TELEMETRY PENDING / NOT PROMOTED.** Formal champion remains exact v147 SHA `8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923`.
 
 ## Parent / hypothesis
 
@@ -77,23 +77,72 @@ All `peak_2950`, `salem_2900`, `thomas_router_95`, and `melon_squeeze` cells are
 
 The residual tetsutani regression is causally localized to step649. At activation v154 is 46 behind, so the not-ahead gate allows the reorder; the opponent delays FERTILIZER relative to v154, making FERTILIZER-first slightly suboptimal. The effect is only `-4`, symmetric across seats, with no outcome regression.
 
-## Next gate
+## Burned development stress — seeds 641..672
 
-Burned development stress workflow `36301876016` evaluates direct v154 vs exact v147 on seeds `641..672`, both seats. These seeds are already development/burned and are not sealed.
+Workflow run `36301876016` completed successfully under the formal engine. These are development/burned seeds, not sealed.
 
-If stress is acceptable:
+- 32 matched pairs / 64 games
+- `21W / 2L / 9D`
+- mean `+21.6719`
+- SE `5.1262`
+- mean - 2SE `+11.4195`
+- worst pair `-13`
+- best `+86`
+- seat0 mean `+26.78`
+- seat1 mean `+16.56`
+- candidate exceptions `0`
+- champion exceptions `0`
 
-1. declare a new unused sealed seed range before running it;
-2. evaluate v154 vs v147 both seats on sealed seeds;
-3. inspect any sealed differing seeds with telemetry/replay;
-4. run dedicated runtime/preflight;
-5. recheck important opponents if needed;
-6. PROMOTE only if sealed improvement, worst regression, seat stability, runtime, and causal explanation all remain acceptable.
+Negative pairs were seed658 `-13` and seed671 `-1`. Some seat dependence exists (notably 655, 663, 669), but aggregate paired evidence remains strongly positive.
+
+## Predeclared sealed test — seeds 1801..1812
+
+Seeds `1801..1812` were declared as a fresh unused sealed range before the workflow was created. Workflow run `36305174326` completed successfully under the exact formal engine. These seeds are now burned and must not be reused as sealed.
+
+- 12 matched pairs / 24 games
+- `7W / 0L / 5D`
+- mean `+18.9167`
+- SE `6.3407`
+- mean - 2SE `+6.2354`
+- worst pair `0`
+- best `+55`
+- seat0 mean `+14.6667`
+- seat1 mean `+23.1667`
+- candidate exceptions `0`
+- champion exceptions `0`
+
+Per-seed pair deltas:
+
+- 1801 `0`
+- 1802 `+27` from seat legs `-24 / +78`
+- 1803 `0`
+- 1804 `+12 / +12`
+- 1805 `0`
+- 1806 `+43 / +43`
+- 1807 `+49 / +49`
+- 1808 `+38 / +38`
+- 1809 `+55 / +55`
+- 1810 `+3 / +3`
+- 1811 `0`
+- 1812 `0`
+
+The sealed result passes the primary matched-pair gate: positive mean, positive mean-minus-2SE, zero pair-level regression, zero exceptions, and improvement spread across multiple seeds. The only notable seat-specific anomaly is seed1802 (`-24 / +78`), so telemetry/replay is required before promotion.
+
+## Current telemetry gate
+
+A dedicated sealed direct diagnostic was added to compare each v154 action with a shadow v147 action on the same observation and record v154 report deltas plus money/market/shed state around every changed step. Diagnostic targets:
+
+- seed1802 both seats — seat-asymmetric primary case;
+- seed1806 both seats — symmetric positive control;
+- seed1809 both seats — strongest symmetric positive control;
+- seed1810 both seats — small positive control.
+
+After telemetry, remaining promotion gates are dedicated runtime, submission preflight, and final important-opponent regression confirmation as needed.
 
 ## Decision
 
 - v153: superseded by v154 for safety; do not promote v153.
-- v154: **KEEP TESTING / current leading candidate**.
-- champion remains exact v147.
-- no fresh sealed seeds consumed yet.
+- v154: **KEEP TESTING / SEALED PASS / current leading candidate**.
+- champion remains exact v147 until telemetry/runtime/preflight gates pass.
+- sealed seeds 1801..1812 are burned.
 - no Kaggle submission.
