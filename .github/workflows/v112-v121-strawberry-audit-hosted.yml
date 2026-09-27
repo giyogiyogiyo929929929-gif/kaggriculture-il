@@ -1,0 +1,31 @@
+name: v112-v121 strawberry schedule audit hosted
+
+on:
+  push:
+    branches: [eval/v112-v121-strawberry-race-20260927]
+    paths:
+      - ".github/workflows/v112-v121-strawberry-audit-hosted.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build exact v112 and audit strawberry schedule
+        run: |
+          cd experiments/v112_v116_milk_micro
+          python audit_v121_strawberry_schedule.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v112-v121-strawberry-schedule-audit-hosted
+          path: experiments/v112_v116_milk_micro/v121_strawberry_schedule.json
+          if-no-files-found: error
+          retention-days: 7
