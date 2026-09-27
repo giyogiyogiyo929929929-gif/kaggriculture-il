@@ -1,61 +1,37 @@
-# EXP-20260927 — v124_wool_nextsell_probe
+# AUXILIARY — WOOL next-sell probe (historically named v124)
 
 ## Status
 
-**PROBE RUNNING — NOT A CANDIDATE — DO NOT PROMOTE**
+**PROBE COMPLETE — HYPOTHESIS CLOSED — NOT A CANDIDATE — DO NOT PROMOTE**
+
+This branch used the label `v124` before the already-existing formal `v124_external_econ_gap_probe` lineage was rediscovered. It is therefore **auxiliary only** and must not be treated as the formal v124 experiment or used for later version sequencing.
 
 Formal champion remains `v112_wheat_lead3_lowdemand`.
 
-## Motivation
+## Run
 
-v123 exact-runtime tracing found a more interesting WOOL state than the seed-309001 late window:
+- workflow run: `36314184123`
+- job: `108605652673`
+- canonical engine: `kaggle_environments==1.32.7`
+- panel: seed `309004`, 10 bronze-panel opponents, both seats = 20 games
 
-- seed `309004`;
-- all 10 bronze-panel opponents, both seats;
-- clean positive WOOL market-inventory transition around step `578`;
-- WOOL price about `229–230`;
-- shed WOOL `2`;
-- v112 does not SELL WOOL on the signal turn or within the next three traced turns.
+## Finding
 
-The signal turn itself contains `BUY_SEED WHEAT 8` in the known v49/v50 runtime traces, so a tactical mutation must not be created until the eventual WOOL liquidation path and BUY dependencies are known.
+A clean WOOL signal occurs around step 578 with shed WOOL `2` and a high public price. The v112 signal-turn action includes `BUY_SEED WHEAT 8` and does not sell WOOL immediately.
 
-## Probe design
+Across all 20 games, the next exact runtime WOOL sale is step 600, quantity `10`. The step-600 price is equal to or slightly **higher** than the signal price:
 
-No candidate wrapper is used. Exact `v112_wheat_lead3_lowdemand` is traced directly.
+- `v49` / `v50`: 229 -> 231
+- `metav4_v13` / `k256_h2_q_v1` / `story_of_seasons`: 230 -> 231
+- `market_rhythm`: 228 -> 231
+- `thomas_router_93`: 238 -> 239
+- `tetsutani_dpts_b`: 229 -> 231
+- `jaxa_2802` / `ready_stock`: 236 -> 237
 
-Panel:
+There are also four BUY-action turns between the signal and the later sale in every captured trajectory.
 
-- seed `309004`;
-- all 10 bronze-panel opponents;
-- both seats;
-- canonical engine `kaggle_environments==1.32.7`.
+## Decision
 
-Trigger:
+Do **not** front-load the two WOOL from step 578. The observed later sale receives an equal or better price and batches the inventory safely. This WOOL timing hypothesis is closed.
 
-- clean positive WOOL inventory transition;
-- previous runtime action sold zero WOOL;
-- current WOOL price >=220;
-- current shed WOOL >=2;
-- current runtime action sells zero WOOL.
-
-For each trigger, follow exact runtime state until the next WOOL SELL or step 650 and record:
-
-- signal inventory / price / shed / runtime market orders / BUY-like orders;
-- minimum and maximum WOOL price before the next SELL;
-- maximum shed quantity before the next SELL;
-- count of intervening BUY-action turns;
-- next WOOL SELL step / price / quantity / shed / exact runtime order list.
-
-## Decision rule
-
-Do not create a tactical candidate unless the probe shows a coherent quantity-preserving move from the high-price signal to an identifiable later WOOL SELL.
-
-Even then, the next candidate must:
-
-1. preserve total WOOL sold by repaying from the identified later runtime SELL;
-2. avoid crossing or breaking BUY dependencies;
-3. keep premium-to-premium order unchanged unless independently justified;
-4. pass fresh same-seed/seat-swap self-H2H and fresh external seeds;
-5. not rely on seed `309004` alone for promotion evidence.
-
-If the two WOOL are already sold at an equal or better later price, or if the later SELL cannot be safely identified, close this timing hypothesis.
+The formal active research priority is the official v124/v125/v126 day-10 external-economic/MELON track, not this auxiliary branch.
