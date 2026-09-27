@@ -1,0 +1,117 @@
+name: v154 dual-agent runtime diagnostic
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-runtime-dual-agent-diagnostic.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconstruct exact v147 and v154
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v154_v147_dense_self_exposure_not_ahead.py tmp\v147.py tmp\v154.py
+          python -m py_compile tmp\v147.py tmp\v154.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          exp={'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','tmp/v154.py':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e'}
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Dual-agent wall and CPU timing diagnostic
+        run: |
+          $ErrorActionPreference='Stop'
+          $code=@'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+          SEEDS=[681,682,689,691,692]
+          uid=0
+          def load(path):
+              global uid
+              uid+=1; p=Path(path).resolve(); n=f'_dual_{uid}'
+              s=importlib.util.spec_from_file_location(n,p); m=importlib.util.module_from_spec(s)
+              sys.modules[n]=m; sys.path.insert(0,str(p.parent))
+              try:s.loader.exec_module(m)
+              finally:sys.path.remove(str(p.parent))
+              return getattr(m,'agent')
+          class Timed:
+              def __init__(self,fn,label): self.fn=fn; self.label=label; self.rows=[]
+              def __call__(self,obs,cfg=None):
+                  step=int(obs.get('step',-1)); w0=time.perf_counter_ns(); c0=time.process_time_ns()
+                  out=self.fn(obs,cfg)
+                  cpu=(time.process_time_ns()-c0)/1e6; wall=(time.perf_counter_ns()-w0)/1e6
+                  self.rows.append({'step':step,'wall_ms':wall,'cpu_ms':cpu,'stall_ms':wall-cpu})
+                  return out
+          def q(v,p):
+              s=sorted(v); return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+          def summarize(t):
+              w=[x['wall_ms'] for x in t.rows]; c=[x['cpu_ms'] for x in t.rows]
+              return {'calls':len(w),'median_wall_ms':statistics.median(w),'p99_wall_ms':q(w,.99),'max_wall_ms':max(w),'p99_cpu_ms':q(c,.99),'max_cpu_ms':max(c),'top_wall':sorted(t.rows,key=lambda x:x['wall_ms'],reverse=True)[:10]}
+          cases=[]; errors=[]
+          for seed in SEEDS:
+              for seat in (0,1):
+                  try:
+                      c=Timed(load('tmp/v154.py'),'v154'); h=Timed(load('tmp/v147.py'),'v147')
+                      env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                      env.run([c,h] if seat==0 else [h,c])
+                      statuses=[x.get('status') for x in env.state]
+                      if any(s in ('INVALID','ERROR') for s in statuses): raise RuntimeError((seed,seat,statuses))
+                      cases.append({'seed':seed,'candidate_seat':seat,'v154':summarize(c),'v147':summarize(h),'statuses':statuses,'rewards':[x.get('reward') for x in env.state]})
+                  except Exception as e:
+                      errors.append({'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          cwall=[x for z in cases for x in [z['v154']['max_wall_ms']]]; hwall=[x for z in cases for x in [z['v147']['max_wall_ms']]]
+          out={'engine':'kaggle_environments==1.32.7','seeds':SEEDS,'seat_swap':True,'gc_enabled':gc.isenabled(),'errors':errors,'cases':cases,'max_of_game_max_v154_ms':max(cwall) if cwall else None,'max_of_game_max_v147_ms':max(hwall) if hwall else None}
+          Path('results/v154_runtime_dual_agent.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({'errors':errors,'max_v154':out['max_of_game_max_v154_ms'],'max_v147':out['max_of_game_max_v147_ms']},indent=2))
+          for z in cases: print(json.dumps({'seed':z['seed'],'seat':z['candidate_seat'],'v154':{k:z['v154'][k] for k in ('p99_wall_ms','max_wall_ms','p99_cpu_ms','max_cpu_ms')},'v147':{k:z['v147'][k] for k in ('p99_wall_ms','max_wall_ms','p99_cpu_ms','max_cpu_ms')}}))
+          assert not errors, errors
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-runtime-dual-agent-diagnostic
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
