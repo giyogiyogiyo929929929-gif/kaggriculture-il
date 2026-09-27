@@ -1,0 +1,117 @@
+name: v154 final sequential runtime qualification
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-final-runtime-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v154_v147_dense_self_exposure_not_ahead.py tmp\v147.py tmp\v154.py
+          python -m py_compile tmp\v147.py tmp\v154.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          got=hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()
+          assert got=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',got
+          print('v147_sha256='+got)
+          print('v154_sha256='+hashlib.sha256(Path('tmp/v154.py').read_bytes()).hexdigest())
+          '@
+          $check | python -
+      - name: Sequential GC-on per-call timing
+        run: |
+          $ErrorActionPreference='Stop'
+          $code=@'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback, hashlib
+          from pathlib import Path
+          from kaggle_environments import make
+          CANDIDATE='tmp/v154.py'; CHAMPION='tmp/v147.py'; SEEDS=[681,682,689,691,692]
+          uid=0
+          def load_agent(path):
+              global uid
+              uid += 1
+              p=Path(path).resolve(); name=f'_v154_runtime_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p); mod=importlib.util.module_from_spec(spec)
+              sys.modules[name]=mod; sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              fn=getattr(mod,'agent',None)
+              if fn is None: raise RuntimeError(f'no agent in {path}')
+              return fn
+          class Timed:
+              def __init__(self,fn): self.fn=fn; self.ms=[]
+              def __call__(self,obs,config=None):
+                  t0=time.perf_counter_ns(); out=self.fn(obs,config); self.ms.append((time.perf_counter_ns()-t0)/1_000_000.0); return out
+          def q(vals,p):
+              s=sorted(vals); return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+          assert gc.isenabled()
+          all_ms=[]; rows=[]; errors=[]
+          for seed in SEEDS:
+              for seat in (0,1):
+                  try:
+                      cand=Timed(load_agent(CANDIDATE)); champ=load_agent(CHAMPION)
+                      env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                      env.run([cand,champ] if seat==0 else [champ,cand])
+                      statuses=[x.get('status') for x in env.state]; rewards=[x.get('reward') for x in env.state]
+                      if any(s in ('INVALID','ERROR') for s in statuses): raise RuntimeError((seed,seat,statuses))
+                      vals=cand.ms
+                      if len(vals)<700: raise RuntimeError(f'too few calls {seed} {seat} {len(vals)}')
+                      all_ms.extend(vals)
+                      rows.append({'seed':seed,'candidate_seat':seat,'calls':len(vals),'median_ms':statistics.median(vals),'p95_ms':q(vals,.95),'p99_ms':q(vals,.99),'max_ms':max(vals),'statuses':statuses,'rewards':rewards})
+                  except Exception as e:
+                      errors.append({'seed':seed,'candidate_seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+          out={'candidate':'v154','candidate_sha256':hashlib.sha256(Path(CANDIDATE).read_bytes()).hexdigest(),'champion':'v147','engine':'kaggle_environments==1.32.7','mode':'sequential single-process; GC enabled; candidate invocation wall time via perf_counter_ns','seeds':SEEDS,'seat_swap':True,'gc_enabled':gc.isenabled(),'calls':len(all_ms),'median_ms':statistics.median(all_ms) if all_ms else None,'p95_ms':q(all_ms,.95) if all_ms else None,'p99_ms':q(all_ms,.99) if all_ms else None,'max_ms':max(all_ms) if all_ms else None,'thresholds':{'p99_ms_lt':50.0,'max_ms_lt':200.0},'errors':errors,'rows':rows}
+          out['pass']=(not errors and out['calls']>0 and out['p99_ms']<50.0 and out['max_ms']<200.0 and out['gc_enabled'])
+          Path('results/v154_runtime_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2)); assert out['pass'],out
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-final-runtime-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
