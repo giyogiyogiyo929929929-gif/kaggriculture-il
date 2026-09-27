@@ -1,0 +1,45 @@
+name: v112-v123 wool runtime probe
+
+on:
+  push:
+    branches:
+      - eval/v112-v123-wool-runtime-probe-20260927
+    paths:
+      - 'experiments/v112_v116_milk_micro/run_v123_wool_runtime_probe.py'
+      - '.github/workflows/v112-v123-wool-runtime-probe-selfhosted.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: v112-v123-wool-runtime-probe-current-lineage
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install engine and reconstruct exact v112
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          Set-Location experiments\v112_v116_milk_micro
+          python build_sources.py
+          python -m py_compile run_v123_wool_runtime_probe.py
+      - name: Run exact runtime WOOL probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v123_wool_runtime_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v123-wool-runtime-probe
+          path: experiments/v112_v116_milk_micro/v123_wool_runtime_probe.json
+          retention-days: 30
