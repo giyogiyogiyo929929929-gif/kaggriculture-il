@@ -1,0 +1,174 @@
+name: v154 clean runtime and preflight
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-clean-runtime-preflight.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact agents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          cp submissions/v27_orderbook_layer_d/main.py tmp/main.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          PY
+          (cd tmp && patch --binary --batch -p3 -i ../ci/v76.patch)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tmp/main.py')
+          p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          PY
+          mv tmp/main.py tmp/v77.py
+          python ci/reconstruct_exact_v115.py tmp/v77.py tmp/v115.py
+          python ci/build_v147_confirmed_v111_clone.py tmp/v115.py tmp/v147.py
+          python ci/build_v154_v147_dense_self_exposure_not_ahead.py tmp/v147.py tmp/v154.py
+          python -m py_compile tmp/v147.py tmp/v154.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected={
+              'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923',
+              'tmp/v154.py':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e',
+          }
+          for p,w in expected.items():
+              got=hashlib.sha256(Path(p).read_bytes()).hexdigest()
+              print(p,got)
+              assert got==w,(p,got,w)
+          PY
+
+      - name: Clean Ubuntu absolute runtime qualification
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS=[681,682,689,691,692]
+          uid=0
+          def load(path):
+              global uid
+              uid+=1
+              p=Path(path).resolve(); name=f'_clean_runtime_{uid}'
+              spec=importlib.util.spec_from_file_location(name,p)
+              mod=importlib.util.module_from_spec(spec)
+              sys.modules[name]=mod; sys.path.insert(0,str(p.parent))
+              try: spec.loader.exec_module(mod)
+              finally: sys.path.remove(str(p.parent))
+              return getattr(mod,'agent')
+
+          class Timed:
+              def __init__(self,fn): self.fn=fn; self.rows=[]
+              def __call__(self,obs,cfg=None):
+                  step=int(obs.get('step',-1))
+                  t0=time.perf_counter_ns(); out=self.fn(obs,cfg)
+                  self.rows.append({'step':step,'ms':(time.perf_counter_ns()-t0)/1e6})
+                  return out
+
+          def q(vals,p):
+              s=sorted(vals)
+              return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+
+          all_ms=[]; rows=[]; errors=[]
+          assert gc.isenabled()
+          for seed in SEEDS:
+              for seat in (0,1):
+                  try:
+                      cand=Timed(load('tmp/v154.py')); champ=load('tmp/v147.py')
+                      env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                      env.run([cand,champ] if seat==0 else [champ,cand])
+                      statuses=[x.get('status') for x in env.state]
+                      if any(s in ('INVALID','ERROR') for s in statuses): raise RuntimeError((seed,seat,statuses))
+                      vals=[x['ms'] for x in cand.rows]
+                      if len(vals)<700: raise RuntimeError(f'too few calls {seed} {seat} {len(vals)}')
+                      all_ms.extend(vals)
+                      rows.append({'seed':seed,'candidate_seat':seat,'calls':len(vals),'median_ms':statistics.median(vals),'p95_ms':q(vals,.95),'p99_ms':q(vals,.99),'max_ms':max(vals),'top5':sorted(cand.rows,key=lambda x:x['ms'],reverse=True)[:5],'statuses':statuses,'rewards':[x.get('reward') for x in env.state]})
+                  except Exception as exc:
+                      errors.append({'seed':seed,'seat':seat,'error':repr(exc),'traceback':traceback.format_exc()})
+          out={'candidate':'v154','candidate_sha256':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e','champion':'v147','engine':'kaggle_environments==1.32.7','runner':'ubuntu-latest','gc_enabled':gc.isenabled(),'calls':len(all_ms),'median_ms':statistics.median(all_ms) if all_ms else None,'p95_ms':q(all_ms,.95) if all_ms else None,'p99_ms':q(all_ms,.99) if all_ms else None,'max_ms':max(all_ms) if all_ms else None,'thresholds':{'p99_ms_lt':50.0,'max_ms_lt':200.0},'errors':errors,'rows':rows}
+          out['pass']=(not errors and out['calls']>0 and out['p99_ms']<50.0 and out['max_ms']<200.0)
+          Path('results/v154_clean_runtime.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          for r in rows: print(json.dumps({'seed':r['seed'],'seat':r['candidate_seat'],'p99_ms':r['p99_ms'],'max_ms':r['max_ms'],'top2':r['top5'][:2]}))
+          assert out['pass'],out
+          PY
+
+      - name: Submission structural preflight and archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import ast, hashlib, json, sys, tarfile
+          from pathlib import Path
+          from kaggle_environments import make
+
+          src=Path('tmp/v154.py')
+          text=src.read_text(encoding='utf-8')
+          tree=ast.parse(text)
+          funcs=[n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]
+          assert funcs and funcs[-1]=='agent', funcs[-5:]
+
+          external=set()
+          stdlib=set(sys.stdlib_module_names)
+          for node in ast.walk(tree):
+              if isinstance(node,ast.Import): names=[a.name.split('.')[0] for a in node.names]
+              elif isinstance(node,ast.ImportFrom): names=[(node.module or '').split('.')[0]]
+              else: continue
+              for name in names:
+                  if name and name not in stdlib: external.add(name)
+          assert not external, external
+
+          env={}
+          exec(compile(text,'main.py','exec'),env)
+          callables=[v for v in env.values() if callable(v)]
+          assert callables, 'no callable'
+          agent=callables[-1]
+          assert getattr(agent,'__name__',None)=='agent',getattr(agent,'__name__',None)
+          broken=[{}, {'player':0}, {'farms':[]}, {'player':5,'farms':[{}]}, None]
+          for obs in broken:
+              out=agent(obs,None)
+              assert isinstance(out,dict) and set(out)=={'farmer','hands','market'} and all(isinstance(out[k],list) for k in out),(obs,out)
+
+          # Fresh module state for an actual engine smoke test.
+          env2={}; exec(compile(text,'main.py','exec'),env2); a2=[v for v in env2.values() if callable(v)][-1]
+          game=make('kaggriculture',configuration={'seed':1},debug=True)
+          game.run([a2,'starter'])
+          statuses=[s.get('status') for s in game.state]
+          assert statuses[0]=='DONE',statuses
+
+          outdir=Path('results/submission'); outdir.mkdir(parents=True,exist_ok=True)
+          main=outdir/'main.py'; main.write_bytes(src.read_bytes())
+          archive=Path('results/v154_submission.tar.gz')
+          with tarfile.open(archive,'w:gz') as tf: tf.add(main,arcname='main.py')
+          result={'candidate':'v154','sha256':hashlib.sha256(src.read_bytes()).hexdigest(),'bytes':src.stat().st_size,'last_function':funcs[-1],'external_imports':sorted(external),'broken_observations':len(broken),'smoke_statuses':statuses,'archive_bytes':archive.stat().st_size,'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'pass':True}
+          Path('results/v154_preflight.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+          print(json.dumps(result,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-clean-runtime-preflight
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
