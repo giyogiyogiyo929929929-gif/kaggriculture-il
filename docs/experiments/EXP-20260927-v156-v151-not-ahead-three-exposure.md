@@ -2,9 +2,9 @@
 
 ## Status
 
-PREFLIGHT/TELEMETRY PASS / RUNTIME CHARACTERIZATION RUNNING. Formal champion remains `v151_none_observation_guard`.
+RUNTIME CHARACTERIZATION PASS / FRESH SEALED RESERVED AND QUEUED. Formal champion remains `v151_none_observation_guard`.
 
-No fresh sealed seeds consumed. No Kaggle submission.
+Fresh sealed block `855641..855652` was preregistered before first execution in `SEALED-RESERVATION-20260927-v156.md`. Sealed run `36310398164` was queued at the time of this update. No Kaggle submission.
 
 ## Parent / identity
 
@@ -70,7 +70,7 @@ Burned direct seeds `681..692`, both seats:
 - worst: `0`;
 - best: `+94`;
 - exceptions: `0`;
-- seed 691 had opposite raw seat deltas `-54 / +54`, giving matched-pair delta `0`; seat swap therefore cancels the seat effect as intended.
+- seed 691 had opposite raw seat deltas `-54 / +54`, giving matched-pair delta `0`; seat swap cancels the seat effect as intended.
 
 Hard 8 opponents x seeds `520101..520104`, both seats:
 
@@ -93,7 +93,7 @@ Per-opponent matched cash delta:
 - `tetsutani_ms`: all `0`;
 - `thomas_router_95`: all `0`.
 
-Both improvements are `score_2820 / 520104`, both seats: champion margin `-9` -> candidate margin `+34`, candidate_minus_champion cash `+20`.
+Both outcome improvements are `score_2820 / 520104`, both seats: champion margin `-9` -> candidate margin `+34`, candidate_minus_champion cash `+20`.
 
 This is the key difference from v154: the intended loss-to-win cell remains, while the hard-panel cash worst improves from `-19` to `0` under the unchanged strict gate.
 
@@ -118,15 +118,43 @@ Internal telemetry over the consumed burned + hard panels:
 - exposure_skips: `12`;
 - errors: `0`.
 
-This confirms that both guards are actively filtering candidate reorder opportunities rather than the candidate becoming inert, while retaining zero internal exceptions.
+This confirms that both guards actively filter reorder opportunities rather than making the candidate inert, while retaining zero internal exceptions.
 
 ## Runtime characterization
 
-Preregistered workflow `.github/workflows/v156-v151-runtime-characterization.yml` uses three repetitions with alternating execution order (`v151->v156`, `v156->v151`, `v151->v156`), GC enabled, the same consumed `score_2820 / 520101..520104` games with seat swap, and records wall/CPU p99/max/>200ms for both agents.
+Run `36308693426`: SUCCESS. Artifact `v156-v151-runtime-characterization`. PR #13 was closed without merge after artifact collection.
 
-Run `36308693426` from PR #13 is in progress at the time of this update.
+Preregistered method: three repetitions with alternating execution order (`v151->v156`, `v156->v151`, `v151->v156`), GC enabled, consumed `score_2820 / 520101..520104` with seat swap.
 
-The characterization requires zero errors and v156 wall p99 <50 ms in every repetition. Raw max is compared with the v151 control and is not by itself retroactively declared a formal PASS. A later strict final runtime gate remains required before PROMOTE.
+Wall-clock results:
+
+- rep 1: v151 p99 `15.5777 ms`, max `280.1249 ms`, >200ms `3`; v156 p99 `13.9443 ms`, max `194.2144 ms`, >200ms `0`;
+- rep 2: v156 p99 `13.6061 ms`, max `206.0014 ms`, >200ms `2`; v151 p99 `15.0018 ms`, max `344.5302 ms`, >200ms `3`;
+- rep 3: v151 p99 `17.6337 ms`, max `307.7933 ms`, >200ms `3`; v156 p99 `16.1809 ms`, max `221.6913 ms`, >200ms `2`.
+
+- errors: `0` for both agents in all repetitions;
+- v156 p99 `<50 ms` in all 3 repetitions — characterization gate PASS;
+- v156 raw max `<200 ms` in `1/3` repetitions;
+- v151 control raw max `<200 ms` in `0/3` repetitions.
+
+Interpretation: the >200ms tail is present more strongly in the v151 control, so this characterization does not support a v156-specific tail regression. It does **not** waive the formal promotion requirement. A separate strict final runtime gate with unchanged thresholds `p99 <50 ms` and `max <200 ms` remains required before PROMOTE.
+
+Prepared workflow: `.github/workflows/v156-v151-final-runtime.yml`.
+
+## Fresh sealed reservation
+
+Reservation committed before first execution:
+
+- document: `docs/experiments/SEALED-RESERVATION-20260927-v156.md`;
+- deterministic rule: `start = 700000 + int(candidate_sha256[:8],16) % 200000`;
+- start: `855641`;
+- reserved fresh block: `855641..855652`, 12 matched seeds, both seats;
+- exact start-seed repository code search returned zero matches as supporting collision evidence;
+- v154 reserved block `894322..894333` is not reused.
+
+Sealed workflow: `.github/workflows/v156-v151-sealed-855641-855652.yml`.
+
+First sealed run: `36310398164`, PR #14. Strict preregistered qualification requires 12 pairs, zero exceptions, zero matched losses, worst `>=0`, at least one win, and `mean - 2*SE > 0`. A telemetry replay occurs only after the first sealed evaluation has consumed the block.
 
 ## Evaluation order / gates
 
@@ -136,16 +164,18 @@ Completed:
 2. py_compile / `None` safety — PASS;
 3. focused consumed cells — PASS;
 4. focused strict gate — PASS;
-5. burned 681..692 with seat swap, matched worst >=0, exceptions0 — PASS;
-6. full hard 8-opponent panel with seat swap, zero outcome regressions, at least one improvement, cash worst >=0, exceptions0 — PASS;
-7. internal telemetry / malformed preflight — PASS.
+5. burned 681..692 with seat swap — PASS;
+6. full hard 8-opponent panel with seat swap — PASS;
+7. internal telemetry / malformed preflight — PASS;
+8. repeated-control runtime characterization — PASS its preregistered p99/error gate; formal max gate still pending.
 
 Current / next:
 
-8. preregistered repeated-control runtime characterization — run `36308693426` in progress; strict final runtime gate still required later;
-9. only after pre-sealed gates qualify, reserve a new SHA-derived fresh sealed block for v156. Do not reuse v154's reserved `894322..894333` as v156 fresh evidence;
-10. sealed, important-opponent/climb-band regression, final package/preflight, then PROMOTE/REJECT.
+9. fresh sealed `855641..855652` — run `36310398164` queued at time of update;
+10. if sealed passes, run consumed public diversity plus strength/climb-band regression with matched seeds and seat swap;
+11. strict final runtime with unchanged `p99 <50 ms`, `max <200 ms`;
+12. final package/preflight and PROMOTE / KEEP TESTING / REJECT decision.
 
 ## Decision
 
-KEEP TESTING. v156 has passed focused, strict consumed-seed burned/hard, and preflight/internal telemetry gates. Formal champion remains v151 until runtime, fresh sealed and final regression gates pass.
+KEEP TESTING. v156 has clean focused, strict burned/hard, preflight/internal telemetry, and repeated runtime characterization evidence. Formal champion remains v151 until fresh sealed, broader regression, strict final runtime, and final package gates pass.
