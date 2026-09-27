@@ -37,7 +37,7 @@ jobs:
           import kaggle_environments.envs.kaggriculture.kaggriculture as kg
           p=Path('tmp/safe_v3.py').read_bytes(); c=Path('tmp/ca_harvestcredit_v1.py').read_bytes()
           assert hashlib.sha256(p).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
-          assert hashlib.sha256(c).hexdigest()=='56736e406f6cc023b0b720bd1b7aee556ed7aba4caa92a9ba427336cb047a95f'
+          assert hashlib.sha256(c).hexdigest()=='ea296402b43b2e389e2f9cf8a23e27f92434b5b25212c3095f720840d9a91eb0'
           assert importlib.metadata.version('kaggle-environments')=='1.32.7'
           assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
           Path('results/build.json').write_text(json.dumps({'parent_sha256':hashlib.sha256(p).hexdigest(),'candidate_sha256':hashlib.sha256(c).hexdigest(),'candidate_bytes':len(c)},indent=2),encoding='utf-8')
@@ -81,7 +81,7 @@ jobs:
               rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D','games':games})
           vals=[r['pair_mean_delta'] for r in rows]
           mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
-          out={'candidate':'uploaded_127ed3_ca_harvestcredit_v1','candidate_sha256':'56736e406f6cc023b0b720bd1b7aee556ed7aba4caa92a9ba427336cb047a95f','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','hypothesis':'Relax the one-day CARROT2 feed reserve only when scheduled near-term WHEAT harvests keep feed inventory solvent at every planned FEED step; preserve the reserve otherwise.','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'non_done':non_done,'harvest_credit_counts':{str(r['seed']):[g['candidate_report'].get('ca_feed_harvest_credit',0) for g in r['games']] for r in rows},'rows':rows}
+          out={'candidate':'uploaded_127ed3_ca_harvestcredit_v1','candidate_sha256':'ea296402b43b2e389e2f9cf8a23e27f92434b5b25212c3095f720840d9a91eb0','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','hypothesis':'Relax the one-day CARROT2 feed reserve only when scheduled near-term WHEAT harvests keep feed inventory solvent at every planned FEED step; preserve the reserve otherwise.','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'non_done':non_done,'harvest_credit_counts':{str(r['seed']):[g['candidate_report'].get('ca_feed_harvest_credit',0) for g in r['games']] for r in rows},'rows':rows}
           Path('results/ca_harvestcredit_v1_dev.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
           print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
           assert exc_c==0 and exc_p==0 and non_done==0
