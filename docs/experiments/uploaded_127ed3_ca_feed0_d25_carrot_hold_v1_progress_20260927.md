@@ -1,6 +1,6 @@
 # uploaded_127ed3_ca_feed0_d25_carrot_hold_v1 — progress — 2026-09-27
 
-Status: **KEEP TESTING; BURNED DEV PASS; STRESS QUEUED; NOT PROMOTED**
+Status: **KEEP TESTING; DEV + STRESS PASS; SEALED1 QUEUED; NOT PROMOTED**
 
 ## Identity
 
@@ -14,7 +14,7 @@ Status: **KEEP TESTING; BURNED DEV PASS; STRESS QUEUED; NOT PROMOTED**
 
 ## Single tactical change
 
-At observation step 600 only, remove parent-selected market orders matching `SELL CARROT`. All other actions are unchanged. CARROT remains in shed and parent logic is free to sell it from the next observation onward.
+At observation step 600 only, remove parent-selected market orders matching `SELL CARROT`. All other actions are unchanged. CARROT remains in shed and unchanged parent logic may sell it from the next observation onward.
 
 ## Burned dev
 
@@ -22,47 +22,56 @@ Run `36311006300`, artifact `10928434749`.
 
 Seeds `[641,350003,101,211,347,509,733,911,1201,1601]`, both seats, candidate directly versus current champion.
 
-Summary:
-
 - W/L/D: `4/0/6`
-- mean candidate-minus-champion: `+12.2`
-- median: `0`
+- mean: `+12.2`
 - SE: `6.2907`
 - mean - 2SE: `-0.3815`
 - worst: `0`
 - best: `+55`
-- seat0 mean: `+12.2`
-- seat1 mean: `+12.2`
-- exact hash / engine / source / syntax gates: PASS
-- exceptions: `0`
-- all games: `DONE`, 720 turns
+- seat0 / seat1 mean: `+12.2 / +12.2`
+- exceptions `0`; all games `DONE`, 720 turns
 
-Per-seed pair deltas:
+Pair deltas: 641 `+55`, 350003 `+8`, 101 `0`, 211 `0`, 347 `0`, 509 `0`, 733 `0`, 911 `0`, 1201 `+19`, 1601 `+40`.
 
-- 641: `+55`
-- 350003: `+8`
-- 101: `0`
-- 211: `0`
-- 347: `0`
-- 509: `0`
-- 733: `0`
-- 911: `0`
-- 1201: `+19`
-- 1601: `+40`
+The original focal-four subset `[641,350003,733,911]` remains `2W/0L/2D`, mean `+15.75`, worst `0`, best `+55`.
 
-The original focal-four subset `[641,350003,733,911]` remains `2W/0L/2D`, mean `+15.75`, worst `0`, best `+55`. Thus the old focal effect transfers from safety-v3 to the current feed0 parent, although seed641's gain compresses from the old +73 to +55.
+## Burned stress
 
-## Interpretation
+Run `36311427676`, artifact `10929013848`.
 
-This is a narrow, reproducible positive timing effect with no burned-dev regression. It is not yet promotion-quality because the dev block is sparse and `mean - 2SE` is approximately zero.
+Seeds621-632, both seats:
 
-## Next gate
+- W/L/D: `4/0/8`
+- mean: `+4.5833`
+- SE: `2.4261`
+- mean - 2SE: `-0.2688`
+- worst: `0`
+- best: `+25`
+- seat0 / seat1 mean: `+4.5833 / +4.5833`
 
-Burned stress workflow for seeds621-632 both seats was triggered after the dev PASS:
+Non-zero pair deltas: seed623 `+12`, 628 `+16`, 629 `+25`, 630 `+2`; all others `0`.
 
-- workflow: `.github/workflows/uploaded-127ed3-ca-feed0-d25-carrot-hold-v1-stress.yml`
-- run: `36311427676`
+## Combined burned evidence
 
-No fresh/sealed seeds are used before reviewing stress. If stress retains a useful positive signal with acceptable worst regression, proceed to a precommitted fresh sealed block and known-opponent regression checks. If stress is neutral/negative or introduces concerning losses, REJECT or refine before any fresh allocation.
+22 distinct seeds across dev + stress:
 
-Formal champion remains `uploaded_127ed3_ca_feed0`. No Kaggle submission is implied.
+- W/L/D: `8/0/14`
+- mean: `+8.0455`
+- SE: `3.1742`
+- mean - 2SE: `+1.6970`
+- worst: `0`
+- best: `+55`
+
+This is a sparse but reproducible positive timing effect with no observed burned regression and a positive combined lower bound.
+
+## Fresh sealed1
+
+Seeds were precommitted before evaluation in `uploaded_127ed3_ca_feed0_d25_carrot_hold_v1_sealed1_precommit_20260927.md`:
+
+`957488,985781,382781,394323,430506,566548,140231,622742,329503,941134,700022,422167`
+
+Seed-list SHA256: `4aafd85f727795aecf289fda662b8f2998b910d839b3bf8e026d102e90cc2cf4`.
+
+Run `36311965589` has been triggered and is currently queued behind another self-hosted job. No sealed result has been inspected yet.
+
+If sealed1 retains a positive/no-regression pattern, proceed to known-opponent regression, runtime/preflight, and promotion-quality review. Formal champion remains `uploaded_127ed3_ca_feed0`. No Kaggle submission is implied.
