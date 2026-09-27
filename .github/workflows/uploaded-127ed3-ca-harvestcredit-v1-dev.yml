@@ -1,0 +1,96 @@
+name: uploaded 127ed3 CARROT2 harvestcredit v1 burned dev
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-harvestcredit-v1-dev.yml'
+      - 'ci/build_uploaded_127ed3_ca_harvestcredit_v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build exact parent and harvest-credit child
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_harvestcredit_v1.py tmp\safe_v3.py tmp\ca_harvestcredit_v1.py
+          @'
+          import hashlib,importlib.metadata,json
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          p=Path('tmp/safe_v3.py').read_bytes(); c=Path('tmp/ca_harvestcredit_v1.py').read_bytes()
+          assert hashlib.sha256(p).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(c).hexdigest()=='56736e406f6cc023b0b720bd1b7aee556ed7aba4caa92a9ba427336cb047a95f'
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          Path('results/build.json').write_text(json.dumps({'parent_sha256':hashlib.sha256(p).hexdigest(),'candidate_sha256':hashlib.sha256(c).hexdigest(),'candidate_bytes':len(c)},indent=2),encoding='utf-8')
+          '@ | python -
+          python -m py_compile tmp\safe_v3.py tmp\ca_harvestcredit_v1.py
+      - name: Burned ten-seed direct-parent matched evaluation with telemetry
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import copy,json,math,statistics
+          from pathlib import Path
+          from kaggle_environments import make
+          from scripts.preflight import load_like_kaggle,call_like_kaggle
+          seeds=[641,350003,101,211,347,509,733,911,1201,1601]
+          C=Path('tmp/ca_harvestcredit_v1.py'); P=Path('tmp/safe_v3.py')
+          rows=[]; exc_c=0; exc_p=0; non_done=0
+          def final_money(env,seat):
+              obs=env.steps[-1][seat].get('observation') or {}
+              farms=obs.get('farms') or []
+              return float(farms[seat]['money']) if seat < len(farms) else float(env.state[seat].get('reward',0))
+          for seed in seeds:
+              games=[]
+              for cs in (0,1):
+                  paths=[C,P] if cs==0 else [P,C]
+                  loaded=[load_like_kaggle(p) for p in paths]
+                  local=[0,0]; agents=[]
+                  for seat,a in enumerate(loaded):
+                      def w(obs,cfg=None,_a=a,_seat=seat):
+                          try:return call_like_kaggle(_a,obs,cfg)
+                          except Exception:
+                              local[_seat]+=1
+                              return {'farmer':['PASS'],'hands':[],'market':[]}
+                      agents.append(w)
+                  env=make('kaggriculture',configuration={'seed':seed}); env.run(agents)
+                  exc_c+=local[cs]; exc_p+=local[1-cs]
+                  statuses=[x.get('status') for x in env.state]
+                  if any(x!='DONE' for x in statuses): non_done+=1
+                  cand=loaded[cs]; parent=loaded[1-cs]
+                  games.append({'candidate_seat':cs,'delta':final_money(env,cs)-final_money(env,1-cs),'steps':len(env.steps),'statuses':statuses,'candidate_report':copy.deepcopy(cand.__globals__.get('_CA_REPORT',{})),'parent_report':copy.deepcopy(parent.__globals__.get('_CA_REPORT',{}))})
+              vals=[g['delta'] for g in games]; pair=statistics.mean(vals)
+              rows.append({'seed':seed,'seat_deltas':vals,'pair_mean_delta':pair,'outcome':'W' if pair>0 else 'L' if pair<0 else 'D','games':games})
+          vals=[r['pair_mean_delta'] for r in rows]
+          mean=statistics.mean(vals); se=statistics.stdev(vals)/math.sqrt(len(vals)) if len(vals)>1 else 0.0
+          out={'candidate':'uploaded_127ed3_ca_harvestcredit_v1','candidate_sha256':'56736e406f6cc023b0b720bd1b7aee556ed7aba4caa92a9ba427336cb047a95f','parent':'uploaded_127ed3_safety_v3','parent_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df','hypothesis':'Relax the one-day CARROT2 feed reserve only when scheduled near-term WHEAT harvests keep feed inventory solvent at every planned FEED step; preserve the reserve otherwise.','seeds':seeds,'wld':{k:sum(r['outcome']==k for r in rows) for k in 'WLD'},'mean':mean,'median':statistics.median(vals),'se':se,'mean_minus_2se':mean-2*se,'worst':min(vals),'best':max(vals),'seat0_mean':statistics.mean(r['seat_deltas'][0] for r in rows),'seat1_mean':statistics.mean(r['seat_deltas'][1] for r in rows),'candidate_exceptions':exc_c,'parent_exceptions':exc_p,'non_done':non_done,'harvest_credit_counts':{str(r['seed']):[g['candidate_report'].get('ca_feed_harvest_credit',0) for g in r['games']] for r in rows},'rows':rows}
+          Path('results/ca_harvestcredit_v1_dev.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='rows'},indent=2))
+          assert exc_c==0 and exc_p==0 and non_done==0
+          assert all(all(g['steps']==720 for g in r['games']) for r in rows)
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-harvestcredit-v1-dev
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
