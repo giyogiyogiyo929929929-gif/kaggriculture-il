@@ -5,6 +5,7 @@ on:
     branches: [eval/v112-v121-strawberry-race-20260927]
     paths:
       - ".github/workflows/v112-v121-focused-selfhosted.yml"
+      - "experiments/v112_v116_milk_micro/build_sources.py"
       - "experiments/v112_v116_milk_micro/v121_suffix.pyfrag"
       - "experiments/v112_v116_milk_micro/build_v121.py"
       - "experiments/v112_v116_milk_micro/test_v121_suffix_synthetic.py"
