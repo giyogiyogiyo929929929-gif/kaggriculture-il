@@ -1,0 +1,138 @@
+name: v154 v147 stable runtime gate
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-v147-stable-runtime-gate.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned engine and reconstruct exact v147 v154
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v154_v147_dense_self_exposure_not_ahead.py tmp\v147.py tmp\v154.py
+          python -m py_compile tmp\v147.py tmp\v154.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          exp={'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','tmp/v154.py':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e'}
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Stable-environment sequential runtime gate
+        run: |
+          $ErrorActionPreference='Stop'
+          $code=@'
+          import gc, importlib.util, json, math, statistics, sys, time, traceback
+          from pathlib import Path
+          from kaggle_environments import make
+
+          SEEDS=[681,682,689,691,692]
+          TRIALS=3
+          uid=0
+          def load(path):
+              global uid
+              uid+=1; p=Path(path).resolve(); n=f'_stable_rt_{uid}'
+              s=importlib.util.spec_from_file_location(n,p); m=importlib.util.module_from_spec(s)
+              sys.modules[n]=m; sys.path.insert(0,str(p.parent))
+              try:s.loader.exec_module(m)
+              finally:sys.path.remove(str(p.parent))
+              return getattr(m,'agent')
+          class Timed:
+              def __init__(self,fn): self.fn=fn; self.rows=[]
+              def __call__(self,obs,cfg=None):
+                  step=int(obs.get('step',-1)); t0=time.perf_counter_ns(); out=self.fn(obs,cfg); ms=(time.perf_counter_ns()-t0)/1e6
+                  self.rows.append({'step':step,'ms':ms}); return out
+          def q(v,p):
+              s=sorted(v); return s[max(0,min(len(s)-1,math.ceil(p*len(s))-1))]
+          def one(label,path):
+              allv=[]; games=[]; errors=[]
+              for seed in SEEDS:
+                  for seat in (0,1):
+                      try:
+                          target=Timed(load(path)); other=load('tmp/v147.py')
+                          env=make('kaggriculture',configuration={'seed':seed},debug=True)
+                          if label=='v147':
+                              # exact v147 target against independently loaded exact v147
+                              env.run([target,other] if seat==0 else [other,target])
+                          else:
+                              env.run([target,other] if seat==0 else [other,target])
+                          statuses=[x.get('status') for x in env.state]
+                          if any(s in ('INVALID','ERROR') for s in statuses): raise RuntimeError((seed,seat,statuses))
+                          vals=[r['ms'] for r in target.rows]
+                          if len(vals)<700: raise RuntimeError(('too_few_calls',seed,seat,len(vals)))
+                          allv.extend(vals)
+                          games.append({'seed':seed,'seat':seat,'calls':len(vals),'median_ms':statistics.median(vals),'p99_ms':q(vals,.99),'max_ms':max(vals),'top3':sorted(target.rows,key=lambda r:r['ms'],reverse=True)[:3]})
+                      except Exception as e:
+                          errors.append({'seed':seed,'seat':seat,'error':repr(e),'traceback':traceback.format_exc()})
+              return {'label':label,'calls':len(allv),'median_ms':statistics.median(allv) if allv else None,'p95_ms':q(allv,.95) if allv else None,'p99_ms':q(allv,.99) if allv else None,'max_ms':max(allv) if allv else None,'errors':errors,'games':games}
+
+          trials=[]
+          for i in range(TRIALS):
+              gc.collect()
+              champ=one('v147','tmp/v147.py')
+              gc.collect()
+              cand=one('v154','tmp/v154.py')
+              stable=(not champ['errors'] and champ['p99_ms']<50.0 and champ['max_ms']<200.0)
+              candidate_pass=(stable and not cand['errors'] and cand['p99_ms']<50.0 and cand['max_ms']<200.0)
+              trials.append({'trial':i+1,'champion':champ,'candidate':cand,'environment_stable':stable,'candidate_pass':candidate_pass})
+              print(json.dumps({'trial':i+1,'v147':{k:champ[k] for k in ('median_ms','p99_ms','max_ms')},'v154':{k:cand[k] for k in ('median_ms','p99_ms','max_ms')},'stable':stable,'candidate_pass':candidate_pass}))
+
+          stable_trials=[t for t in trials if t['environment_stable']]
+          stable_passes=[t for t in stable_trials if t['candidate_pass']]
+          out={'candidate':'v154','candidate_sha256':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e','champion':'v147','champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','engine':'kaggle_environments==1.32.7','mode':'three sequential environment-qualified trials; GC enabled','seeds':SEEDS,'thresholds':{'p99_ms_lt':50.0,'max_ms_lt':200.0},'trial_count':TRIALS,'stable_trial_count':len(stable_trials),'stable_pass_count':len(stable_passes),'trials':trials}
+          # Require at least one objectively stable champion trial and require v154 to pass every stable trial.
+          out['pass']=(len(stable_trials)>=1 and len(stable_passes)==len(stable_trials))
+          out['inconclusive']=(len(stable_trials)==0)
+          Path('results/v154_stable_runtime_gate.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({'stable_trial_count':len(stable_trials),'stable_pass_count':len(stable_passes),'pass':out['pass'],'inconclusive':out['inconclusive']},indent=2))
+          if out['inconclusive']:
+              raise SystemExit('INCONCLUSIVE: v147 itself exceeded formal runtime thresholds in every trial')
+          assert out['pass'], out
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-v147-stable-runtime-gate
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
