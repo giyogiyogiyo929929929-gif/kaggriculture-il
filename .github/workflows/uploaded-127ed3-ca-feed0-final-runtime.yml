@@ -1,0 +1,92 @@
+name: uploaded 127ed3 CARROT2 feed0 final runtime gate
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-final-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact engine and reconstruct exact agents
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          python ci\build_uploaded_127ed3_safety_v3.py tmp\safe_v3.py
+          python ci\build_uploaded_127ed3_ca_feed0.py tmp\safe_v3.py tmp\ca_feed0.py
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\ci\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          @'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          assert hashlib.sha256(Path('tmp/safe_v3.py').read_bytes()).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(Path('tmp/ca_feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          assert hashlib.sha256(Path('tmp/v147.py').read_bytes()).hexdigest()=='8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923'
+          '@ | python -
+          python -m py_compile tmp\ca_feed0.py tmp\safe_v3.py tmp\v147.py
+      - name: Single-process final timing gate
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:PYTHONIOENCODING='utf-8'
+          @'
+          import gc,json,statistics,sys,time
+          from pathlib import Path
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+          LIMIT_P99_MS=50.0
+          LIMIT_WORST_MS=200.0
+          seeds=[71,75]
+          mine=C.load('tmp/ca_feed0.py')
+          def measure(opponent,label):
+              ts=[]; inner=C.wrap(mine)
+              def timed(o,c=None):
+                  t=time.perf_counter(); a=inner(o,c); ts.append(time.perf_counter()-t); return a
+              gc.collect()
+              for seed in seeds: C.play(timed,opponent,seed)
+              ts.sort(); p99=ts[min(len(ts)-1,int(len(ts)*0.99))]*1000.0
+              worst=ts[-1]*1000.0; median=statistics.median(ts)*1000.0
+              return {'label':label,'opponent':opponent,'seeds':seeds,'n':len(ts),'median_ms':median,'p99_ms':p99,'worst_ms':worst,'pass':p99<LIMIT_P99_MS and worst<LIMIT_WORST_MS}
+          rows=[measure('starter','starter'),measure('tmp/v147.py','v147')]
+          out={'candidate':'uploaded_127ed3_ca_feed0','candidate_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','engine':'1.32.7','limits':{'p99_ms_lt':LIMIT_P99_MS,'worst_ms_lt':LIMIT_WORST_MS},'rows':rows,'pass':all(r['pass'] for r in rows)}
+          print('RUNTIME_GATE',json.dumps(out,indent=2)); Path('results/runtime_gate.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          assert out['pass'],out
+          '@ | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uploaded-127ed3-ca-feed0-final-runtime
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
