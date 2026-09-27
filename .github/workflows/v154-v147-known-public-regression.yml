@@ -1,0 +1,96 @@
+name: v154 vs v147 known public regression
+
+on:
+  push:
+    branches: [eval-v150-v147-singleton-hardcell-20260926]
+    paths: [".github/workflows/v154-v147-known-public-regression.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact engine and reconstruct exact v147 v154
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results,results\v154 | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          $normalize=@'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@
+          $normalize | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          $append=@'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@
+          $append | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v154_v147_dense_self_exposure_not_ahead.py tmp\v147.py tmp\v154.py
+          python -m py_compile tmp\v147.py tmp\v154.py
+          $check=@'
+          import hashlib
+          from pathlib import Path
+          exp={'tmp/v147.py':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','tmp/v154.py':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e'}
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@
+          $check | python -
+      - name: Evaluate known public opponents seeds 641-644 both seats
+        run: |
+          $ErrorActionPreference='Stop'
+          function Run-Panel([string]$name,[string]$opp) {
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v154.py --champion tmp\v147.py --opponent $opp --seed-start 641 --seed-count 4 --jobs 2 --out "results\v154\$name.json"
+            if ($LASTEXITCODE -ne 0) { throw "panel failed: $name" }
+          }
+          Run-Panel 'starter' 'starter'
+          Run-Panel 'beat_v48' 'opponents\beat_v48\main.py'
+          Run-Panel 'bl_v20' 'opponents\bl_v20\main.py'
+          Run-Panel 'bl_v21' 'opponents\bl_v21\main.py'
+          Run-Panel 'farming_v2' 'opponents\farming_v2\main.py'
+          Run-Panel 'frontier_prvsiyan' 'opponents\frontier_prvsiyan\main.py'
+      - name: Aggregate candidate_minus_champion
+        if: always()
+        run: |
+          $code=@'
+          import glob,json,statistics
+          from pathlib import Path
+          panels=[]
+          for p in sorted(glob.glob('results/v154/*.json')):
+              d=json.load(open(p,encoding='utf-8')); d['panel_name']=Path(p).stem; panels.append(d)
+          vals=[float(r['candidate_minus_champion_money']) for p in panels for r in p.get('rows',[])]
+          n=len(vals); mean=statistics.fmean(vals) if vals else 0.; se=statistics.stdev(vals)/(n**0.5) if n>1 else 0.
+          out={'candidate':'v154','candidate_sha256':'7366261d9eb774777b222e69d3ddfabd170f6622dfb68eafa02697e2c4baa23e','champion':'v147','champion_sha256':'8b755e96f7d294f23297e3d452ee8b16966afbdfc440972a826d92621cbcf923','engine':'kaggle_environments==1.32.7','seeds':'641-644 burned known-public regression','panel_count':len(panels),'paired_rows':n,'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'draws':sum(x==0 for x in vals),'mean_candidate_minus_champion':mean,'se':se,'mean_minus_2se':mean-2*se,'worst_regression':min(vals) if vals else None,'best_improvement':max(vals) if vals else None,'candidate_exceptions':sum(int(p.get('candidate_exceptions',0)) for p in panels),'champion_exceptions':sum(int(p.get('champion_exceptions',0)) for p in panels),'panels':[{'name':p['panel_name'],'wins':p['wins'],'losses':p['losses'],'ties':p['ties'],'mean':p['candidate_minus_champion_mean'],'worst':p['worst'],'best':p['best'],'rows':[{'seed':r['seed'],'diff':r['candidate_minus_champion_money']} for r in p['rows']]} for p in panels]}
+          Path('results/v154_known_public_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
+          assert n==24,out
+          assert out['candidate_exceptions']==0 and out['champion_exceptions']==0,out
+          '@
+          $code | python -
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-v147-known-public-regression
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
