@@ -7,6 +7,7 @@ import sys
 RAW_SHA256 = "127ed3e62988c0474d386db6527ae8ca9de9bb1fe7004128557ddef67126c652"
 SAFE_V3_SHA256 = "87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df"
 PART_DIR = Path(__file__).resolve().parent / "uploaded_127ed3"
+PART_NAMES = [f"part{i:02d}.b64" for i in range(12)]
 
 WRAPPER = b'''\n\n# Safety-only wrapper v3: delete/reinsert agent so Kaggle namespace-order loader selects it.\n_SAFE_V3_PARENT = ig_agent\ntry:\n    del agent\nexcept Exception:\n    pass\ndef agent(observation, configuration=None):\n    try:\n        return _SAFE_V3_PARENT(observation, configuration)\n    except Exception:\n        return {"farmer": ["PASS"], "hands": [], "market": []}\nagent.telemetry = _SAFE_V3_PARENT.telemetry\n'''
 
@@ -15,11 +16,7 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: python ci/build_uploaded_127ed3_safety_v3.py OUTPUT")
 
-    parts = sorted(PART_DIR.glob("part*.b64"))
-    if not parts:
-        raise SystemExit(f"no uploaded raw chunks found under {PART_DIR}")
-
-    packed_b64 = "".join(p.read_text(encoding="ascii") for p in parts)
+    packed_b64 = "".join((PART_DIR / name).read_text(encoding="ascii") for name in PART_NAMES)
     raw = gzip.decompress(base64.b64decode(packed_b64))
     raw_sha = hashlib.sha256(raw).hexdigest()
     if raw_sha != RAW_SHA256:
