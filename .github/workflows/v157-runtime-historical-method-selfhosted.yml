@@ -1,0 +1,114 @@
+name: v157 runtime historical-method selfhosted
+
+on:
+  push:
+    branches: [candidate-runtime-v150-on-v153-20260927]
+    paths: [".github/workflows/v157-runtime-historical-method-selfhosted.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v153 and v157
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'; $env:Path="$gitUsr;$env:Path"
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v153_v147_dense_self_exposure_guard.py tmp\v147.py tmp\v153.py
+          python ci\build_v157_runtime_v150_on_v153.py tmp\v153.py tmp\v157.py
+          python -m py_compile tmp\v153.py tmp\v157.py
+          @'
+          import hashlib,json
+          from pathlib import Path
+          got={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ('tmp/v153.py','tmp/v157.py')}
+          assert got['tmp/v153.py']=='128836e8e945d9b5b8c6776dc68cd45f4c21775713ebd3bd50655cd2f711ebfd',got
+          assert got['tmp/v157.py']=='11a6d2730eab34c82919b6a2f782527958cbd61f389f7b5879cf5de460bb0e1c',got
+          Path('results/build_sha.json').write_text(json.dumps(got,indent=2),encoding='utf-8')
+          print(json.dumps(got,indent=2))
+          '@ | python -
+
+      - name: Historical-method runtime qualification
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,sys,time
+          from pathlib import Path
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+
+          seeds=[520101,520102,520103,520104]
+          opponent='opponents/score_2820/main.py'
+
+          def bench(path):
+              mine=C.load(path)
+              inner=C.wrap(mine)
+              ts=[]; errors=[]
+              def timed(o,c=None):
+                  t=time.perf_counter()
+                  try: return inner(o,c)
+                  except Exception as e: errors.append(repr(e)); raise
+                  finally: ts.append(time.perf_counter()-t)
+              for seed in seeds:
+                  C.play(timed,opponent,seed,swap=False)
+                  C.play(timed,opponent,seed,swap=True)
+              ts.sort(); n=len(ts)
+              def pct(p): return ts[min(n-1,int(n*p))]*1000.0
+              return {'calls':n,'median_ms':ts[n//2]*1000.0,'p95_ms':pct(.95),'p99_ms':pct(.99),'worst_ms':ts[-1]*1000.0,
+                      'over_50':sum(x*1000.0>50 for x in ts),'over_200':sum(x*1000.0>200 for x in ts),
+                      'errors':len(errors),'error_samples':errors[:3]}
+
+          champ=bench('tmp/v153.py')
+          cand=bench('tmp/v157.py')
+          out={'engine':'kaggle_environments==1.32.7','method':'same scripts.analysis._common timing method as v153 promotion runtime run 36260008638',
+               'opponent':'score_2820','seeds':seeds,'seat_swap':True,'champion':'v153','candidate':'v157_runtime_v150_on_v153',
+               'champion_timing':champ,'candidate_timing':cand,
+               'candidate_over_champion_median_ratio':cand['median_ms']/champ['median_ms'] if champ['median_ms'] else None,
+               'candidate_over_champion_p99_ratio':cand['p99_ms']/champ['p99_ms'] if champ['p99_ms'] else None,
+               'nfr':{'p99_ms_lt':50.0,'worst_ms_lt':200.0}}
+          Path('results/v157_runtime_historical_method.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert champ['errors']==0 and cand['errors']==0,out
+          assert cand['p99_ms']<50.0,out
+          assert cand['worst_ms']<200.0,out
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v157-runtime-historical-method-selfhosted
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
