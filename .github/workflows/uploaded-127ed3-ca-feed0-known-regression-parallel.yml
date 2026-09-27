@@ -1,0 +1,99 @@
+name: uploaded 127ed3 CARROT2 feed0 known-opponent regression parallel screen
+
+on:
+  push:
+    branches: [eval-uploaded-127ed3-20260926]
+    paths:
+      - '.github/workflows/uploaded-127ed3-ca-feed0-known-regression-parallel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        opponent: [starter, beat_v48, bl_v20, bl_v21, farming_v2, frontier_prvsiyan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install and build exact agents
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps 'kaggle-environments==1.32.7'
+          python -m pip install jsonschema requests
+          mkdir -p tmp results
+          python ci/build_uploaded_127ed3_safety_v3.py tmp/safe_v3.py
+          python ci/build_uploaded_127ed3_ca_feed0.py tmp/safe_v3.py tmp/ca_feed0.py
+          python - <<'PY'
+          import hashlib,importlib.metadata
+          from pathlib import Path
+          import kaggle_environments.envs.kaggriculture.kaggriculture as kg
+          assert hashlib.sha256(Path('tmp/safe_v3.py').read_bytes()).hexdigest()=='87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'
+          assert hashlib.sha256(Path('tmp/ca_feed0.py').read_bytes()).hexdigest()=='cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44'
+          assert importlib.metadata.version('kaggle-environments')=='1.32.7'
+          assert hashlib.sha256(Path(kg.__file__).read_bytes()).hexdigest()=='bc8a54879ef02c7ea64b8b333d6a976f0ea65c4949149d01f463f23bccee653e'
+          PY
+          python -m py_compile tmp/safe_v3.py tmp/ca_feed0.py
+      - name: Evaluate ${{ matrix.opponent }}
+        env:
+          OPPONENT_NAME: ${{ matrix.opponent }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,statistics
+          from pathlib import Path
+          from scripts.eval import evaluate
+          name=os.environ['OPPONENT_NAME']
+          mapping={
+            'starter':'starter',
+            'beat_v48':'opponents/beat_v48/main.py',
+            'bl_v20':'opponents/bl_v20/main.py',
+            'bl_v21':'opponents/bl_v21/main.py',
+            'farming_v2':'opponents/farming_v2/main.py',
+            'frontier_prvsiyan':'opponents/frontier_prvsiyan/main.py',
+          }
+          opp=mapping[name]
+          rank={'L':0,'D':1,'W':2}
+          def outcome(m):
+              a,b=float(m[0]),float(m[1]); return 'W' if a>b else ('L' if a<b else 'D')
+          blocks={'public_burned_621_624':[621,622,623,624],'formal_known_641_644':[641,642,643,644]}
+          out={'opponent':name,'blocks':{},'candidate_sha256':'cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44','champion_sha256':'87a990786d123112cdd1e34cdaff9e1a390c94ebb078117ee77bea3d8dce27df'}
+          total_reg=0; total_imp=0
+          for block,seeds in blocks.items():
+              rows=[]; exc_c=exc_h=0
+              for seed in seeds:
+                  cs=evaluate('tmp/ca_feed0.py',opp,pairs=1,jobs=1,seed_start=seed)
+                  hs=evaluate('tmp/safe_v3.py',opp,pairs=1,jobs=1,seed_start=seed)
+                  exc_c+=cs['exceptions']['a']; exc_h+=hs['exceptions']['a']
+                  cand={(int(g['seed']),bool(g['swap'])):g for g in cs['matches_detail']}
+                  champ={(int(g['seed']),bool(g['swap'])):g for g in hs['matches_detail']}
+                  for swap in (False,True):
+                      c=cand[(seed,swap)]; h=champ[(seed,swap)]
+                      assert c['steps']==720 and h['steps']==720
+                      co=outcome(c['money']); ho=outcome(h['money'])
+                      cm=[float(x) for x in c['money']]; hm=[float(x) for x in h['money']]
+                      rows.append({'seed':seed,'swap':swap,'candidate_outcome':co,'champion_outcome':ho,'transition':f'{ho}->{co}','candidate_money':cm,'champion_money':hm,'candidate_minus_champion_margin':(cm[0]-cm[1])-(hm[0]-hm[1])})
+              assert exc_c==0 and exc_h==0
+              regs=[r for r in rows if rank[r['candidate_outcome']]<rank[r['champion_outcome']]]
+              imps=[r for r in rows if rank[r['candidate_outcome']]>rank[r['champion_outcome']]]
+              b={'candidate_wld':{k:sum(r['candidate_outcome']==k for r in rows) for k in 'WLD'},'champion_wld':{k:sum(r['champion_outcome']==k for r in rows) for k in 'WLD'},'outcome_regressions':len(regs),'outcome_improvements':len(imps),'mean_margin_delta':statistics.mean(r['candidate_minus_champion_margin'] for r in rows),'worst_margin_delta':min(r['candidate_minus_champion_margin'] for r in rows),'rows':rows}
+              out['blocks'][block]=b; total_reg+=len(regs); total_imp+=len(imps)
+          out['total_outcome_regressions']=total_reg; out['total_outcome_improvements']=total_imp
+          Path(f'results/{name}.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in out.items() if k!='blocks'},indent=2))
+          assert total_reg==0
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feed0-known-${{ matrix.opponent }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
