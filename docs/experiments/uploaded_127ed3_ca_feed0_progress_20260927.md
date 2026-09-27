@@ -86,8 +86,8 @@ Across 34 distinct seeds (22 burned + 12 first sealed):
 
 - W/L/D = `10 / 4 / 20`
 - mean = `+35.4412`
-- approximate SE = `13.4644`
-- mean - 2SE = `+8.5124`
+- SE = `13.4645`
+- mean - 2SE = `+8.5122`
 - worst = `-38`
 - best = `+258`
 
