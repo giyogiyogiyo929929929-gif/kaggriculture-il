@@ -1,0 +1,119 @@
+name: v156 v151 climb band regression
+
+on:
+  pull_request:
+    branches: [eval-v156-v151-not-ahead-three-exposure-20260927]
+    paths: [".ci/triggers/v156-climb-band", ".github/workflows/v156-v151-climb-band-regression.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v151 and v156
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\\Program Files\\Git\\usr\\bin'; $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\\v27_orderbook_layer_d\\main.py tmp\\main.py
+          @'
+          from pathlib import Path
+          for n in ('tmp/main.py','ci/v76.patch'):
+              p=Path(n); p.write_bytes(p.read_bytes().replace(b'\\r\\n',b'\\n'))
+          '@ | python -
+          Push-Location tmp; patch --binary --batch -p3 -i ..\\ci\\v76.patch; if ($LASTEXITCODE -ne 0) { throw 'patch failed' }; Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\\n# Force Kaggle-compatible last-callable selection.\\nkaggle_submission_agent_v77 = agent\\n')
+          '@ | python -
+          Move-Item tmp\\main.py tmp\\v77.py
+          python ci\\reconstruct_exact_v115.py tmp\\v77.py tmp\\v115.py
+          python ci\\build_v147_confirmed_v111_clone.py tmp\\v115.py tmp\\v147.py
+          python ci\\build_v150_skip_noop_second_pass.py tmp\\v147.py tmp\\v150.py
+          python ci\\build_v151_none_observation_guard.py tmp\\v150.py tmp\\v151.py
+          python ci\\build_v156_v151_not_ahead_three_exposure.py tmp\\v151.py tmp\\v156.py
+          python -m py_compile tmp\\v151.py tmp\\v156.py
+          @'
+          import hashlib
+          from pathlib import Path
+          exp={'tmp/v151.py':'54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31','tmp/v156.py':'14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb'}
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@ | python -
+
+      - name: Consumed climb-band seeds 621 to 624
+        run: |
+          $ErrorActionPreference='Stop'
+          $specs=@(
+            @('jaxa_2780','opponents\\jaxa_2780\\main.py'),
+            @('shop_router_v5','opponents\\shop_router_v5\\main.py'),
+            @('thomas_router_74','opponents\\thomas_router_74\\main.py'),
+            @('thomas_router_93','opponents\\thomas_router_93\\main.py'),
+            @('kf_v58','opponents\\kf_v58\\main.py'),
+            @('bl_v29','opponents\\bl_v29\\main.py'),
+            @('tetsutani_shop','opponents\\tetsutani_shop\\main.py'),
+            @('market_rhythm','opponents\\market_rhythm\\main.py')
+          )
+          foreach($s in $specs){
+            if(!(Test-Path $s[1])){throw "missing opponent: $($s[1])"}
+            python ci\\eval_candidate_vs_champion_panel.py --candidate tmp\\v156.py --champion tmp\\v151.py --opponent $s[1] --seed-start 621 --seed-count 4 --jobs 2 --out ("results\\"+$s[0]+".json")
+            if($LASTEXITCODE -ne 0){throw "panel failed: $($s[0])"}
+          }
+
+      - name: Aggregate and require no regression
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import glob,json,math,statistics
+          from pathlib import Path
+          panels=[]; vals=[]; cand_exc=champ_exc=regressions=improvements=0
+          def sign(x): return 1 if x>0 else -1 if x<0 else 0
+          for p in sorted(glob.glob('results/*.json')):
+              if p.endswith('summary.json'): continue
+              d=json.loads(Path(p).read_text(encoding='utf-8')); local=[]; lr=li=0
+              for r in d.get('rows',[]):
+                  v=float(r['candidate_minus_champion_money']); vals.append(v); local.append(v)
+                  seats=r.get('seats',[])
+                  if len(seats)>=2:
+                      cm=statistics.fmean(float(s['candidate_margin']) for s in seats)
+                      hm=statistics.fmean(float(s['champion_margin']) for s in seats)
+                      if sign(cm)<sign(hm): lr+=1; regressions+=1
+                      elif sign(cm)>sign(hm): li+=1; improvements+=1
+              ce=int(d.get('candidate_exceptions',0)); he=int(d.get('champion_exceptions',0)); cand_exc+=ce; champ_exc+=he
+              panels.append({'opponent':Path(p).stem,'pairs':len(local),'wins':sum(v>0 for v in local),'losses':sum(v<0 for v in local),'ties':sum(v==0 for v in local),'mean':statistics.fmean(local) if local else 0.0,'worst':min(local) if local else None,'best':max(local) if local else None,'outcome_regressions':lr,'outcome_improvements':li,'candidate_exceptions':ce,'champion_exceptions':he})
+          informative=improvements+regressions
+          # Wilson interval for improvement share among informative outcome transitions; descriptive only.
+          if informative:
+              z=1.96; ph=improvements/informative; den=1+z*z/informative
+              ctr=(ph+z*z/(2*informative))/den
+              half=z*math.sqrt(ph*(1-ph)/informative+z*z/(4*informative*informative))/den
+              ci=[ctr-half,ctr+half]
+          else: ci=None
+          out={'candidate':'v156','candidate_sha256':'14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb','champion':'v151','champion_sha256':'54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31','engine':'kaggle_environments==1.32.7','metric':'candidate_minus_champion = candidate - champion','band':'climb/mid','seeds':[621,622,623,624],'pairs':len(vals),'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),'mean':statistics.fmean(vals) if vals else None,'worst':min(vals) if vals else None,'best':max(vals) if vals else None,'outcome_regressions':regressions,'outcome_improvements':improvements,'informative_outcome_transitions':informative,'improvement_share_wilson95':ci,'candidate_exceptions':cand_exc,'champion_exceptions':champ_exc,'panels':panels}
+          out['regression_free']=(out['losses']==0 and regressions==0 and cand_exc==0 and champ_exc==0 and (out['worst'] is None or out['worst']>=0))
+          Path('results/v156_climb_band_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert out['regression_free'],out
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v156-v151-climb-band-regression
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
