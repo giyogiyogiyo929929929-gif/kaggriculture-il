@@ -1,0 +1,45 @@
+name: v112-v124 wool next-sell probe
+
+on:
+  push:
+    branches:
+      - eval/v112-v124-wool-nextsell-probe-20260927
+    paths:
+      - 'experiments/v112_v116_milk_micro/run_v124_wool_nextsell_probe.py'
+      - '.github/workflows/v112-v124-wool-nextsell-probe-selfhosted.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: v112-v124-wool-nextsell-probe-current-lineage
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install engine and reconstruct exact v112
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          Set-Location experiments\v112_v116_milk_micro
+          python build_sources.py
+          python -m py_compile run_v124_wool_nextsell_probe.py
+      - name: Trace high-price WOOL state to next runtime sell
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-Location experiments\v112_v116_milk_micro
+          python run_v124_wool_nextsell_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v112-v124-wool-nextsell-probe
+          path: experiments/v112_v116_milk_micro/v124_wool_nextsell_probe.json
+          retention-days: 30
