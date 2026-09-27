@@ -1,0 +1,145 @@
+name: v156 v151 sealed 855641-855652
+
+on:
+  pull_request:
+    branches: [eval-v156-v151-not-ahead-three-exposure-20260927]
+    paths: ["ci/trigger-v156-sealed-855641.txt"]
+
+permissions:
+  contents: read
+
+jobs:
+  sealed:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v151 and v156
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path="$gitUsr;$env:Path"; Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          python ci\build_v156_v151_not_ahead_three_exposure.py tmp\v151.py tmp\v156.py
+          python -m py_compile tmp\v151.py tmp\v156.py
+          @'
+          import hashlib
+          from pathlib import Path
+          exp={
+            'tmp/v151.py':'54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31',
+            'tmp/v156.py':'14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb',
+          }
+          for p,w in exp.items():
+              g=hashlib.sha256(Path(p).read_bytes()).hexdigest(); print(p,g); assert g==w,(p,g,w)
+          '@ | python -
+
+      - name: First sealed matched evaluation 855641 to 855652
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\eval.py tmp\v156.py tmp\v151.py -n 12 -j 4 --seed-start 855641 --json results\sealed_855641_855652.json
+          if ($LASTEXITCODE -ne 0) { throw 'sealed evaluation failed' }
+
+      - name: Aggregate preregistered sealed result
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/sealed_855641_855652.json').read_text(encoding='utf-8'))
+          by={}
+          for g in d.get('matches_detail',[]):
+              by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[]
+          for seed,legs in sorted(by.items()):
+              rows.append({'seed':seed,'candidate_minus_champion':statistics.fmean(legs),'seat_diffs':legs})
+          vals=[x['candidate_minus_champion'] for x in rows]
+          se=statistics.stdev(vals)/(len(vals)**0.5) if len(vals)>1 else 0.0
+          mean=statistics.fmean(vals)
+          exc=d.get('exceptions',{})
+          out={
+            'candidate':'v156','candidate_sha256':'14f142f9ca933a208150895e60fa3ee5838d6230782e7fa7807707280b26bcdb',
+            'champion':'v151','champion_sha256':'54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31',
+            'engine':'kaggle_environments==1.32.7',
+            'metric':'candidate_minus_champion = candidate - champion',
+            'seed_selection':'start = 700000 + int(candidate_sha256[:8],16) % 200000',
+            'seeds':list(range(855641,855653)),
+            'pairs':len(vals),
+            'wins':sum(v>0 for v in vals),'losses':sum(v<0 for v in vals),'ties':sum(v==0 for v in vals),
+            'mean':mean,'se':se,'mean_minus_2se':mean-2*se,
+            'worst':min(vals),'best':max(vals),
+            'candidate_exceptions':int(exc.get('a',0)),'champion_exceptions':int(exc.get('b',0)),
+            'rows':rows,
+          }
+          out['qualification_pass']=(len(vals)==12 and out['candidate_exceptions']==0 and out['champion_exceptions']==0 and out['losses']==0 and out['wins']>0 and out['worst']>=0 and out['mean_minus_2se']>0)
+          Path('results/v156_sealed_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert len(vals)==12,out
+          assert out['candidate_exceptions']==0 and out['champion_exceptions']==0,out
+          assert out['losses']==0 and out['worst']>=0,out
+          assert out['wins']>0,out
+          assert out['mean_minus_2se']>0,out
+          '@ | python -
+
+      - name: Telemetry replay on now-consumed sealed block
+        if: always()
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json,sys
+          from pathlib import Path
+          sys.path.insert(0,str(Path('scripts/analysis').resolve()))
+          import _common as C
+          totals={'games':0,'eligible':0,'changed':0,'ahead_skips':0,'exposure_skips':0,'errors':0}
+          rows=[]
+          for seed in range(855641,855653):
+              for swap in (False,True):
+                  mine=C.load('tmp/v156.py')
+                  C.play(C.wrap(mine),'tmp/v151.py',seed,swap=swap)
+                  t=dict(getattr(mine,'telemetry',{}) or {})
+                  rows.append({'seed':seed,'swap':swap,'telemetry':t})
+                  totals['games']+=1
+                  for k in ('eligible','changed','ahead_skips','exposure_skips','errors'):
+                      totals[k]+=int(t.get(k,0) or 0)
+          out={'note':'replay after first sealed evaluation; seeds are already consumed','totals':totals,'rows':rows}
+          Path('results/v156_sealed_telemetry_replay.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({'totals':totals},indent=2))
+          assert totals['errors']==0,out
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v156-v151-sealed-855641-855652
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
