@@ -19,9 +19,12 @@ PARENT_SHA256 = SAFE_V3_SHA256
 SUFFIX = r'''
 
 # Candidate: defer only CARROT market sales chosen from the day-25 hour-0 observation.
-# The parent action is otherwise returned unchanged. Any retained CARROT remains in the
-# shed and the unmodified parent can decide what to do with it on later observations.
+# Delete/reinsert agent so Kaggle's namespace-order loader selects this wrapper.
 _DAY25_CARROT_PARENT = agent
+try:
+    del agent
+except Exception:
+    pass
 
 def agent(observation, configuration=None):
     action = _DAY25_CARROT_PARENT(observation, configuration)
