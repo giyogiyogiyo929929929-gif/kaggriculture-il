@@ -1,0 +1,145 @@
+name: v154 v151 burned and hard gate
+
+on:
+  pull_request:
+    branches: [eval-v154-v151-dense-self-exposure-port-20260927]
+    paths: [".ci/triggers/v154-burned-hard", ".github/workflows/v154-v151-burned-hard-gate.yml", "ci/build_v154_v151_dense_self_exposure.py"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct exact v151 and build v154
+        run: |
+          $ErrorActionPreference='Stop'
+          $gitUsr='C:\Program Files\Git\usr\bin'
+          if (!(Test-Path (Join-Path $gitUsr 'patch.exe'))) { throw 'Git for Windows patch.exe not found' }
+          $env:Path="$gitUsr;$env:Path"
+          Add-Content -Path $env:GITHUB_PATH -Value $gitUsr
+          python -m pip install --no-deps "kaggle-environments==1.32.7"
+          python -m pip install jsonschema requests
+          python -c "import kaggle_environments; assert kaggle_environments.__version__ == '1.32.7'"
+          New-Item -ItemType Directory -Force -Path tmp,results,results\hard | Out-Null
+          Copy-Item submissions\v27_orderbook_layer_d\main.py tmp\main.py
+          @'
+          from pathlib import Path
+          for name in ('tmp/main.py','ci/v76.patch'):
+              p=Path(name); p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n'))
+          '@ | python -
+          Push-Location tmp
+          patch --binary --batch -p3 -i ..\ci\v76.patch
+          if ($LASTEXITCODE -ne 0) { throw 'v76 patch failed' }
+          Pop-Location
+          @'
+          from pathlib import Path
+          p=Path('tmp/main.py'); p.write_bytes(p.read_bytes()+b'\n# Force Kaggle-compatible last-callable selection.\nkaggle_submission_agent_v77 = agent\n')
+          '@ | python -
+          Move-Item tmp\main.py tmp\v77.py
+          python ci\reconstruct_exact_v115.py tmp\v77.py tmp\v115.py
+          python ci\build_v147_confirmed_v111_clone.py tmp\v115.py tmp\v147.py
+          python ci\build_v150_skip_noop_second_pass.py tmp\v147.py tmp\v150.py
+          python ci\build_v151_none_observation_guard.py tmp\v150.py tmp\v151.py
+          python ci\build_v154_v151_dense_self_exposure.py tmp\v151.py tmp\v154.py
+          python -m py_compile tmp\v151.py tmp\v154.py
+          @'
+          import hashlib
+          from pathlib import Path
+          expected='54edf1f1663b161457c6d31daccb68b496e5a61dffb6f140f69af2e0b380bf31'
+          got=hashlib.sha256(Path('tmp/v151.py').read_bytes()).hexdigest()
+          assert got==expected,(got,expected)
+          print('v151_sha256='+got)
+          print('v154_sha256='+hashlib.sha256(Path('tmp/v154.py').read_bytes()).hexdigest())
+          '@ | python -
+
+      - name: Burned direct v154 vs v151 seeds 681 to 692
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\eval.py tmp\v154.py tmp\v151.py -n 12 -j 4 --seed-start 681 --json results\burned_v154_vs_v151.json
+          @'
+          import json,statistics
+          from pathlib import Path
+          d=json.loads(Path('results/burned_v154_vs_v151.json').read_text(encoding='utf-8'))
+          by={}
+          for g in d.get('matches_detail',[]):
+              by.setdefault(int(g['seed']),[]).append(float(g['money'][0])-float(g['money'][1]))
+          rows=[{'seed':s,'candidate_minus_champion':statistics.fmean(v),'legs':v} for s,v in sorted(by.items())]
+          vals=[r['candidate_minus_champion'] for r in rows]
+          exc=d.get('exceptions',{})
+          out={'wins':sum(x>0 for x in vals),'losses':sum(x<0 for x in vals),'ties':sum(x==0 for x in vals),'mean':statistics.fmean(vals),'worst':min(vals),'best':max(vals),'rows':rows,'exceptions':exc}
+          Path('results/burned_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert int(exc.get('a',0))==0 and int(exc.get('b',0))==0,out
+          assert min(vals) >= 0,out
+          '@ | python -
+
+      - name: Hard opponent panel 520101 to 520104
+        run: |
+          $ErrorActionPreference='Stop'
+          $specs=@(
+            @('peak_2950','opponents\peak_2950\main.py'),
+            @('salem_2900','opponents\salem_2900\main.py'),
+            @('score_2820','opponents\score_2820\main.py'),
+            @('jaxa_2802','opponents\jaxa_2802\main.py'),
+            @('thomas_router_95','opponents\thomas_router_95\main.py'),
+            @('tetsutani_ms','opponents\tetsutani_ms\main.py'),
+            @('melon_squeeze','opponents\melon_squeeze\main.py'),
+            @('shop_router_v7','opponents\shop_router_v7\main.py')
+          )
+          foreach($s in $specs){
+            python ci\eval_candidate_vs_champion_panel.py --candidate tmp\v154.py --champion tmp\v151.py --opponent $s[1] --seed-start 520101 --seed-count 4 --jobs 2 --out ("results\hard\"+$s[0]+".json")
+            if($LASTEXITCODE -ne 0){ throw "hard panel failed: $($s[0])" }
+          }
+
+      - name: Aggregate hard transitions and worst regression
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import glob,json,statistics
+          from pathlib import Path
+          def state(x): return 'W' if x>0 else ('L' if x<0 else 'D')
+          transitions={}; changed=[]; seedcash=[]; exc=0; byopp={}
+          for p in sorted(glob.glob('results/hard/*.json')):
+              d=json.loads(Path(p).read_text(encoding='utf-8'))
+              exc += int(d.get('candidate_exceptions',0))+int(d.get('champion_exceptions',0))
+              opp=Path(p).stem
+              oc=[]
+              for row in d['rows']:
+                  delta=float(row['candidate_minus_champion_money'])
+                  seedcash.append(delta); oc.append(delta)
+                  for s in row['seats']:
+                      c=state(float(s['candidate_margin'])); h=state(float(s['champion_margin']))
+                      k=f'{h}->{c}'; transitions[k]=transitions.get(k,0)+1
+                      if h!=c:
+                          changed.append({'opponent':opp,'seed':row['seed'],'swap':s['swap'],'transition':k,'candidate_margin':s['candidate_margin'],'champion_margin':s['champion_margin'],'candidate_minus_champion_money':s['candidate_minus_champion_money']})
+              byopp[opp]={'mean_candidate_minus_champion':statistics.fmean(oc),'worst_candidate_minus_champion':min(oc),'best_candidate_minus_champion':max(oc)}
+          regress=sum(transitions.get(k,0) for k in ('W->D','W->L','D->L'))
+          improve=sum(transitions.get(k,0) for k in ('L->D','L->W','D->W'))
+          out={'games':sum(transitions.values()),'transitions':transitions,'regressions':regress,'improvements':improve,'changed_outcomes':changed,'mean_candidate_minus_champion':statistics.fmean(seedcash),'worst_candidate_minus_champion':min(seedcash),'best_candidate_minus_champion':max(seedcash),'by_opponent':byopp,'exceptions':exc}
+          Path('results/v154_hard_gate_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          assert exc==0,out
+          assert regress==0,out
+          assert improve>0,out
+          assert min(seedcash)>=0,out
+          '@ | python -
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-v151-burned-hard-gate
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
