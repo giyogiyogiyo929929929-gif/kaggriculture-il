@@ -1,0 +1,5 @@
+candidate=uploaded_127ed3_ca_feed0_d25_carrot_hold_v1
+candidate_sha256=2aab62a693bd3a357ad87649b8ba90a79b512d383a7694b07bbcdbe0deef48c8
+champion=uploaded_127ed3_ca_feed0
+champion_sha256=cc300eda64d0fe1f884bd164f973de2177eb68c1808cafed06bfeadc5b446e44
+reason=burned-dev-4W-0L-6D-worst0
