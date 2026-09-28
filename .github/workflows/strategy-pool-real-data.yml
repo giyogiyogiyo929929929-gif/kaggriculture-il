@@ -1,0 +1,66 @@
+name: strategy-pool-real-data
+
+on:
+  push:
+    branches: [analysis-strategy-pool-20260928]
+    paths: ['.github/workflows/strategy-pool-real-data.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply seat-safe manifest identity patch in workspace
+        run: |
+          @'
+          from pathlib import Path
+          p = Path('scripts/analysis/strategy_cluster.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''    team_name = str(info.get("team_name") or f"seat{seat}")
+              team_id = str(info.get("team_id") or record.get("teamId") or team_name)
+              submission_id = str(record.get("submissionId") or "unknown")
+              return f"{team_id}:{submission_id}", {'''.replace('              ', '    ')
+          new = '''    team_name = str(info.get("team_name") or f"seat{seat}")
+              seat_team_id = info.get("team_id")
+              team_id = str(seat_team_id or record.get("teamId") or team_name)
+              manifest_matches_seat = (
+                  (seat_team_id is not None and str(seat_team_id) == str(record.get("teamId") or ""))
+                  or team_name == str(record.get("teamName") or "")
+              )
+              submission_id = (
+                  str(record.get("submissionId"))
+                  if manifest_matches_seat and record.get("submissionId") is not None
+                  else "unknown"
+              )
+              return f"{team_id}:{submission_id}", {'''.replace('              ', '    ')
+          if old not in s:
+              raise SystemExit('identity patch target not found')
+          p.write_text(s.replace(old, new), encoding='utf-8')
+          '@ | python -
+      - name: Static and unit checks
+        run: |
+          python -m pip install pytest
+          python -m py_compile scripts/analysis/strategy_cluster.py scripts/analysis/matchup_matrix.py
+          python -m pytest -q tests/test_strategy_cluster.py tests/test_matchup_matrix.py
+      - name: Cluster committed public replay digests
+        run: |
+          New-Item -ItemType Directory -Force -Path results\strategy_pool | Out-Null
+          python scripts\analysis\strategy_cluster.py --min-games 2 --max-k 8 --out-dir results\strategy_pool
+          Get-Content results\strategy_pool\summary.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-pool-real-data
+          path: results/strategy_pool/
+          if-no-files-found: error
+          retention-days: 30
