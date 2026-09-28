@@ -1,0 +1,32 @@
+name: strategy-pool-tests
+
+on:
+  push:
+    branches:
+      - analysis-strategy-pool-20260928
+    paths:
+      - 'scripts/analysis/strategy_cluster.py'
+      - 'scripts/analysis/matchup_matrix.py'
+      - 'tests/test_strategy_cluster.py'
+      - 'tests/test_matchup_matrix.py'
+      - '.github/workflows/strategy-pool-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - run: python -m py_compile scripts/analysis/strategy_cluster.py scripts/analysis/matchup_matrix.py
+      - run: python -m pytest -q tests/test_strategy_cluster.py tests/test_matchup_matrix.py
